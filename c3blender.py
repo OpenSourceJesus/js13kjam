@@ -2,30 +2,14 @@ import os, sys, subprocess, atexit, webbrowser, base64, string, json
 _thisdir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisdir)
 
-isLinux = isWindows = c3gz = c3zip = None
+isLinux = None
 if sys.platform == 'win32':
 	BLENDER = 'C:/Program Files/Blender Foundation/Blender 4.2/blender.exe'
-	c3zip = 'https://github.com/c3lang/c3c/releases/download/latest/c3-windows.zip'
-	isWindows = True
 elif sys.platform == 'darwin':
 	BLENDER = '/Applications/Blender.app/Contents/MacOS/Blender'
 else:
 	BLENDER = 'blender'
 	isLinux = True
-
-EMSDK = os.path.join(_thisdir, 'emsdk')
-if '--install-wasm' in sys.argv and not os.path.isdir(EMSDK):
-	cmd = [
-		'git','copy','--depth','1',
-		'https://github.com/emscripten-core/emsdk.git',
-	]
-	print(cmd)
-	subprocess.check_call(cmd)
-
-if isWindows:
-	EMCC = os.path.join(EMSDK, 'upstream/emscripten/emcc.exe')
-else:
-	EMCC = 'wasm-ld'
 
 try:
 	import bpy
@@ -36,7 +20,7 @@ except:
 if __name__ == '__main__':
 	if bpy:
 		pass
-	elif '--c3demo' in sys.argv:
+	elif '--demo' in sys.argv:
 		# Runs simple test without blender
 		Build ()
 		sys.exit()
@@ -199,8 +183,6 @@ def ExportObject (ob, html = None, useHtml = False):
 	if ob.hide_get() or ob in exportedObs:
 		return
 	world = bpy.data.worlds[0]
-	resX = world.export_res_x
-	resY = world.export_res_y
 	SCALE = world.export_scale
 	offX = world.export_offset_x
 	offY = world.export_offset_y
@@ -370,24 +352,9 @@ _BUILD_INFO = {
 }
 
 @bpy.utils.register_class
-class C3Export (bpy.types.Operator):
-	bl_idname = 'c3.export'
-	bl_label = 'C3 Export EXE'
-
-	@classmethod
-	def poll (cls, context):
-		return True
-
-	def execute (self, context):
-		exe = BuildLinux(context.world)
-		_BUILD_INFO['native'] = exe
-		_BUILD_INFO['native-size'] = len(open(exe, 'rb').read())
-		return { 'FINISHED' }
-
-@bpy.utils.register_class
-class C3Export (bpy.types.Operator):
-	bl_idname = 'c3.export_wasm'
-	bl_label = 'C3 Export WASM'
+class Export (bpy.types.Operator):
+	bl_idname = 'world.export'
+	bl_label = 'Export'
 
 	@classmethod
 	def poll (cls, context):
@@ -398,36 +365,32 @@ class C3Export (bpy.types.Operator):
 		return { 'FINISHED' }
 
 @bpy.utils.register_class
-class C3WorldPanel (bpy.types.Panel):
-	bl_idname = 'WORLD_PT_C3World_Panel'
-	bl_label = 'C3 Export'
+class WorldPanel (bpy.types.Panel):
+	bl_idname = 'WORLD_PT_World_Panel'
+	bl_label = 'Export'
 	bl_space_type = 'PROPERTIES'
 	bl_region_type = 'WINDOW'
 	bl_context = 'world'
 
 	def draw(self, context):
 		row = self.layout.row()
-		row.prop(context.world, 'export_res_x')
-		row.prop(context.world, 'export_res_y')
 		row.prop(context.world, 'export_scale')
 		row = self.layout.row()
 		row.prop(context.world, 'export_offset_x')
 		row.prop(context.world, 'export_offset_y')
 		self.layout.prop(context.world, 'export_opt')
 		self.layout.prop(context.world, 'export_html')
-
-		self.layout.operator('c3.export_wasm', icon = 'CONSOLE')
-		self.layout.operator('c3.export', icon = 'CONSOLE')
+		self.layout.operator('world.export', icon = 'CONSOLE')
 		if _BUILD_INFO['native-size']:
-			self.layout.label(text = 'exe KB=%s' %( _BUILD_INFO['native-size']//1024 ))
+			self.layout.label(text = 'exe kb=%s' %( _BUILD_INFO['native-size']//1024 ))
 
 @bpy.utils.register_class
 class JS13KB_Panel (bpy.types.Panel):
-	bl_idname = "WORLD_PT_JS13KB_Panel"
-	bl_label = "js13kgames.com"
-	bl_space_type = "PROPERTIES"
-	bl_region_type = "WINDOW"
-	bl_context = "world"
+	bl_idname = 'WORLD_PT_JS13KB_Panel'
+	bl_label = 'js13kgames.com'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'world'
 
 	def draw (self, context):
 		self.layout.prop(context.world, 'js13kb')
@@ -439,28 +402,17 @@ class JS13KB_Panel (bpy.types.Panel):
 			if _BUILD_INFO['zip-size']:
 				self.layout.label(text = _BUILD_INFO['zip'])
 				if _BUILD_INFO['zip-size'] <= 1024*13:
-					self.layout.label(text = "zip bytes=%s" %( _BUILD_INFO['zip-size'] ))
+					self.layout.label(text = 'zip bytes=%s' %( _BUILD_INFO['zip-size'] ))
 				else:
-					self.layout.label(text = "zip KB=%s" %( _BUILD_INFO['zip-size']//1024 ))
+					self.layout.label(text = 'zip KB=%s' %( _BUILD_INFO['zip-size']//1024 ))
 				self.layout.label(text = 'html-size=%s' % _BUILD_INFO['html-size'])
 				self.layout.label(text = 'jslib-size=%s' % _BUILD_INFO['jslib-size'])
 				self.layout.label(text = 'jslib-gz-size=%s' % _BUILD_INFO['jslib-gz-size'])
 		if _BUILD_INFO['html-size']:
 			if _BUILD_INFO['html-size'] < 1024*16:
-				self.layout.label(text = "wasm bytes=%s" %( _BUILD_INFO['html-size'] ))
+				self.layout.label(text = 'wasm bytes=%s' %( _BUILD_INFO['html-size'] ))
 			else:
-				self.layout.label(text = "wasm KB=%s" %( _BUILD_INFO['html-size']//1024 ))
-
-def BuildLinux (world):
-	global WORLD
-	WORLD = world
-	o = GetBlenderData(world)
-	o = '\n'.join(o)
-	#print(o)
-	tmp = '/tmp/c3blender.c3'
-	open(tmp, 'w').write(o)
-	bin = Build(input = tmp)
-	return bin
+				self.layout.label(text = 'wasm KB=%s' %( _BUILD_INFO['html-size']//1024 ))
 
 JS_DECOMP = '''
 var $d=async(u,t)=>{
@@ -485,7 +437,7 @@ function color_hex_unpacked(r, g, b, a){
 	g=g.toString(16).padStart(2,'0');
 	b=b.toString(16).padStart(2,'0');
 	a=a.toString(16).padStart(2,'0');
-	return "#"+r+g+b+a
+	return '#'+r+g+b+a
 }
 function getColorFromMemory(buf,ptr){
 	const [r, g, b, a]=new Uint8Array(buf,ptr,4);
@@ -627,220 +579,15 @@ class api{
 		});
 	}
 '''
-c3dom_api = {
-	'html_new_text' : '''
-	html_new_text(ptr, r, g, b, h, id)
-	{
-		var e = document.createElement('pre');
-		e.style = 'position:absolute;left:' + r + '; top:' + g + '; font-size:' + b;
-		e.hidden = h;
-		e.id=cstr_by_ptr(wasm_memory(), id);
-		document.body.append(e);
-		e.append(cstr_by_ptr(wasm_memory(), ptr));
-		return this.elts.push(e) - 1
-	}
-	''',
-	'html_css_string' : '''
-	html_css_string(idx,a,b){
-		a=cstr_by_ptr(wasm_memory(),a);
-		this.elts[idx].style[a]=cstr_by_ptr(wasm_memory(),b)
-	}
-	''',
-	'html_css_int' : '''
-	html_css_int(idx,a,b){
-		a=cstr_by_ptr(wasm_memory(),a);
-		this.elts[idx].style[a]=b
-	}
-	''',
-	'html_set_text' : '''
-	html_set_text(idx,ptr){
-		this.elts[idx].firstChild.nodeValue=cstr_by_ptr(wasm_memory(),ptr)
-	}
-	''',
-	'html_add_char' : '''
-	html_add_char(idx,c){
-		this.elts[idx].append(String.fromCharCode(c))
-	}
-	''',
-	'html_css_scale' : '''
-	html_css_scale(idx,z){
-		this.elts[idx].style.transform='scale('+z+')'
-	}
-	''',
-	'html_css_scale_y' : '''
-	html_css_scale_y(idx,z){
-		this.elts[idx].style.transform='scaleY('+z+')'
-	}
-	''',
-	'html_set_position' : '''
-	html_set_position(idx,x,y){
-		var elt = this.elts[idx];
-		elt.style.left = x;
-		elt.style.top = y
-	}
-	''',
-	'html_css_zindex' : '''
-	html_css_zindex(idx,z){
-		this.elts[idx].style.zIndex=z
-	}
-	''',
-	'html_bind_onclick' : '''
-	html_bind_onclick(idx,f,oidx){
-		var elt=this.elts[idx];
-		elt._onclick_=$.wasm.instance.exports.__indirect_function_table.get(f);
-		elt.onclick=function(){
-			self=elt;
-			elt._onclick_(oidx)
-		}
-	}
-	''',
-	'html_eval' : '''
-	html_eval(ptr){
-		var _=cstr_by_ptr(wasm_memory(),ptr);
-		eval(_)
-	}
-	''',
-	'html_canvas_clear' : '''
-	html_canvas_clear(){
-		this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height)
-	}
-	''',
-	'html_canvas_resize' : '''
-	html_canvas_resize(w,h){
-		this.canvas.width=w;
-		this.canvas.height=h
-	}
-	''',
-	'wasm_memory' : '''
-	wasm_memory(idx){
-		return this.bytes[idx]
-	}
-	''',
-	'wasm_size' : '''
-	wasm_size(){
-		return this.bytes.length
-	}
-	''',
-	'random' : '''
-	random(){
-		return Math.random()
-	}
-	''',
-}
 raylib_like_api = {
 	'raylib_js_set_entry' : '''
 	_(f){
 		this.entryFunction=$.wasm.instance.exports.__indirect_function_table.get(f)
 	}
-	''',
-	'InitWindow' : '''
-	InitWindow(w,h,ptr){
-		this.canvas.width=w;
-		this.canvas.height=h;
-		document.title=cstr_by_ptr(wasm_memory(),ptr)
-	}
-	''',
-	'GetScreenWidth' : '''
-	GetScreenWidth(){
-		return this.canvas.width
-	}
-	''',
-	'GetScreenHeight' : '''
-	GetScreenHeight(){
-		return this.canvas.height
-	}
-	''',
-	'GetFrameTime' : '''
-	GetFrameTime(){
-		return Math.min(this.dt,1/30/2)
-	}
-	''',
-	'DrawRectangleV' : '''
-	DrawRectangleV(pptr,sptr,cptr){
-		const buf=wasm_memory();
-		const p=new Float32Array(buf,pptr,2);
-		const s=new Float32Array(buf,sptr,2);
-		this.ctx.sStyle = getColorFromMemory(buf, cptr);
-		this.ctx.fillRect(p[0],p[1],s[0],s[1])
-	}
-	''',
-	'DrawSplineLinearWASM' : '''
-	DrawSplineLinearWASM(ptr,l,t,fill,r, g, b, a){
-		const buf=wasm_memory();
-		const p=new Float32Array(buf,ptr,l*2);
-		this.ctx.strokeStyle='black';
-		if(fill)this.ctx.fillStyle='rgba('+r+','+g+','+b+','+a+')';
-		this.ctx.lineWidth=t;
-		this.ctx.beginPath();
-		this.ctx.moveTo(p[0],p[1]);
-		for(var i=2;i<p.length;i+=2)
-			this.ctx.lineTo(p[i],p[i+1]);
-		if(fill){
-			this.ctx.closePath();
-			this.ctx.fill()
-		}
-		this.ctx.stroke()
-	}
-	''',
-	'DrawCircleWASM' : '''
-	DrawCircleWASM(x,y,rad,ptr){
-		const buf=wasm_memory();
-		const [r, g, b, a]=new Uint8Array(buf, ptr, 4);
-		this.ctx.strokeStyle = 'black';
-		this.ctx.beginPath();
-		this.ctx.arc(x,y,rad,0,2*Math.PI,false);
-		this.ctx.fillStyle = color_hex_unpacked(r, g, b, a);
-		this.ctx.closePath();
-		this.ctx.stroke()
-	}
-	''',
-	'ClearBackground' : '''
-	ClearBackground(ptr) {
-		this.ctx.fillStyle = getColorFromMemory(wasm_memory(), ptr);
-		this.ctx.fillRect(0,0,this.canvas.width,this.canvas.height)
-	}
-	''',
-	'GetRandomValue' : '''
-	GetRandomValue(min,max) {
-		return min+Math.floor(Math.random()*(max-min+1))
-	}
-	''',
-	'ColorFromHSV' : '''
-	ColorFromHSV(result_ptr, hue, saturation, value) {
-		const buffer = wasm_memory();
-		const result = new Uint8Array(buffer, result_ptr, 4);
-
-		// Red channel
-		let k = (5.0 + hue/60.0)%6;
-		let t = 4.0 - k;
-		k = (t < k)? t : k;
-		k = (k < 1)? k : 1;
-		k = (k > 0)? k : 0;
-		result[0] = Math.floor((value - value*saturation*k)*255.0);
-
-		// Green channel
-		k = (3.0 + hue/60.0)%6;
-		t = 4.0 - k;
-		k = (t < k)? t : k;
-		k = (k < 1)? k : 1;
-		k = (k > 0)? k : 0;
-		result[1] = Math.floor((value - value*saturation*k)*255.0);
-
-		// Blue channel
-		k = (1.0 + hue/60.0)%6;
-		t = 4.0 - k;
-		k = (t < k)? t : k;
-		k = (k < 1)? k : 1;
-		k = (k > 0)? k : 0;
-		result[2] = Math.floor((value - value*saturation*k)*255.0);
-
-		result[3] = 255;
-	}
-	''',
+	'''
 }
 
 raylib_like_api_mini = {}
-c3dom_api_mini = {}
 def GenMiniAPI ():
 	syms = list(string.ascii_lowercase)
 	symsTier = 1
@@ -861,19 +608,6 @@ def GenMiniAPI ():
 			# Hard coded syms
 			sym = code.split('(')[0]
 			raylib_like_api_mini[fName] = {'sym' : sym, 'code' : code.replace('\t','') }
-	for fName in c3dom_api:
-		code = c3dom_api[fName].strip()
-		assert code.startswith(fName)
-		if len(syms) == 0:
-			for char in string.ascii_lowercase:
-				sym = char
-				for i in range(symsTier):
-					sym += char
-				syms.append(sym)
-			symsTier += 1
-		sym = syms.pop()
-		code = sym + code[len(fName) :]
-		c3dom_api_mini[fName] = { 'sym' : sym, 'code' : code.replace('\t','') }
 
 GenMiniAPI ()
 
@@ -1025,19 +759,16 @@ def GenHtml (world, dataFile, userHTML = None, background = '', userMethods = {}
 			o.append('</canvas>')
 		o += [
 			'<pre>',
-			'jslib bytes=%s' % len(jsLib),
-			'jslib.gz bytes=%s' % len(js),
-			'jslib.base64 bytes=%s' % len(jsB),
-			'wasm bytes=%s' % len(wa),
-			'gzip bytes=%s' % len(w),
-			'base64 bytes=%s' % len(b),
+			'jslib bytes=%s' %len(jsLib),
+			'jslib.gz bytes=%s' %len(js),
+			'jslib.base64 bytes=%s' %len(jsB),
+			'wasm bytes=%s' %len(wa),
+			'gzip bytes=%s' %len(w),
+			'base64 bytes=%s' %len(b),
 			'html bytes=%s' %(hsize - (len(b) + len(jsB))),
 			'total bytes=%s' % hsize,
-			'C3 optimization=%s' % WORLD.export_opt,
+			'optimization=%s' %WORLD.export_opt,
 		]
-		for ob in bpy.data.objects:
-			if ob.type == 'GPENCIL':
-				o.append('%s = %s' %(ob.name, ob.data.grease_quantize))
 		o.append('</pre>')
 	if not world.invalid_html:
 		o += [
@@ -1135,16 +866,14 @@ def Update ():
 bpy.types.Material.export_trifan = bpy.props.BoolProperty(name = 'Triangle fan')
 bpy.types.Material.export_tristrip = bpy.props.BoolProperty(name = 'Triangle strip')
 
-bpy.types.World.export_res_x = bpy.props.IntProperty(name = 'Resolution X', default = 800)
-bpy.types.World.export_res_y = bpy.props.IntProperty(name = 'Resolution Y', default = 600)
-bpy.types.World.export_scale = bpy.props.FloatProperty(name = 'Scale', default = 100)
-bpy.types.World.export_offset_x = bpy.props.IntProperty(name = 'Offset X', default = 100)
-bpy.types.World.export_offset_y = bpy.props.IntProperty(name = 'Offset Y', default = 100)
+bpy.types.World.export_scale = bpy.props.FloatProperty(name = 'Scale', default = 1)
+bpy.types.World.export_offset_x = bpy.props.IntProperty(name = 'Offset X', default = 0)
+bpy.types.World.export_offset_y = bpy.props.IntProperty(name = 'Offset Y', default = 0)
 
-bpy.types.World.export_html = bpy.props.StringProperty(name = 'C3 export (.html)')
-bpy.types.World.export_zip = bpy.props.StringProperty(name = 'C3 export (.zip)')
+bpy.types.World.export_html = bpy.props.StringProperty(name = 'Export (.html)')
+bpy.types.World.export_zip = bpy.props.StringProperty(name = 'Export (.zip)')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
-bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13KB')
+bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
 bpy.types.World.invalid_html = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 
 bpy.types.World.export_opt = bpy.props.EnumProperty(
@@ -1241,9 +970,9 @@ class ScriptsPanel (bpy.types.Panel):
 				foundUnassignedScript = not hasProperty
 
 @bpy.utils.register_class
-class C3MaterialPanel (bpy.types.Panel):
+class MaterialPanel (bpy.types.Panel):
 	bl_idname = 'OBJECT_PT_Material_Panel'
-	bl_label = 'C3 Material Settings'
+	bl_label = 'Material Settings'
 	bl_space_type = 'PROPERTIES'
 	bl_region_type = 'WINDOW'
 	bl_context = 'material'
@@ -1252,7 +981,7 @@ class C3MaterialPanel (bpy.types.Panel):
 		if not context.active_object:
 			return
 		ob = context.active_object
-		if not ob.type == 'GPENCIL' or not ob.data.materials:
+		if not ob.data.materials:
 			return
 		mat = ob.data.materials[ ob.active_material_index ]
 		self.layout.prop(mat, 'export_trifan')
