@@ -20,11 +20,6 @@ except:
 if __name__ == '__main__':
 	if bpy:
 		pass
-	elif '--demo' in sys.argv:
-		# Runs simple test without blender
-		Build ()
-		sys.exit()
-
 	else:
 		cmd = [ BLENDER ]
 		for arg in sys.argv:
@@ -43,7 +38,6 @@ if __name__ == '__main__':
 		subprocess.check_call(cmd)
 		sys.exit()
 
-# blender #
 MAX_SCRIPTS_PER_OBJECT = 16
 if not bpy:
 	if isLinux:
@@ -59,9 +53,6 @@ def IsCircle (ob):
 		return True
 	else:
 		return False
-
-def GetSafeName (ob):
-	return ob.name.replace('é', 'e').lower().replace('(', '_').replace(')', '_').replace('.', '_').replace(' ', '_')
 
 def GetScripts (ob, isAPI : bool):
 	scripts = []
@@ -186,7 +177,6 @@ def ExportObject (ob, html = None):
 	offX = world.export_offset_x
 	offY = world.export_offset_y
 	off = Vector(( offX, offY ))
-	sname = GetSafeName(ob)
 	x, y, z = ob.location * SCALE
 	y = -y
 	z = -z
@@ -194,8 +184,6 @@ def ExportObject (ob, html = None):
 	y += offY
 	z += offY
 	sx, sy, sz = ob.scale * SCALE
-	idx = len(meshes + curves + empties)
-	scripts = []
 	if ob.type == 'EMPTY' and len(ob.children) > 0:
 		empties.append(ob)
 		if HandleCopyObject(ob, Vector((x, y))):
@@ -203,7 +191,7 @@ def ExportObject (ob, html = None):
 		for child in ob.children:
 			ExportObject (child)
 		firstAndLastChildIdsTxt = ''
-		firstAndLastChildIdsTxt += str(ob.children[0].name) + ';' + str(ob.children[-1].name)
+		firstAndLastChildIdsTxt += ob.children[0].name + ';' + ob.children[-1].name
 		datas.append([ob.name, firstAndLastChildIdsTxt])
 	elif ob.type == 'CURVE':
 		curves.append(ob)
@@ -234,13 +222,13 @@ def ExportObject (ob, html = None):
 		size = max - min
 		data.append(round(size.x))
 		data.append(round(size.y))
+		materialColor = DEFAULT_COLOR
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
-		else:
-			materialColor = DEFAULT_COLOR
 		data.append(round(materialColor[0] * 255))
 		data.append(round(materialColor[1] * 255))
 		data.append(round(materialColor[2] * 255))
+		data.append(round(materialColor[3] * 255))
 		svgText_ = svgText_[: indexOfParentGroupContents] + group + svgText_[indexOfParentGroupEnd :]
 		pathDataIndicator = ' d="'
 		indexOfPathDataStart = svgText_.find(pathDataIndicator) + len(pathDataIndicator)
@@ -374,7 +362,7 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.prop(context.world, 'export_html')
 		self.layout.operator('world.export', icon = 'CONSOLE')
 		if _BUILD_INFO['native-size']:
-			self.layout.label(text = 'exe kb=%s' %( _BUILD_INFO['native-size']//1024 ))
+			self.layout.label(text = 'exe kb=%s' %( _BUILD_INFO['native-size'] / 1024 ))
 
 @bpy.utils.register_class
 class JS13KB_Panel (bpy.types.Panel):
@@ -396,15 +384,15 @@ class JS13KB_Panel (bpy.types.Panel):
 				if _BUILD_INFO['zip-size'] <= 1024*13:
 					self.layout.label(text = 'zip bytes=%s' %( _BUILD_INFO['zip-size'] ))
 				else:
-					self.layout.label(text = 'zip KB=%s' %( _BUILD_INFO['zip-size']//1024 ))
+					self.layout.label(text = 'zip KB=%s' %( _BUILD_INFO['zip-size'] / 1024 ))
 				self.layout.label(text = 'html-size=%s' % _BUILD_INFO['html-size'])
 				self.layout.label(text = 'js-size=%s' % _BUILD_INFO['js-size'])
 				self.layout.label(text = 'js-gz-size=%s' % _BUILD_INFO['js-gz-size'])
 		if _BUILD_INFO['html-size']:
 			if _BUILD_INFO['html-size'] < 1024*16:
-				self.layout.label(text = 'wasm bytes=%s' %( _BUILD_INFO['html-size'] ))
+				self.layout.label(text = 'html bytes=%s' %( _BUILD_INFO['html-size'] ))
 			else:
-				self.layout.label(text = 'wasm KB=%s' %( _BUILD_INFO['html-size']//1024 ))
+				self.layout.label(text = 'html KB=%s' %( _BUILD_INFO['html-size'] / 1024 ))
 
 JS_DECOMP = '''var $d=async(u,t)=>{
 	var d=new DecompressionStream('gzip')
@@ -423,11 +411,11 @@ $d($0,1).then((j)=>{
 		var l=v.length
 		if(l>3)
 		{
-			var d=v[12].split(' ')
+			var d=v[13].split(' ')
 			var p=[]
 			for(var e of d)
 				p.push(parseInt(e))
-			$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],[parseInt(v[4]),parseInt(v[5]),parseInt(v[6])],v[7],[parseInt(v[8]),parseInt(v[9]),parseInt(v[10])],v[11],$.get_svg_path(p,Boolean(v[13])),parseInt(v[14]),Boolean(v[15]),Boolean(v[16]))
+			$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],[parseInt(v[4]),parseInt(v[5]),parseInt(v[6]),parseInt(v[7])],v[8],[parseInt(v[9]),parseInt(v[10]),parseInt(v[11])],v[12],$.get_svg_path(p,v[14]!=''),parseInt(v[15]),v[16]!='',v[17]!='')
 		}
 		else if(l>2)
 			$.copy_node(v[0],[parseInt(v[1]),parseInt(v[2])])
@@ -454,15 +442,7 @@ class api
 	}
 	get_pos_and_size (elmt)
 	{
-		var posXTxt = elmt.getAttribute('x');
-		var posX = parseFloat(posXTxt);
-		var posYTxt = elmt.getAttribute('y');
-		var posY = parseFloat(posYTxt);
-		var sizeXTxt = elmt.getAttribute('width');
-		var sizeX = parseFloat(sizeXTxt);
-		var sizeYTxt = elmt.getAttribute('height');
-		var sizeY = parseFloat(sizeYTxt);
-		return [ [ posX, posY ], [ sizeX, sizeY ] ]
+		return [[parseFloat(elmt.getAttribute('x')), parseFloat(elmt.getAttribute('y'))], [parseFloat(elmt.getAttribute('width')), parseFloat(elmt.getAttribute('height'))]]
 	}
 	lerp (min, max, t)
 	{
@@ -478,8 +458,7 @@ class api
 	}
 	remap (inFrom, inTo, outFrom, outTo, n)
 	{
-		var t = inv_lerp(inFrom, inTo, n);
-		return lerp(outFrom, outTo, t);
+		return lerp(outFrom, outTo, inv_lerp(inFrom, inTo, n));
 	}
 	overlaps (pos, size, pos2, size2)
 	{
@@ -512,8 +491,7 @@ class api
 		var html = document.body.innerHTML;
 		var indexOfFirstChild = html.lastIndexOf('<svg', html.indexOf(children[0]));
 		var indexOfLastChild = html.indexOf('</svg>', html.indexOf(children[1])) + 6;
-		document.body.innerHTML = html.slice(0, indexOfFirstChild) + '<g id="' + id + '">' + html.slice(indexOfFirstChild);
-		document.body.innerHTML = html.slice(0, indexOfLastChild) + '</g>' + html.slice(indexOfLastChild);
+		document.body.innerHTML = html.slice(0, indexOfFirstChild) + '<g id="' + id + '">' + html.slice(indexOfFirstChild, indexOfLastChild) + '</g>' + html.slice(indexOfLastChild);
 	}
 	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathData, zIndex, collide)
 	{
@@ -523,9 +501,7 @@ class api
 		var lineColorTxt = 'transparent';
 		if (lineWidth > 0)
 			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
-		var prefix = '<svg xmlns="www.w3.org/2000/svg"id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="';
-		var suffix = '"/></g></svg>';
-		document.body.innerHTML += prefix + pathData + suffix;
+		document.body.innerHTML += '<svg xmlns="www.w3.org/2000/svg"id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="' + pathData + '"/></g></svg>';
 	}
 	main (bytes)
 	{
@@ -546,7 +522,7 @@ class api
 new api
 '''
 
-def GenJsAPI (world, userMethods):
+def GenJsAPI ():
 	global userJsAPI
 	skip = []
 	if not IsInAnyElement('draw_svg', [ userJsAPI, initCode, updateCode ]):
@@ -572,28 +548,17 @@ def GenJsAPI (world, userMethods):
 	if not IsInAnyElement('random', [ userJsAPI, initCode, updateCode ]):
 		skip.append('random')
 	js = [ userJsAPI, JS_API ]
-	for fName in userMethods:
-		fudge = fName.replace('(', '(_,')
-		js += [
-			fudge + '{',
-				'self=this.elts[_]',
-				'this._%s;' % fName,
-			'}',
-			'_' + fName + '{',
-			userMethods[fName],
-			'}',
-		]
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
 	js = js.replace('// Update', '\n'.join(updateCode))
 	return js
 
-def GenHtml (world, datas, background = '', userMethods = {}):
+def GenHtml (world, datas, background = ''):
 	global initCode
 	global updateCode
 	global userJsAPI
 	jsTmp = '/tmp/api.js'
-	js = GenJsAPI(world, userMethods)
+	js = GenJsAPI()
 	open(jsTmp, 'w').write(js)
 	if world.minify:
 		js = subprocess.run(('uglifyjs -m -- ' + jsTmp).split(), capture_output = True).stdout
@@ -608,11 +573,11 @@ def GenHtml (world, datas, background = '', userMethods = {}):
 	js = open(jsTmp + '.gz', 'rb').read()
 	jsB = base64.b64encode(js).decode('utf-8')
 	if background:
-		background = 'style="background-color:%s"' %background
+		background = 'background-color:%s;' %background
 	o = [
 		'<!DOCTYPE html>',
 		'<html>',
-		'<body %s style="width:600px;height:300px;overflow:hidden;">' %background,
+		'<body style="%swidth:600px;height:300px;overflow:hidden;">' %background,
 		'<script>', 
 		'var $0="%s";' %jsB,
 		'var $1="%s";' %datas,
@@ -638,11 +603,10 @@ def Build (world):
 	WORLD = world
 	if SERVER_PROC:
 		SERVER_PROC.kill()
-	userMethods = {}
-	blenderInfo = GetBlenderData(world, methods = userMethods)
+	blenderInfo = GetBlenderData(world)
 	datas = blenderInfo[0]
 	datas = str(datas)[2 :].replace(', ', ',').replace('.0', '').replace(']', '').replace('\'', '').replace(',[', '[').replace('True', 'T').replace('False', '')
-	html = GenHtml(world, datas, userMethods = userMethods)
+	html = GenHtml(world, datas)
 	open('/tmp/index.html', 'w').write(html)
 	if world.js13kb:
 		if os.path.isfile('/usr/bin/zip'):
@@ -721,7 +685,6 @@ bpy.types.World.export_zip = bpy.props.StringProperty(name = 'Export (.zip)')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
 bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
 bpy.types.World.invalid_html = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
-
 bpy.types.World.export_opt = bpy.props.EnumProperty(
 	name = 'Optimize',
 	items = [
@@ -824,8 +787,5 @@ if __name__ == '__main__':
 			bpy.data.worlds[0].js13kb = True
 			bpy.data.worlds[0].invalid_html = True
 	bpy.app.timers.register(Update)
-	for ob in bpy.data.objects:
-		if ob.type in [ 'MESH', 'CURVE', 'EMPTY' ]:
-			ob.name = ob.name.replace('é', 'e').replace('(', '_').replace(')', '_')
 	if '--build' in sys.argv:
 		Build (bpy.data.worlds[0])
