@@ -48,12 +48,6 @@ if not bpy:
 		print('Download blender from: https://blender.org')
 	sys.exit()
 
-def IsCircle (ob):
-	if len(ob.data.vertices) == 32 and len(ob.data.polygons) == 1:
-		return True
-	else:
-		return False
-
 def GetScripts (ob, isAPI : bool):
 	scripts = []
 	type = 'runtime'
@@ -70,16 +64,6 @@ def GetScripts (ob, isAPI : bool):
 				scripts.append(( txt.as_string(), getattr(ob, 'initScript' + str(i)) ))
 	return scripts
 
-def HasScript (ob, isMethod : bool):
-	type = 'runtime'
-	if isMethod:
-		type = 'method'
-	for i in range(MAX_SCRIPTS_PER_OBJECT):
-		txt = getattr(ob, type + 'Script' + str(i))
-		if txt != None:
-			return True
-	return False
-
 # def CurveToMesh (curve):
 # 	deg = bpy.context.evaluated_depsgraph_get()
 # 	mesh = bpy.data.meshes.new_from_object(curve.evaluated_get(deg), depsgraph = deg)
@@ -88,11 +72,19 @@ def HasScript (ob, isMethod : bool):
 # 	ob.matrix_world = curve.matrix_world
 # 	return ob
 
-# def ToVector2 (v : Vector):
+# def ToVec2 (v : Vector):
 # 	return Vector((v.x, v.y))
 
-def ToVector3 (v : Vector):
-	return Vector(( v.x, v.y, 0 ))
+def Clamp (n : float, min : float, max : float):
+	if n < min:
+		return min
+	elif n > max:
+		return max
+	else:
+		return n
+
+# def ToVec3 (v : Vector):
+# 	return Vector(( v.x, v.y, 0 ))
 
 # def Abs (v : Vector, is2d : bool = False):
 # 	if is2d:
@@ -118,14 +110,14 @@ def GetMaxComponents (v : Vector, v2 : Vector, use2D : bool = False):
 	else:
 		return Vector(( max(v.x, v2.x), max(v.y, v2.y), max(v.z, v2.z) ))
 
-def Divide (v : Vector, v2 : Vector, use2D : bool = False):
-	if use2D:
-		return Vector(( v.x / v2.x, v.y / v2.y ))
-	else:
-		return Vector(( v.x / v2.x, v.y / v2.y, v.z / v2.z ))
+# def Divide (v : Vector, v2 : Vector, use2D : bool = False):
+# 	if use2D:
+# 		return Vector(( v.x / v2.x, v.y / v2.y ))
+# 	else:
+# 		return Vector(( v.x / v2.x, v.y / v2.y, v.z / v2.z ))
 
-def ToNormalizedPoint (minMax : [],  v : Vector):
-	return Divide(Vector(( 1, 1 )), (minMax[1] - minMax[0]), True) * (v - minMax[0])
+# def ToNormalizedPoint (minMax : [],  v : Vector):
+# 	return Divide(Vector(( 1, 1 )), (minMax[1] - minMax[0]), True) * (v - minMax[0])
 
 def GetCurveRectMinMax (ob):
 	bounds = [( ob.matrix_world @ Vector(corner) ) for corner in ob.bound_box]
@@ -144,19 +136,39 @@ def IsInAnyElement (o, arr : list):
 			return True
 	return False
 
-def Copy (ob, copyData = True, copyActions = True, collection = None):
-	copy = ob.copy()
-	if copyData:
-		copy.data = copy.data.copy()
-	if copyActions and copy.animation_data:
-		copy.animation_data.action = copy.animation_data.action.copy()
-	if collection == None:
-		collection = bpy.context.collection
-	collection.objects.link(copy)
-	for child in ob.children:
-		childCopy = Copy(child, copyData, copyActions, collection)
-		childCopy.parent = copy
-	return copy
+# def Copy (ob, copyData = True, copyActions = True, collection = None):
+# 	copy = ob.copy()
+# 	if copyData:
+# 		copy.data = copy.data.copy()
+# 	if copyActions and copy.animation_data:
+# 		copy.animation_data.action = copy.animation_data.action.copy()
+# 	if collection == None:
+# 		collection = bpy.context.collection
+# 	collection.objects.link(copy)
+# 	for child in ob.children:
+# 		childCopy = Copy(child, copyData, copyActions, collection)
+# 		childCopy.parent = copy
+# 	return copy
+
+def ToByteString (n):
+	n = round(n)
+	n = Clamp(n, 0, 255)
+	byteStr = chr(n)
+	if byteStr in '\n \r[,':
+		byteStr = chr(n - 1)
+	elif byteStr in '"\'':
+		byteStr = '\\' + byteStr
+	return byteStr
+
+def GetSvgPathData (pathDataValues : list, cyclic : bool):
+	path = 'M ' + pathDataValues[0] + ',' + pathDataValues[1] + ' '
+	for i in range(2, len(pathDataValues), 2):
+		if i - 2 % 6 == 0:
+			path += 'C '
+		path += '' + pathDataValues[i] + ',' + pathDataValues[i + 1] + ' '
+	if cyclic:
+		path += 'Z'
+	return path
 
 DEFAULT_COLOR = [ 0, 0, 0, 0 ]
 exportedObs = []
@@ -167,9 +179,9 @@ initCode = []
 updateCode = []
 datas = []
 svgText = ''
-userJsAPI = ''
+userJS = ''
 
-def ExportObject (ob, html = None):
+def ExportObject (ob):
 	if ob.hide_get() or ob in exportedObs:
 		return
 	world = bpy.data.worlds[0]
@@ -182,7 +194,6 @@ def ExportObject (ob, html = None):
 	z = -z
 	x += offX
 	y += offY
-	z += offY
 	sx, sy, sz = ob.scale * SCALE
 	if ob.type == 'EMPTY' and len(ob.children) > 0:
 		empties.append(ob)
@@ -192,7 +203,7 @@ def ExportObject (ob, html = None):
 			ExportObject (child)
 		firstAndLastChildIdsTxt = ''
 		firstAndLastChildIdsTxt += ob.children[0].name + ';' + ob.children[-1].name
-		datas.append([ob.name, firstAndLastChildIdsTxt])
+		datas.append(','.join([ob.name, firstAndLastChildIdsTxt]))
 	elif ob.type == 'CURVE':
 		curves.append(ob)
 		bpy.ops.object.select_all(action = 'DESELECT')
@@ -210,25 +221,14 @@ def ExportObject (ob, html = None):
 		indexOfParentGroupContents = svgText_.find('\n', indexOfParentGroupStart + len(parentGroupIndicator))
 		indexOfParentGroupEnd = svgText_.rfind('</g')
 		min, max = GetCurveRectMinMax(ob)
-		min *= Vector((sx, sy))
-		max *= Vector((sx, sy))
+		scale = Vector(( sx, sy ))
+		min *= scale
 		min += off
-		max += off
 		if HandleCopyObject(ob, min):
 			return
+		max *= scale
+		max += off
 		data = []
-		data.append(round(min.x))
-		data.append(round(min.y))
-		size = max - min
-		data.append(round(size.x))
-		data.append(round(size.y))
-		materialColor = DEFAULT_COLOR
-		if len(ob.material_slots) > 0:
-			materialColor = ob.material_slots[0].material.diffuse_color
-		data.append(round(materialColor[0] * 255))
-		data.append(round(materialColor[1] * 255))
-		data.append(round(materialColor[2] * 255))
-		data.append(round(materialColor[3] * 255))
 		svgText_ = svgText_[: indexOfParentGroupContents] + group + svgText_[indexOfParentGroupEnd :]
 		pathDataIndicator = ' d="'
 		indexOfPathDataStart = svgText_.find(pathDataIndicator) + len(pathDataIndicator)
@@ -251,20 +251,32 @@ def ExportObject (ob, html = None):
 		minPathValue *= SCALE
 		offset = -minPathValue
 		for i, pathValue in enumerate(pathData_):
-			pathData_[i] = int(pathValue + offset[i % 2])
+			pathData_[i] = ToByteString(pathValue + offset[i % 2])
+		pathData_ = GetSvgPathData(pathData_, ob.data.splines[0].use_cyclic_u)
+		data.append(str(round(min.x)))
+		data.append(str(round(min.y)))
+		size = max - min
+		data.append(str(round(size.x)))
+		data.append(str(round(size.y)))
+		materialColor = DEFAULT_COLOR
+		if len(ob.material_slots) > 0:
+			materialColor = ob.material_slots[0].material.diffuse_color
+		data.append(ToByteString(materialColor[0] * 255))
+		data.append(ToByteString(materialColor[1] * 255))
+		data.append(ToByteString(materialColor[2] * 255))
+		data.append(ToByteString(materialColor[3] * 255))
 		strokeWidth = 0
 		if ob.useSvgStroke:
 			strokeWidth = ob.svgStrokeWidth
-		data.append(strokeWidth)
-		data.append(round(ob.svgStrokeColor[0] * 255))
-		data.append(round(ob.svgStrokeColor[1] * 255))
-		data.append(round(ob.svgStrokeColor[2] * 255))
+		data.append(ToByteString(strokeWidth))
+		data.append(ToByteString(ob.svgStrokeColor[0] * 255))
+		data.append(ToByteString(ob.svgStrokeColor[1] * 255))
+		data.append(ToByteString(ob.svgStrokeColor[2] * 255))
 		data.append(ob.name)
-		data.append(str(pathData_)[1 : -1].replace(', ', ' '))
-		data.append(ob.data.splines[0].use_cyclic_u)
-		data.append(round(ob.location.z))
-		data.append(ob.collide)
-		datas.append(data)
+		data.append(pathData_)
+		data.append(ToByteString(ob.location.z))
+		data.append(str(ob.collide))
+		datas.append(','.join(data))
 	exportedObs.append(ob)
 
 def HandleCopyObject (ob, pos):
@@ -280,19 +292,19 @@ def HandleCopyObject (ob, pos):
 		else:
 			exportedObNameWithoutPeriod = exportedOb.name[: indexOfPeriod]
 		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
-			datas.append([obNameWithoutPeriod, round(pos[0]), round(pos[1])])
+			datas.append(','.join([obNameWithoutPeriod, str(round(pos[0])), str(round(pos[1]))]))
 			exportedObs.append(ob)
 			return True
 	return False
 
-def GetBlenderData (world, html = None, methods = {}):
+def GetBlenderData ():
 	global datas
 	global meshes
 	global curves
 	global empties
 	global svgText
 	global initCode
-	global userJsAPI
+	global userJS
 	global updateCode
 	global exportedObs
 	for ob in bpy.data.objects:
@@ -301,7 +313,7 @@ def GetBlenderData (world, html = None, methods = {}):
 				bpy.data.objects.remove(child, do_unlink = True)
 			bpy.data.objects.remove(ob, do_unlink = True)
 	exportedObs = []
-	userJsAPI = ''
+	userJS = ''
 	meshes = []
 	curves = []
 	empties = []
@@ -309,10 +321,10 @@ def GetBlenderData (world, html = None, methods = {}):
 	initCode = []
 	updateCode = []
 	for ob in bpy.data.objects:
-		ExportObject (ob, html)
+		ExportObject (ob)
 	for ob in bpy.data.objects:
 		for script in GetScripts(ob, True):
-			userJsAPI += script
+			userJS += script
 		for scriptInfo in GetScripts(ob, False):
 			script = scriptInfo[0]
 			isInit = scriptInfo[1]
@@ -320,15 +332,15 @@ def GetBlenderData (world, html = None, methods = {}):
 				initCode.append(script)
 			else:
 				updateCode.append(script)
-	return (datas, initCode, updateCode, userJsAPI)
+	return (datas, initCode, updateCode, userJS)
 
-_BUILD_INFO = {
-	'native': None,
+buildInfo = {
 	'html'  : None,
-	'native-size':None,
 	'html-size':None,
 	'zip'     : None,
 	'zip-size': None,
+	'js-size' : None,
+	'js-gz-size' : None,
 }
 
 @bpy.utils.register_class
@@ -352,17 +364,14 @@ class WorldPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'world'
 
-	def draw(self, context):
+	def draw (self, context):
 		row = self.layout.row()
 		row.prop(context.world, 'export_scale')
 		row = self.layout.row()
 		row.prop(context.world, 'export_offset_x')
 		row.prop(context.world, 'export_offset_y')
-		self.layout.prop(context.world, 'export_opt')
 		self.layout.prop(context.world, 'export_html')
 		self.layout.operator('world.export', icon = 'CONSOLE')
-		if _BUILD_INFO['native-size']:
-			self.layout.label(text = 'exe kb=%s' %( _BUILD_INFO['native-size'] / 1024 ))
 
 @bpy.utils.register_class
 class JS13KB_Panel (bpy.types.Panel):
@@ -379,94 +388,97 @@ class JS13KB_Panel (bpy.types.Panel):
 		row.prop(context.world, 'invalid_html')
 		if context.world.js13kb:
 			self.layout.prop(context.world, 'export_zip')
-			if _BUILD_INFO['zip-size']:
-				self.layout.label(text = _BUILD_INFO['zip'])
-				if _BUILD_INFO['zip-size'] <= 1024*13:
-					self.layout.label(text = 'zip bytes=%s' %( _BUILD_INFO['zip-size'] ))
+			if buildInfo['zip-size']:
+				self.layout.label(text = buildInfo['zip'])
+				if buildInfo['zip-size'] <= 1024*13:
+					self.layout.label(text = 'zip bytes=%s' %( buildInfo['zip-size'] ))
 				else:
-					self.layout.label(text = 'zip KB=%s' %( _BUILD_INFO['zip-size'] / 1024 ))
-				self.layout.label(text = 'html-size=%s' % _BUILD_INFO['html-size'])
-				self.layout.label(text = 'js-size=%s' % _BUILD_INFO['js-size'])
-				self.layout.label(text = 'js-gz-size=%s' % _BUILD_INFO['js-gz-size'])
-		if _BUILD_INFO['html-size']:
-			if _BUILD_INFO['html-size'] < 1024*16:
-				self.layout.label(text = 'html bytes=%s' %( _BUILD_INFO['html-size'] ))
+					self.layout.label(text = 'zip KB=%s' %( buildInfo['zip-size'] / 1024 ))
+				self.layout.label(text = 'html-size=%s' %buildInfo['html-size'])
+				self.layout.label(text = 'js-size=%s' %buildInfo['js-size'])
+				self.layout.label(text = 'js-gz-size=%s' %buildInfo['js-gz-size'])
+		if buildInfo['html-size']:
+			self.layout.label(text = buildInfo['html'])
+			if buildInfo['html-size'] < 1024*16:
+				self.layout.label(text = 'html bytes=%s' %( buildInfo['html-size'] ))
 			else:
-				self.layout.label(text = 'html KB=%s' %( _BUILD_INFO['html-size'] / 1024 ))
+				self.layout.label(text = 'html KB=%s' %( buildInfo['html-size'] / 1024 ))
 
-JS_DECOMP = '''var $d=async(u,t)=>{
-	var d=new DecompressionStream('gzip')
-	var r=await fetch('data:application/octet-stream;base64,'+u)
-	var b=await r.blob()
-	var s=b.stream().pipeThrough(d)
-	var o=await new Response(s).blob()
-	if(t) return await o.text()
-	else return await o.arrayBuffer()
+HTML = '''$d=async(u,t)=>{
+	d=new DecompressionStream('gzip')
+	r=await fetch('data:application/octet-stream;base64,'+u)
+	b=await r.blob()
+	s=b.stream().pipeThrough(d)
+	o=await new Response(s).blob()
+	return await o.text()
 }
 $d($0,1).then((j)=>{
-	$=eval(j)
-	for(var v of $1.split('['))
-	{
-		v=v.split(',')
-		var l=v.length
-		if(l>3)
+	$d($1,1).then((d)=>{
+		$=eval(j)
+		for(v of d.split('['))
 		{
-			var d=v[13].split(' ')
-			var p=[]
-			for(var e of d)
-				p.push(parseInt(e))
-			$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],[parseInt(v[4]),parseInt(v[5]),parseInt(v[6]),parseInt(v[7])],v[8],[parseInt(v[9]),parseInt(v[10]),parseInt(v[11])],v[12],$.get_svg_path(p,v[14]!=''),parseInt(v[15]),v[16]!='',v[17]!='')
+			v=v.split(',')
+			l=v.length
+			if(l>3)
+				$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],[v[4].charCodeAt(0),v[5].charCodeAt(0),v[6].charCodeAt(0),v[7].charCodeAt(0)],v[8].charCodeAt(0),[v[9].charCodeAt(0),v[10].charCodeAt(0),v[11].charCodeAt(0)],v[12],v[13],v[14].charCodeAt(0),v[15]!='')
+			else if(l>2)
+				$.copy_node(v[0],[parseInt(v[1]),parseInt(v[2])])
+			else
+				$.add_group(v[0],v[1])
 		}
-		else if(l>2)
-			$.copy_node(v[0],[parseInt(v[1]),parseInt(v[2])])
-		else
-			$.add_group(v[0],v[1])
-	}
-	$.main(document.body.innerHTML)
+		$.main(document.body.innerHTML)
+	})
 })'''
+JS = '''
+function get_pos_and_size (elmt)
+{
+	return [[parseFloat(elmt.getAttribute('x')), parseFloat(elmt.getAttribute('y'))], [parseFloat(elmt.getAttribute('width')), parseFloat(elmt.getAttribute('height'))]]
+}
+function lerp (min, max, t)
+{
+	return min + t * (max - min)
+}
+function clamp (n, min, max)
+{
+	return Math.min(Math.max(n, min), max);
+}
+function inv_lerp (from, to, n)
+{
+	return (n - from) / (to - from);
+}
+function remap (inFrom, inTo, outFrom, outTo, n)
+{
+	return lerp(outFrom, outTo, inv_lerp(inFrom, inTo, n));
+}
+function overlaps (pos, size, pos2, size2)
+{
+	return !(pos[0] + size[0] < pos2[0]
+		|| pos[0] > pos2[0] + size2[0]
+		|| pos[1] + size[1] < pos2[1]
+		|| pos[1] > pos2[1] + size2[1])
+}
+function random_vector_2d (mD)
+{
+	var dt = random(0, mD);
+	var ag = random(0, 2 * Math.PI);
+	return [ Math.cos(ag) * dt, Math.sin(ag) * dt ];
+}
+function random (min, max)
+{
+	return Math.random() * (max - min) + min;
+}
+function copy_node (id, pos)
+{
+	return $.copy_node(id, pos);
+}
+function add_group (id, firstAndLastChildIds)
+{
+	$.add_group (id, firstAndLastChildIds);
+}
+'''
 JS_API = '''
 class api
 {
-	get_svg_path (pathData, cyclic)
-	{
-		var path = 'M ' + pathData[0] + ',' + pathData[1] + ' ';
-		for (var i = 2; i < pathData.length; i += 2)
-		{
-			if (i - 2 % 6 == 0)
-				path += 'C ';
-			path += '' + pathData[i] + ',' + pathData[i + 1] + ' ';
-		}
-		if (cyclic)
-			path += 'Z';
-		return path;
-	}
-	get_pos_and_size (elmt)
-	{
-		return [[parseFloat(elmt.getAttribute('x')), parseFloat(elmt.getAttribute('y'))], [parseFloat(elmt.getAttribute('width')), parseFloat(elmt.getAttribute('height'))]]
-	}
-	lerp (min, max, t)
-	{
-		return min + t * (max - min)
-	}
-	clamp (n, min, max)
-	{
-		return Math.min(Math.max(n, min), max);
-	}
-	inv_lerp (from, to, n)
-	{
-		return (n - from) / (to - from);
-	}
-	remap (inFrom, inTo, outFrom, outTo, n)
-	{
-		return lerp(outFrom, outTo, inv_lerp(inFrom, inTo, n));
-	}
-	overlaps (pos, size, pos2, size2)
-	{
-		return !(pos[0] + size[0] < pos2[0]
-			|| pos[0] > pos2[0] + size2[0]
-			|| pos[1] + size[1] < pos2[1]
-			|| pos[1] > pos2[1] + size2[1])
-	}
 	copy_node (id, pos)
 	{
 		var copy = document.getElementById(id).cloneNode(true);
@@ -474,16 +486,6 @@ class api
 		copy.setAttribute('y', pos[1]);
 		document.body.appendChild(copy);
 		return copy;
-	}
-	random_vector_2d (mD)
-	{
-		var dt = random(0, mD);
-		var ag = random(0, 2 * Math.PI);
-		return [ Math.cos(ag) * dt, Math.sin(ag) * dt ];
-	}
-	random (min, max)
-	{
-		return Math.random() * (max - min) + min;
 	}
 	add_group (id, firstAndLastChildIds)
 	{
@@ -498,7 +500,7 @@ class api
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
 			fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
-		var lineColorTxt = 'transparent';
+		var lineColorTxt = 'transparent';d
 		if (lineWidth > 0)
 			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		document.body.innerHTML += '<svg xmlns="www.w3.org/2000/svg"id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="' + pathData + '"/></g></svg>';
@@ -519,35 +521,35 @@ class api
 		});
 	}
 }
-new api
+var $=new api
 '''
 
 def GenJsAPI ():
-	global userJsAPI
+	global userJS
 	skip = []
-	if not IsInAnyElement('draw_svg', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('draw_svg', [ userJS, initCode, updateCode ]):
 		skip.append('draw_svg')
-	if not IsInAnyElement('add_group', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('add_group', [ userJS, initCode, updateCode ]):
 		skip.append('add_group')
-	if not IsInAnyElement('copy_node', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('copy_node', [ userJS, initCode, updateCode ]):
 		skip.append('copy_node')
-	if not IsInAnyElement('clamp', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('clamp', [ userJS, initCode, updateCode ]):
 		skip.append('clamp')
-	if not IsInAnyElement('get_pos_and_size', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('get_pos_and_size', [ userJS, initCode, updateCode ]):
 		skip.append('get_pos_and_size')
-	if not IsInAnyElement('lerp', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('lerp', [ userJS, initCode, updateCode ]):
 		skip.append('lerp')
-	if not IsInAnyElement('inv_lerp', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('inv_lerp', [ userJS, initCode, updateCode ]):
 		skip.append('inv_lerp')
-	if not IsInAnyElement('remap', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('remap', [ userJS, initCode, updateCode ]):
 		skip.append('remap')
-	if not IsInAnyElement('get_svg_path', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('get_svg_path', [ userJS, initCode, updateCode ]):
 		skip.append('get_svg_path')
-	if not IsInAnyElement('overlaps', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('overlaps', [ userJS, initCode, updateCode ]):
 		skip.append('overlaps')
-	if not IsInAnyElement('random', [ userJsAPI, initCode, updateCode ]):
+	if not IsInAnyElement('random', [ userJS, initCode, updateCode ]):
 		skip.append('random')
-	js = [ userJsAPI, JS_API ]
+	js = [ userJS, JS, JS_API ]
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
 	js = js.replace('// Update', '\n'.join(updateCode))
@@ -556,7 +558,7 @@ def GenJsAPI ():
 def GenHtml (world, datas, background = ''):
 	global initCode
 	global updateCode
-	global userJsAPI
+	global userJS
 	jsTmp = '/tmp/api.js'
 	js = GenJsAPI()
 	open(jsTmp, 'w').write(js)
@@ -570,8 +572,16 @@ def GenHtml (world, datas, background = ''):
 	print(cmd)
 	subprocess.check_call(cmd)
 	
-	js = open(jsTmp + '.gz', 'rb').read()
-	jsB = base64.b64encode(js).decode('utf-8')
+	jsZipped = open(jsTmp + '.gz', 'rb').read()
+	jsB = base64.b64encode(jsZipped).decode('utf-8')
+	dataFilePath = '/tmp/js13kjam Data'
+	open(dataFilePath, 'w').write(''.join(datas))
+	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', dataFilePath ]
+	print(cmd)
+	subprocess.check_call(cmd)
+
+	datas = open(dataFilePath + '.gz', 'rb').read()
+	datas = base64.b64encode(datas).decode('utf-8')
 	if background:
 		background = 'background-color:%s;' %background
 	o = [
@@ -581,31 +591,30 @@ def GenHtml (world, datas, background = ''):
 		'<script>', 
 		'var $0="%s";' %jsB,
 		'var $1="%s";' %datas,
-		JS_DECOMP,
+		HTML,
 		'</script>',
 	]
-	hSize = len('\n'.join(o))
-	_BUILD_INFO['js-size'] = len(js)
-	_BUILD_INFO['js-gz-size'] = len(js)
+	htmlSize = len('\n'.join(o))
+	buildInfo['js-size'] = len(js)
+	buildInfo['js-gz-size'] = len(jsZipped)
 	if not world.invalid_html:
 		o += [
 			'</body>',
 			'</html>',
 		]
-		hSize += len('</body></html>')
-	_BUILD_INFO['html-size'] = hSize
+		htmlSize += len('</body></html>')
+	buildInfo['html-size'] = htmlSize
 	return '\n'.join(o)
 
 SERVER_PROC = None
-WORLD = None
+
 def Build (world):
-	global SERVER_PROC, WORLD
-	WORLD = world
+	global SERVER_PROC
 	if SERVER_PROC:
 		SERVER_PROC.kill()
-	blenderInfo = GetBlenderData(world)
+	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
-	datas = str(datas)[2 :].replace(', ', ',').replace('.0', '').replace(']', '').replace('\'', '').replace(',[', '[').replace('True', 'T').replace('False', '')
+	datas = '['.join(datas).replace(', ', ',').replace('.0', '').replace(']', '').replace('\'', '').replace(',[', '[').replace('True', 'T').replace('False', '')
 	html = GenHtml(world, datas)
 	open('/tmp/index.html', 'w').write(html)
 	if world.js13kb:
@@ -615,16 +624,16 @@ def Build (world):
 			subprocess.check_call(cmd, cwd='/tmp')
 
 			zip = open('/tmp/index.html.zip','rb').read()
-			_BUILD_INFO['zip-size'] = len(zip)
+			buildInfo['zip-size'] = len(zip)
 			if world.export_zip:
 				out = os.path.expanduser(world.export_zip)
 				if not out.endswith('.zip'):
 					out += '.zip'
-				_BUILD_INFO['zip'] = out
+				buildInfo['zip'] = out
 				print('saving:', out)
 				open(out, 'wb').write(zip)
 			else:
-				_BUILD_INFO['zip'] = '/tmp/index.html.zip'
+				buildInfo['zip'] = '/tmp/index.html.zip'
 		else:
 			if len(html.encode('utf-8')) > 1024 * 13:
 				raise SyntaxError('Final HTML is over 13kb')
@@ -685,19 +694,6 @@ bpy.types.World.export_zip = bpy.props.StringProperty(name = 'Export (.zip)')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
 bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
 bpy.types.World.invalid_html = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
-bpy.types.World.export_opt = bpy.props.EnumProperty(
-	name = 'Optimize',
-	items = [
-		('O0', 'O0', 'Safe, no optimizations, emit debug info.'), 
-		('O1', 'O1', 'Safe, high optimization, emit debug info.'), 
-		('O2', 'O2', 'Unsafe, high optimization, emit debug info.'), 
-		('O3', 'O3', 'Unsafe, high optimization, single module, emit debug info.'), 
-		('O4', 'O4', 'Unsafe, highest optimization, relaxed maths, single module, emit debug info, no panic messages.'),
-		('O5', 'O5', 'Unsafe, highest optimization, fast maths, single module, emit debug info, no panic messages, no backtrace.'),
-		('Os', 'Os', 'Unsafe, high optimization, small code, single module, no debug info, no panic messages.'),
-		('Oz', 'Oz', 'Unsafe, high optimization, tiny code, single module, no debug info, no panic messages, no backtrace.'),
-	]
-)
 bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useSvgStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
 bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name='Svg stroke width', default = 0)
@@ -776,8 +772,6 @@ if __name__ == '__main__':
 			o = arg.split('=')[-1]
 		elif arg.startswith('--test='):
 			test = arg.split('=')[-1]
-		elif arg.startswith('--O'):
-			bpy.data.worlds[0].export_opt = arg[2 :]
 		elif arg.startswith('--output='):
 			bpy.data.worlds[0].export_html = arg.split('=')[-1]
 		elif arg == '--minifiy':
