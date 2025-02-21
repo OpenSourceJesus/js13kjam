@@ -160,12 +160,12 @@ def ToByteString (n):
 		byteStr = '\\' + byteStr
 	return byteStr
 
-def GetSvgPathData (pathDataValues : list, cyclic : bool):
-	path = 'M ' + pathDataValues[0] + ',' + pathDataValues[1] + ' '
-	for i in range(2, len(pathDataValues), 2):
-		if i - 2 % 6 == 0:
+def GetSvgPathData (pathValues : list, cyclic : bool):
+	path = 'M ' + pathValues[0] + ' ' + pathValues[1] + ' '
+	for i in range(2, len(pathValues), 2):
+		if (i - 2) % 6 == 0:
 			path += 'C '
-		path += '' + pathDataValues[i] + ',' + pathDataValues[i + 1] + ' '
+		path += '' + pathValues[i] + ' ' + pathValues[i + 1] + ' '
 	if cyclic:
 		path += 'Z'
 	return path
@@ -250,9 +250,8 @@ def ExportObject (ob):
 			pathData_.append(y)
 		minPathValue *= SCALE
 		offset = -minPathValue
-		for i, pathValue in enumerate(pathData_):
-			pathData_[i] = ToByteString(pathValue + offset[i % 2])
-		pathData_ = GetSvgPathData(pathData_, ob.data.splines[0].use_cyclic_u)
+		for i, pathDataValue in enumerate(pathData_):
+			pathData_[i] = ToByteString(pathDataValue + offset[i % 2])
 		data.append(str(round(min.x)))
 		data.append(str(round(min.y)))
 		size = max - min
@@ -273,7 +272,8 @@ def ExportObject (ob):
 		data.append(ToByteString(ob.svgStrokeColor[1] * 255))
 		data.append(ToByteString(ob.svgStrokeColor[2] * 255))
 		data.append(ob.name)
-		data.append(pathData_)
+		data.append(' '.join(pathData_))
+		data.append(str(ob.data.splines[0].use_cyclic_u))
 		data.append(ToByteString(ob.location.z))
 		data.append(str(ob.collide))
 		datas.append(','.join(data))
@@ -404,7 +404,8 @@ class JS13KB_Panel (bpy.types.Panel):
 			else:
 				self.layout.label(text = 'html KB=%s' %( buildInfo['html-size'] / 1024 ))
 
-HTML = '''$d=async(u,t)=>{
+HTML = '''
+$d=async(u,t)=>{
 	d=new DecompressionStream('gzip')
 	r=await fetch('data:application/octet-stream;base64,'+u)
 	b=await r.blob()
@@ -414,21 +415,29 @@ HTML = '''$d=async(u,t)=>{
 }
 $d($0,1).then((j)=>{
 	$d($1,1).then((d)=>{
+		console.log(d)
 		$=eval(j)
 		for(v of d.split('['))
 		{
 			v=v.split(',')
 			l=v.length
 			if(l>3)
-				$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],[v[4].charCodeAt(0),v[5].charCodeAt(0),v[6].charCodeAt(0),v[7].charCodeAt(0)],v[8].charCodeAt(0),[v[9].charCodeAt(0),v[10].charCodeAt(0),v[11].charCodeAt(0)],v[12],v[13],v[14].charCodeAt(0),v[15]!='')
+			{
+				var a=v[13].split(' ')
+				var p=[]
+				for(var e of a)
+					p.push(e.charCodeAt(0))
+				$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],[v[4].charCodeAt(0),v[5].charCodeAt(0),v[6].charCodeAt(0),v[7].charCodeAt(0)],v[8].charCodeAt(0),[v[9].charCodeAt(0),v[10].charCodeAt(0),v[11].charCodeAt(0)],v[12],$.get_svg_path(p,v[14]!=''),v[15].charCodeAt(0),v[16]!='')
+			}
 			else if(l>2)
 				$.copy_node(v[0],[parseInt(v[1]),parseInt(v[2])])
 			else
 				$.add_group(v[0],v[1])
 		}
-		$.main(document.body.innerHTML)
+		$.main(j)
 	})
-})'''
+})
+'''
 JS = '''
 function get_pos_and_size (elmt)
 {
@@ -479,6 +488,21 @@ function add_group (id, firstAndLastChildIds)
 JS_API = '''
 class api
 {
+	bytes = []
+
+	get_svg_path (pathValues, cyclic)
+	{
+		var path = 'M ' + pathValues[0] + ',' + pathValues[1] + ' '
+		for (var i = 2; i < pathValues.length; i += 2)
+		{
+			if ((i - 2) % 6 == 0)
+				path += 'C '
+			path += '' + pathValues[i] + ',' + pathValues[i + 1] + ' '
+		}
+		if (cyclic)
+			path += 'Z'
+		return path
+	}
 	copy_node (id, pos)
 	{
 		var copy = document.getElementById(id).cloneNode(true);
@@ -491,11 +515,11 @@ class api
 	{
 		var children = firstAndLastChildIds.split(';');
 		var html = document.body.innerHTML;
-		var indexOfFirstChild = html.lastIndexOf('<svg', html.indexOf(children[0]));
-		var indexOfLastChild = html.indexOf('</svg>', html.indexOf(children[1])) + 6;
+		var indexOfFirstChild = html.lastIndexOf('<svg', html.indexOf('id="' + children[0]));
+		var indexOfLastChild = html.indexOf('</svg>', html.indexOf('id="' + children[1])) + 6;
 		document.body.innerHTML = html.slice(0, indexOfFirstChild) + '<g id="' + id + '">' + html.slice(indexOfFirstChild, indexOfLastChild) + '</g>' + html.slice(indexOfLastChild);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathData, zIndex, collide)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, path, zIndex, collide)
 	{
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
@@ -503,21 +527,21 @@ class api
 		var lineColorTxt = 'transparent';d
 		if (lineWidth > 0)
 			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
-		document.body.innerHTML += '<svg xmlns="www.w3.org/2000/svg"id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="' + pathData + '"/></g></svg>';
+		document.body.innerHTML += '<svg xmlns="www.w3.org/2000/svg"id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="' + path + '"/></g></svg>';
 	}
 	main (bytes)
 	{
-		// Init
 		this.bytes=new Uint8Array(bytes);
+		// Init
 		const f=(ts)=>{
 			this.dt=(ts-this.prev)/1000;
 			this.prev=ts;
 			window.requestAnimationFrame(f)
+			// Update
 		};
 		window.requestAnimationFrame((ts)=>{
 			this.prev=ts;
 			window.requestAnimationFrame(f)
-			// Update
 		});
 	}
 }
