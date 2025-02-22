@@ -1,4 +1,4 @@
-import os, sys, subprocess, atexit, webbrowser, base64
+import os, sys, subprocess, atexit, webbrowser, base64, json, string
 _thisdir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisdir)
 
@@ -92,11 +92,23 @@ def Clamp (n : float, min : float, max : float):
 # 	else:
 # 		return Vector((abs(v.x), abs(v.y), abs(v.z)))
 
-# def Round (v : Vector, is2d : bool = False):
-# 	if is2d:
-# 		return Vector((round(v.x), round(v.y)))
-# 	else:
-# 		return Vector((round(v.x), round(v.y), round(v.z)))
+def Multiply (v : list, multiply : list):
+	output = []
+	for i, elmt in enumerate(v):
+		output.append(elmt * multiply[i])
+	return output
+
+def Round (v : list):
+	output = []
+	for elmt in v:
+		output.append(round(elmt))
+	return output
+
+def ClampComponents (v : list, min : list, max : list):
+	output = []
+	for i, elmt in enumerate(v):
+		output.append(Clamp(elmt, min[i], max[i]))
+	return output
 
 def GetMinComponents (v : Vector, v2 : Vector, use2D : bool = False):
 	if use2D:
@@ -130,6 +142,18 @@ def GetCurveRectMinMax (ob):
 	_max = Vector(( box[2], box[3] ))
 	return _min, _max
 
+# def IndexOf_Array (o, arr : list):
+# 	for i, elmt in enumerate(arr):
+# 		if o == elmt:
+# 			return i
+# 	return -1
+
+def IndexOfValue (o, d : dict):
+	for i, value in enumerate(d.values()):
+		if o == value:
+			return i
+	return -1
+
 def IsInAnyElement (o, arr : list):
 	for elmt in arr:
 		if o in elmt:
@@ -154,23 +178,24 @@ def ToByteString (n):
 	n = round(n)
 	n = Clamp(n, 0, 255)
 	byteStr = chr(n)
-	if byteStr in '\n \r[,':
+	if byteStr in '\n\r[,':
 		byteStr = chr(n - 1)
 	elif byteStr in '"\'':
 		byteStr = '\\' + byteStr
 	return byteStr
 
 def GetSvgPathData (pathValues : list, cyclic : bool):
-	path = 'M ' + pathValues[0] + ' ' + pathValues[1] + ' '
+	path = 'M ' + pathValues[0] + ',' + pathValues[1] + ' '
 	for i in range(2, len(pathValues), 2):
 		if (i - 2) % 6 == 0:
 			path += 'C '
-		path += '' + pathValues[i] + ' ' + pathValues[i + 1] + ' '
+		path += '' + pathValues[i] + ',' + pathValues[i + 1] + ' '
 	if cyclic:
 		path += 'Z'
 	return path
 
 DEFAULT_COLOR = [ 0, 0, 0, 0 ]
+colors = {}
 exportedObs = []
 meshes = []
 curves = []
@@ -260,19 +285,30 @@ def ExportObject (ob):
 		materialColor = DEFAULT_COLOR
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
-		data.append(ToByteString(materialColor[0] * 255))
-		data.append(ToByteString(materialColor[1] * 255))
-		data.append(ToByteString(materialColor[2] * 255))
-		data.append(ToByteString(materialColor[3] * 255))
+		materialColor = ClampComponents(Round(Multiply(materialColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+		indexOfMaterialColor = IndexOfValue(materialColor, colors)
+		keyOfMaterialColor = ''
+		if indexOfMaterialColor == -1:
+			keyOfMaterialColor = string.ascii_letters[len(colors)]
+			colors[keyOfMaterialColor] = materialColor
+		else:
+			keyOfMaterialColor = string.ascii_letters[indexOfMaterialColor]
+		data.append(keyOfMaterialColor)
 		strokeWidth = 0
 		if ob.useSvgStroke:
 			strokeWidth = ob.svgStrokeWidth
 		data.append(ToByteString(strokeWidth))
-		data.append(ToByteString(ob.svgStrokeColor[0] * 255))
-		data.append(ToByteString(ob.svgStrokeColor[1] * 255))
-		data.append(ToByteString(ob.svgStrokeColor[2] * 255))
+		strokeColor = ClampComponents(Round(Multiply(ob.svgStrokeColor, [255, 255, 255])), [0, 0, 0], [255, 255, 255])
+		indexOfStrokeColor = IndexOfValue(strokeColor, colors)
+		keyOfStrokeColor = ''
+		if indexOfStrokeColor == -1:
+			keyOfStrokeColor = string.ascii_letters[len(colors)]
+			colors[keyOfStrokeColor] = strokeColor
+		else:
+			keyOfStrokeColor = string.ascii_letters[indexOfStrokeColor]
+		data.append(keyOfStrokeColor)
 		data.append(ob.name)
-		data.append(' '.join(pathData_))
+		data.append(''.join(pathData_))
 		data.append(str(ob.data.splines[0].use_cyclic_u))
 		data.append(ToByteString(ob.location.z))
 		data.append(str(ob.collide))
@@ -299,6 +335,7 @@ def HandleCopyObject (ob, pos):
 
 def GetBlenderData ():
 	global datas
+	global colors
 	global meshes
 	global curves
 	global empties
@@ -314,6 +351,7 @@ def GetBlenderData ():
 			bpy.data.objects.remove(ob, do_unlink = True)
 	exportedObs = []
 	userJS = ''
+	colors = {}
 	meshes = []
 	curves = []
 	empties = []
@@ -415,26 +453,29 @@ $d=async(u,t)=>{
 }
 $d($0,1).then((j)=>{
 	$d($1,1).then((d)=>{
-		console.log(d)
-		$=eval(j)
-		for(v of d.split('['))
-		{
-			v=v.split(',')
-			l=v.length
-			if(l>3)
+		$d($2,1).then((c)=>{
+			console.log(d)
+			$=eval(j)
+			for(v of d.split('['))
 			{
-				var a=v[13].split(' ')
-				var p=[]
-				for(var e of a)
-					p.push(e.charCodeAt(0))
-				$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],[v[4].charCodeAt(0),v[5].charCodeAt(0),v[6].charCodeAt(0),v[7].charCodeAt(0)],v[8].charCodeAt(0),[v[9].charCodeAt(0),v[10].charCodeAt(0),v[11].charCodeAt(0)],v[12],$.get_svg_path(p,v[14]!=''),v[15].charCodeAt(0),v[16]!='')
+				v=v.split(',')
+				l=v.length
+				if(l>3)
+				{
+					z=JSON.parse(c)
+					var a=v[8]
+					var p=[]
+					for(var e of a)
+						p.push(e.charCodeAt(0))
+					$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],z[v[4]],v[5].charCodeAt(0),z[v[6]],v[7],$.get_svg_path(p,v[9]!=''),v[10].charCodeAt(0),v[11]!='')
+				}
+				else if(l>2)
+					$.copy_node(v[0],[parseInt(v[1]),parseInt(v[2])])
+				else
+					$.add_group(v[0],v[1])
 			}
-			else if(l>2)
-				$.copy_node(v[0],[parseInt(v[1]),parseInt(v[2])])
-			else
-				$.add_group(v[0],v[1])
-		}
-		$.main(j)
+			$.main(j)
+		})
 	})
 })
 '''
@@ -580,9 +621,10 @@ def GenJsAPI ():
 	return js
 
 def GenHtml (world, datas, background = ''):
+	global userJS
+	global colors
 	global initCode
 	global updateCode
-	global userJS
 	jsTmp = '/tmp/api.js'
 	js = GenJsAPI()
 	open(jsTmp, 'w').write(js)
@@ -606,6 +648,15 @@ def GenHtml (world, datas, background = ''):
 
 	datas = open(dataFilePath + '.gz', 'rb').read()
 	datas = base64.b64encode(datas).decode('utf-8')
+	colorsFilePath = '/tmp/js13kjam Colors'
+	colors = json.dumps(colors)
+	open(colorsFilePath, 'w').write(colors)
+	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', colorsFilePath ]
+	print(cmd)
+	subprocess.check_call(cmd)
+
+	colors = open(colorsFilePath + '.gz', 'rb').read()
+	colors = base64.b64encode(colors).decode('utf-8')
 	if background:
 		background = 'background-color:%s;' %background
 	o = [
@@ -615,6 +666,7 @@ def GenHtml (world, datas, background = ''):
 		'<script>', 
 		'var $0="%s";' %jsB,
 		'var $1="%s";' %datas,
+		'var $2="%s";' %colors,
 		HTML,
 		'</script>',
 	]
