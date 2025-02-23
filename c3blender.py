@@ -2,13 +2,16 @@ import os, sys, subprocess, atexit, webbrowser, base64, json, string
 _thisdir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisdir)
 
-isLinux = None
+isLinux = False
 if sys.platform == 'win32':
 	BLENDER = 'C:/Program Files/Blender Foundation/Blender 4.2/blender.exe'
 elif sys.platform == 'darwin':
 	BLENDER = '/Applications/Blender.app/Contents/MacOS/Blender'
 else:
 	BLENDER = 'blender'
+	for arg in sys.argv:
+		if 'blender' in arg:
+			BLENDER = arg
 	isLinux = True
 
 try:
@@ -27,13 +30,13 @@ if __name__ == '__main__':
 				cmd.append(arg)
 				break
 		cmd += [ '--python-exit-code', '1', '--python', __file__, '--python', os.path.join(_thisdir, 'blender-curve-to-svg', 'curve_to_svg.py') ]
-		exargs = []
+		exArgs = []
 		for arg in sys.argv:
 			if arg.startswith('--'):
-				exargs.append(arg)
-		if exargs:
+				exArgs.append(arg)
+		if exArgs:
 			cmd.append('--')
-			cmd += exargs
+			cmd += exArgs
 		print(cmd)
 		subprocess.check_call(cmd)
 		sys.exit()
@@ -203,7 +206,6 @@ empties = []
 initCode = []
 updateCode = []
 datas = []
-svgText = ''
 userJS = ''
 
 def ExportObject (ob):
@@ -235,16 +237,15 @@ def ExportObject (ob):
 		ob.select_set(True)
 		bpy.ops.curve.export_svg()
 		svgText = open('/tmp/Output.svg', 'r').read()
-		svgText_ = svgText
-		indexOfName = svgText_.find(ob.name)
-		indexOfGroupStart = svgText_.rfind('\n', 0, indexOfName)
+		indexOfName = svgText.find(ob.name)
+		indexOfGroupStart = svgText.rfind('\n', 0, indexOfName)
 		groupEndIndicator = '</g>'
-		indexOfGroupEnd = svgText_.find(groupEndIndicator, indexOfGroupStart) + len(groupEndIndicator)
-		group = svgText_[indexOfGroupStart : indexOfGroupEnd]
+		indexOfGroupEnd = svgText.find(groupEndIndicator, indexOfGroupStart) + len(groupEndIndicator)
+		group = svgText[indexOfGroupStart : indexOfGroupEnd]
 		parentGroupIndicator = '\n  <g'
-		indexOfParentGroupStart = svgText_.find(parentGroupIndicator)
-		indexOfParentGroupContents = svgText_.find('\n', indexOfParentGroupStart + len(parentGroupIndicator))
-		indexOfParentGroupEnd = svgText_.rfind('</g')
+		indexOfParentGroupStart = svgText.find(parentGroupIndicator)
+		indexOfParentGroupContents = svgText.find('\n', indexOfParentGroupStart + len(parentGroupIndicator))
+		indexOfParentGroupEnd = svgText.rfind('</g')
 		min, max = GetCurveRectMinMax(ob)
 		scale = Vector(( sx, sy ))
 		min *= scale
@@ -254,14 +255,14 @@ def ExportObject (ob):
 		max *= scale
 		max += off
 		data = []
-		svgText_ = svgText_[: indexOfParentGroupContents] + group + svgText_[indexOfParentGroupEnd :]
+		svgText = svgText[: indexOfParentGroupContents] + group + svgText[indexOfParentGroupEnd :]
 		pathDataIndicator = ' d="'
-		indexOfPathDataStart = svgText_.find(pathDataIndicator) + len(pathDataIndicator)
-		indexOfPathDataEnd = svgText_.find('"', indexOfPathDataStart)
-		pathData = svgText_[indexOfPathDataStart : indexOfPathDataEnd]
+		indexOfPathDataStart = svgText.find(pathDataIndicator) + len(pathDataIndicator)
+		indexOfPathDataEnd = svgText.find('"', indexOfPathDataStart)
+		pathData = svgText[indexOfPathDataStart : indexOfPathDataEnd]
 		pathData = pathData.replace('.0', '')
-		pathData_ = []
 		vectors = pathData.split(' ')
+		pathData = []
 		minPathValue = Vector(( float('inf'), float('inf') ))
 		for vector in vectors:
 			if len(vector) == 1:
@@ -271,12 +272,12 @@ def ExportObject (ob):
 			y = int(components[1])
 			vector = Vector(( x, y ))
 			minPathValue = GetMinComponents(minPathValue, vector, True)
-			pathData_.append(x)
-			pathData_.append(y)
+			pathData.append(x)
+			pathData.append(y)
 		minPathValue *= SCALE
 		offset = -minPathValue
-		for i, pathDataValue in enumerate(pathData_):
-			pathData_[i] = ToByteString(pathDataValue + offset[i % 2])
+		for i, pathDataValue in enumerate(pathData):
+			pathData[i] = ToByteString(pathDataValue + offset[i % 2])
 		data.append(str(round(min.x)))
 		data.append(str(round(min.y)))
 		size = max - min
@@ -308,7 +309,7 @@ def ExportObject (ob):
 			keyOfStrokeColor = string.ascii_letters[indexOfStrokeColor]
 		data.append(keyOfStrokeColor)
 		data.append(ob.name)
-		data.append(''.join(pathData_))
+		data.append(''.join(pathData))
 		data.append(str(ob.data.splines[0].use_cyclic_u))
 		data.append(ToByteString(ob.location.z))
 		data.append(str(ob.collide))
@@ -339,7 +340,6 @@ def GetBlenderData ():
 	global meshes
 	global curves
 	global empties
-	global svgText
 	global initCode
 	global userJS
 	global updateCode
@@ -466,8 +466,8 @@ $d($0,1).then((j)=>{
 					var a=v[8]
 					var p=[]
 					for(var e of a)
-						p.push(e.charCodeAt(0))
-					$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],z[v[4]],v[5].charCodeAt(0),z[v[6]],v[7],$.get_svg_path(p,v[9]!=''),v[10].charCodeAt(0),v[11]!='')
+						p.push(new Uint8Array(e)[0])
+					$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],z[v[4]],new Uint8Array(v[5])[0],z[v[6]],v[7],$.get_svg_path(p,v[9]!=''),new Uint8Array(v[10])[0],v[11]!='')
 				}
 				else if(l>2)
 					$.copy_node(v[0],[parseInt(v[1]),parseInt(v[2])])
