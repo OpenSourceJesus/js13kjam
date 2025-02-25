@@ -177,15 +177,40 @@ def IsInAnyElement (o, arr : list):
 # 		childCopy.parent = copy
 # 	return copy
 
-def ToByteString (n):
+def ToByteString (n, delimeters = '[,', escapeQuotes : bool = True):
 	n = round(n)
 	n = Clamp(n, 0, 255)
 	byteStr = chr(n)
-	if byteStr in '\n\r[,':
+	if byteStr in delimeters:
 		byteStr = chr(n - 1)
-	elif byteStr in '"\'':
+	elif escapeQuotes and byteStr in '"' + "'":
 		byteStr = '\\' + byteStr
 	return byteStr
+
+def RemoveDelimeters (n, delimeters = '[,'):
+	n = round(n)
+	s = str(n)
+	while True:
+		isValid = True
+		for delimeter in delimeters:
+			if delimeter in s:
+				isValid = False
+				n -= 1
+				s = str(n)
+		if isValid:
+			return s
+
+def Compress (filePath : str, data, delimeter : str = ''):
+	data_ = data
+	if type(data) == list:
+		data_ = delimeter.join(data)
+	open(filePath, 'w').write(data_)
+	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', filePath ]
+	print(cmd)
+	subprocess.check_call(cmd)
+
+	zippedData = open(filePath + '.gz', 'rb').read()
+	return base64.b64encode(zippedData).decode('utf-8')
 
 def GetSvgPathData (pathValues : list, cyclic : bool):
 	path = 'M ' + pathValues[0] + ',' + pathValues[1] + ' '
@@ -206,6 +231,7 @@ empties = []
 initCode = []
 updateCode = []
 datas = []
+pathsDatas = []
 userJS = ''
 
 def ExportObject (ob):
@@ -276,13 +302,13 @@ def ExportObject (ob):
 			pathData.append(y)
 		minPathValue *= SCALE
 		offset = -minPathValue
-		for i, pathDataValue in enumerate(pathData):
-			pathData[i] = ToByteString(pathDataValue + offset[i % 2])
-		data.append(str(round(min.x)))
-		data.append(str(round(min.y)))
+		for i, pathValue in enumerate(pathData):
+			pathData[i] = ToByteString(pathValue + offset[i % 2], '\n', False)
+		data.append(RemoveDelimeters(min.x))
+		data.append(RemoveDelimeters(min.y))
 		size = max - min
-		data.append(str(round(size.x)))
-		data.append(str(round(size.y)))
+		data.append(RemoveDelimeters(size.x))
+		data.append(RemoveDelimeters(size.y))
 		materialColor = DEFAULT_COLOR
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
@@ -309,7 +335,7 @@ def ExportObject (ob):
 			keyOfStrokeColor = string.ascii_letters[indexOfStrokeColor]
 		data.append(keyOfStrokeColor)
 		data.append(ob.name)
-		data.append(''.join(pathData))
+		pathsDatas.append(''.join(pathData))
 		data.append(str(ob.data.splines[0].use_cyclic_u))
 		data.append(ToByteString(ob.location.z))
 		data.append(str(ob.collide))
@@ -339,9 +365,10 @@ def GetBlenderData ():
 	global colors
 	global meshes
 	global curves
+	global userJS
 	global empties
 	global initCode
-	global userJS
+	global pathsDatas
 	global updateCode
 	global exportedObs
 	for ob in bpy.data.objects:
@@ -356,6 +383,7 @@ def GetBlenderData ():
 	curves = []
 	empties = []
 	datas = []
+	pathsDatas = []
 	initCode = []
 	updateCode = []
 	for ob in bpy.data.objects:
@@ -453,28 +481,30 @@ $d=async(u,t)=>{
 }
 $d($0,1).then((j)=>{
 	$d($1,1).then((d)=>{
-		$d($2,1).then((c)=>{
-			console.log(d)
-			$=eval(j)
-			for(v of d.split('['))
-			{
-				v=v.split(',')
-				l=v.length
-				if(l>3)
+		$d($2,1).then((p)=>{
+			$d($3,1).then((c)=>{
+				i=0
+				$=eval(j)
+				for(v of d.split('['))
 				{
-					z=JSON.parse(c)
-					var a=v[8]
-					var p=[]
-					for(var e of a)
-						p.push(new Uint8Array(e)[0])
-					$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],z[v[4]],new Uint8Array(v[5])[0],z[v[6]],v[7],$.get_svg_path(p,v[9]!=''),new Uint8Array(v[10])[0],v[11]!='')
+					v=v.split(',')
+					l=v.length
+					if(l>3)
+					{
+						z=JSON.parse(c)
+						a=[]
+						for(e of p.split('\\n')[i])
+							a.push(e.charCodeAt(0))
+						$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],z[v[4]],v[5].charCodeAt(0),z[v[6]],v[7],$.get_svg_path(a,v[9]!=''),v[10].charCodeAt(0),v[11]!='')
+						i++
+					}
+					else if(l>2)
+						$.copy_node(v[0],[parseInt(v[1]),parseInt(v[2])])
+					else
+						$.add_group(v[0],v[1])
 				}
-				else if(l>2)
-					$.copy_node(v[0],[parseInt(v[1]),parseInt(v[2])])
-				else
-					$.add_group(v[0],v[1])
-			}
-			$.main(j)
+				$.main(j)
+			})
 		})
 	})
 })
@@ -625,6 +655,7 @@ def GenHtml (world, datas, background = ''):
 	global colors
 	global initCode
 	global updateCode
+	global pathsDatas
 	jsTmp = '/tmp/api.js'
 	js = GenJsAPI()
 	open(jsTmp, 'w').write(js)
@@ -640,23 +671,10 @@ def GenHtml (world, datas, background = ''):
 	
 	jsZipped = open(jsTmp + '.gz', 'rb').read()
 	jsB = base64.b64encode(jsZipped).decode('utf-8')
-	dataFilePath = '/tmp/js13kjam Data'
-	open(dataFilePath, 'w').write(''.join(datas))
-	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', dataFilePath ]
-	print(cmd)
-	subprocess.check_call(cmd)
-
-	datas = open(dataFilePath + '.gz', 'rb').read()
-	datas = base64.b64encode(datas).decode('utf-8')
-	colorsFilePath = '/tmp/js13kjam Colors'
+	datas = Compress('/tmp/js13kjam Data', datas)
+	pathsDatas = Compress('/tmp/js13kjam Paths', pathsDatas, '\n')
 	colors = json.dumps(colors)
-	open(colorsFilePath, 'w').write(colors)
-	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', colorsFilePath ]
-	print(cmd)
-	subprocess.check_call(cmd)
-
-	colors = open(colorsFilePath + '.gz', 'rb').read()
-	colors = base64.b64encode(colors).decode('utf-8')
+	colors = Compress('/tmp/js13kjam Colors', colors)
 	if background:
 		background = 'background-color:%s;' %background
 	o = [
@@ -666,7 +684,8 @@ def GenHtml (world, datas, background = ''):
 		'<script>', 
 		'var $0="%s";' %jsB,
 		'var $1="%s";' %datas,
-		'var $2="%s";' %colors,
+		'var $2="%s";' %pathsDatas,
+		'var $3="%s";' %colors,
 		HTML,
 		'</script>',
 	]
