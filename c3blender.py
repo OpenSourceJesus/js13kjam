@@ -192,8 +192,8 @@ def RemoveDelimeters (n, delimeters = '[,'):
 	s = str(n)
 	while True:
 		isValid = True
-		for delimeter in delimeters:
-			if delimeter in s:
+		for c in s:
+			if chr(int(c)) in delimeters:
 				isValid = False
 				n -= 1
 				s = str(n)
@@ -256,7 +256,7 @@ def ExportObject (ob):
 			ExportObject (child)
 		firstAndLastChildIdsTxt = ''
 		firstAndLastChildIdsTxt += ob.children[0].name + ';' + ob.children[-1].name
-		datas.append(','.join([ob.name, firstAndLastChildIdsTxt]))
+		datas.append([ob.name, firstAndLastChildIdsTxt])
 	elif ob.type == 'CURVE':
 		curves.append(ob)
 		bpy.ops.object.select_all(action = 'DESELECT')
@@ -304,11 +304,11 @@ def ExportObject (ob):
 		offset = -minPathValue
 		for i, pathValue in enumerate(pathData):
 			pathData[i] = ToByteString(pathValue + offset[i % 2], '\n', False)
-		data.append(RemoveDelimeters(min.x))
-		data.append(RemoveDelimeters(min.y))
+		data.append(round(min.x))
+		data.append(round(min.y))
 		size = max - min
-		data.append(RemoveDelimeters(size.x))
-		data.append(RemoveDelimeters(size.y))
+		data.append(round(size.x))
+		data.append(round(size.y))
 		materialColor = DEFAULT_COLOR
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
@@ -324,7 +324,7 @@ def ExportObject (ob):
 		strokeWidth = 0
 		if ob.useSvgStroke:
 			strokeWidth = ob.svgStrokeWidth
-		data.append(ToByteString(strokeWidth))
+		data.append(round(strokeWidth))
 		strokeColor = ClampComponents(Round(Multiply(ob.svgStrokeColor, [255, 255, 255])), [0, 0, 0], [255, 255, 255])
 		indexOfStrokeColor = IndexOfValue(strokeColor, colors)
 		keyOfStrokeColor = ''
@@ -336,10 +336,10 @@ def ExportObject (ob):
 		data.append(keyOfStrokeColor)
 		data.append(ob.name)
 		pathsDatas.append(''.join(pathData))
-		data.append(str(ob.data.splines[0].use_cyclic_u))
-		data.append(ToByteString(ob.location.z))
-		data.append(str(ob.collide))
-		datas.append(','.join(data))
+		data.append(ob.data.splines[0].use_cyclic_u)
+		data.append(round(ob.location.z))
+		data.append(ob.collide)
+		datas.append(data)
 	exportedObs.append(ob)
 
 def HandleCopyObject (ob, pos):
@@ -355,7 +355,7 @@ def HandleCopyObject (ob, pos):
 		else:
 			exportedObNameWithoutPeriod = exportedOb.name[: indexOfPeriod]
 		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
-			datas.append(','.join([obNameWithoutPeriod, str(round(pos[0])), str(round(pos[1]))]))
+			datas.append([obNameWithoutPeriod, round(pos[0]), round(pos[1])])
 			exportedObs.append(ob)
 			return True
 	return False
@@ -485,21 +485,21 @@ $d($0,1).then((j)=>{
 			$d($3,1).then((c)=>{
 				i=0
 				$=eval(j)
-				for(v of d.split('['))
+				d=JSON.parse(d)
+				c=JSON.parse(c)
+				for(v of d)
 				{
-					v=v.split(',')
 					l=v.length
 					if(l>3)
 					{
-						z=JSON.parse(c)
 						a=[]
 						for(e of p.split('\\n')[i])
 							a.push(e.charCodeAt(0))
-						$.draw_svg([parseInt(v[0]),parseInt(v[1])],[parseInt(v[2]),parseInt(v[3])],z[v[4]],v[5].charCodeAt(0),z[v[6]],v[7],$.get_svg_path(a,v[9]!=''),v[10].charCodeAt(0),v[11]!='')
+						$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
 						i++
 					}
 					else if(l>2)
-						$.copy_node(v[0],[parseInt(v[1]),parseInt(v[2])])
+						$.copy_node(v[0],[v[1],v[2]])
 					else
 						$.add_group(v[0],v[1])
 				}
@@ -621,29 +621,6 @@ var $=new api
 
 def GenJsAPI ():
 	global userJS
-	skip = []
-	if not IsInAnyElement('draw_svg', [ userJS, initCode, updateCode ]):
-		skip.append('draw_svg')
-	if not IsInAnyElement('add_group', [ userJS, initCode, updateCode ]):
-		skip.append('add_group')
-	if not IsInAnyElement('copy_node', [ userJS, initCode, updateCode ]):
-		skip.append('copy_node')
-	if not IsInAnyElement('clamp', [ userJS, initCode, updateCode ]):
-		skip.append('clamp')
-	if not IsInAnyElement('get_pos_and_size', [ userJS, initCode, updateCode ]):
-		skip.append('get_pos_and_size')
-	if not IsInAnyElement('lerp', [ userJS, initCode, updateCode ]):
-		skip.append('lerp')
-	if not IsInAnyElement('inv_lerp', [ userJS, initCode, updateCode ]):
-		skip.append('inv_lerp')
-	if not IsInAnyElement('remap', [ userJS, initCode, updateCode ]):
-		skip.append('remap')
-	if not IsInAnyElement('get_svg_path', [ userJS, initCode, updateCode ]):
-		skip.append('get_svg_path')
-	if not IsInAnyElement('overlaps', [ userJS, initCode, updateCode ]):
-		skip.append('overlaps')
-	if not IsInAnyElement('random', [ userJS, initCode, updateCode ]):
-		skip.append('random')
 	js = [ userJS, JS, JS_API ]
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
@@ -656,7 +633,7 @@ def GenHtml (world, datas, background = ''):
 	global initCode
 	global updateCode
 	global pathsDatas
-	jsTmp = '/tmp/api.js'
+	jsTmp = '/tmp/js13kjam API.js'
 	js = GenJsAPI()
 	open(jsTmp, 'w').write(js)
 	if world.minify:
@@ -671,6 +648,7 @@ def GenHtml (world, datas, background = ''):
 	
 	jsZipped = open(jsTmp + '.gz', 'rb').read()
 	jsB = base64.b64encode(jsZipped).decode('utf-8')
+	datas = json.dumps(datas)
 	datas = Compress('/tmp/js13kjam Data', datas)
 	pathsDatas = Compress('/tmp/js13kjam Paths', pathsDatas, '\n')
 	colors = json.dumps(colors)
@@ -709,7 +687,6 @@ def Build (world):
 		SERVER_PROC.kill()
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
-	datas = '['.join(datas).replace(', ', ',').replace('.0', '').replace(']', '').replace('\'', '').replace(',[', '[').replace('True', 'T').replace('False', '')
 	html = GenHtml(world, datas)
 	open('/tmp/index.html', 'w').write(html)
 	if world.js13kb:
