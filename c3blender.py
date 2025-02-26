@@ -67,17 +67,6 @@ def GetScripts (ob, isAPI : bool):
 				scripts.append(( txt.as_string(), getattr(ob, 'initScript' + str(i)) ))
 	return scripts
 
-# def CurveToMesh (curve):
-# 	deg = bpy.context.evaluated_depsgraph_get()
-# 	mesh = bpy.data.meshes.new_from_object(curve.evaluated_get(deg), depsgraph = deg)
-# 	ob = bpy.data.objects.new(curve.name + "_Mesh", mesh)
-# 	bpy.context.collection.objects.link(ob)
-# 	ob.matrix_world = curve.matrix_world
-# 	return ob
-
-# def ToVec2 (v : Vector):
-# 	return Vector((v.x, v.y))
-
 def Clamp (n : float, min : float, max : float):
 	if n < min:
 		return min
@@ -85,15 +74,6 @@ def Clamp (n : float, min : float, max : float):
 		return max
 	else:
 		return n
-
-# def ToVec3 (v : Vector):
-# 	return Vector(( v.x, v.y, 0 ))
-
-# def Abs (v : Vector, is2d : bool = False):
-# 	if is2d:
-# 		return Vector((abs(v.x), abs(v.y)))
-# 	else:
-# 		return Vector((abs(v.x), abs(v.y), abs(v.z)))
 
 def Multiply (v : list, multiply : list):
 	output = []
@@ -125,15 +105,6 @@ def GetMaxComponents (v : Vector, v2 : Vector, use2D : bool = False):
 	else:
 		return Vector(( max(v.x, v2.x), max(v.y, v2.y), max(v.z, v2.z) ))
 
-# def Divide (v : Vector, v2 : Vector, use2D : bool = False):
-# 	if use2D:
-# 		return Vector(( v.x / v2.x, v.y / v2.y ))
-# 	else:
-# 		return Vector(( v.x / v2.x, v.y / v2.y, v.z / v2.z ))
-
-# def ToNormalizedPoint (minMax : [],  v : Vector):
-# 	return Divide(Vector(( 1, 1 )), (minMax[1] - minMax[0]), True) * (v - minMax[0])
-
 def GetCurveRectMinMax (ob):
 	bounds = [( ob.matrix_world @ Vector(corner) ) for corner in ob.bound_box]
 	box = []
@@ -144,12 +115,6 @@ def GetCurveRectMinMax (ob):
 	_min = Vector(( box[0], box[1] ))
 	_max = Vector(( box[2], box[3] ))
 	return _min, _max
-
-# def IndexOf_Array (o, arr : list):
-# 	for i, elmt in enumerate(arr):
-# 		if o == elmt:
-# 			return i
-# 	return -1
 
 def IndexOfValue (o, d : dict):
 	for i, value in enumerate(d.values()):
@@ -163,19 +128,19 @@ def IsInAnyElement (o, arr : list):
 			return True
 	return False
 
-# def Copy (ob, copyData = True, copyActions = True, collection = None):
-# 	copy = ob.copy()
-# 	if copyData:
-# 		copy.data = copy.data.copy()
-# 	if copyActions and copy.animation_data:
-# 		copy.animation_data.action = copy.animation_data.action.copy()
-# 	if collection == None:
-# 		collection = bpy.context.collection
-# 	collection.objects.link(copy)
-# 	for child in ob.children:
-# 		childCopy = Copy(child, copyData, copyActions, collection)
-# 		childCopy.parent = copy
-# 	return copy
+def Copy (ob, copyData = True, copyActions = True, collection = None):
+	copy = ob.copy()
+	if copyData:
+		copy.data = copy.data.copy()
+	if copyActions and copy.animation_data:
+		copy.animation_data.action = copy.animation_data.action.copy()
+	if collection == None:
+		collection = bpy.context.collection
+	collection.objects.link(copy)
+	for child in ob.children:
+		childCopy = Copy(child, copyData, copyActions, collection)
+		childCopy.parent = copy
+	return copy
 
 def ToByteString (n, delimeters = '[,', escapeQuotes : bool = True):
 	n = round(n)
@@ -371,11 +336,6 @@ def GetBlenderData ():
 	global pathsDatas
 	global updateCode
 	global exportedObs
-	for ob in bpy.data.objects:
-		if '_Clone' in ob.name:
-			for child in ob.children:
-				bpy.data.objects.remove(child, do_unlink = True)
-			bpy.data.objects.remove(ob, do_unlink = True)
 	exportedObs = []
 	userJS = ''
 	colors = {}
@@ -419,7 +379,7 @@ class Export (bpy.types.Operator):
 		return True
 
 	def execute (self, context):
-		exe = Build(context.world)
+		Build (context.world)
 		return { 'FINISHED' }
 
 @bpy.utils.register_class
@@ -685,6 +645,11 @@ def Build (world):
 	global SERVER_PROC
 	if SERVER_PROC:
 		SERVER_PROC.kill()
+	for ob in bpy.data.objects:
+		if '_Clone' in ob.name:
+			for child in ob.children:
+				bpy.data.objects.remove(child, do_unlink = True)
+			bpy.data.objects.remove(ob, do_unlink = True)
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
 	html = GenHtml(world, datas)
@@ -708,8 +673,7 @@ def Build (world):
 				buildInfo['zip'] = '/tmp/index.html.zip'
 		else:
 			if len(html.encode('utf-8')) > 1024 * 13:
-				raise SyntaxError('Final HTML is over 13kb')
-
+				raise SyntaxError('HTML is over 13kb')
 	if world.export_html:
 		out = os.path.expanduser(world.export_html)
 		print('saving:', out)
@@ -722,7 +686,10 @@ def Build (world):
 
 		atexit.register(lambda: SERVER_PROC.kill())
 		webbrowser.open('http://localhost:6969')
-
+	
+	if os.path.isfile('SlimeJump.py'):
+		import SlimeJump as slimJump
+		slimJump.GenLevel ()
 	return html
 
 def Update ():

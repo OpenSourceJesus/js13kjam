@@ -18,11 +18,11 @@ def Minify (filePath):
 	open(filePath, 'w').write(txt)
 
 def GenLevel ():
-	bytes = open('/tmp/demo.opt.wasm', 'rb').read()
+	bytes = open('/tmp/js13kjam API.js', 'rb').read()
 	obCount = 70
 	wallPos = [999, 0]
 	initOffY = 500
-	lightPos = [-999,initOffY]
+	lightPos = [-999, initOffY]
 	for i in range(0, len(bytes), 9):
 		wallX = bytes[i]
 		wallY = bytes[i + 1]
