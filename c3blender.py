@@ -177,6 +177,17 @@ def Compress (filePath : str, data, delimeter : str = ''):
 	zippedData = open(filePath + '.gz', 'rb').read()
 	return base64.b64encode(zippedData).decode('utf-8')
 
+def GetColor (color : list):
+	color_ = ClampComponents(Round(Multiply(color, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+	indexOfColor = IndexOfValue(color_, colors)
+	keyOfColor = ''
+	if indexOfColor == -1:
+		keyOfColor = string.ascii_letters[len(colors)]
+		colors[keyOfColor] = color_
+	else:
+		keyOfColor = string.ascii_letters[indexOfColor]
+	return keyOfColor
+
 def GetSvgPathData (pathValues : list, cyclic : bool):
 	path = 'M ' + pathValues[0] + ',' + pathValues[1] + ' '
 	for i in range(2, len(pathValues), 2):
@@ -232,7 +243,17 @@ def ExportObject (ob):
 		y += offY
 		if HandleCopyObject(ob, Vector((x, y))):
 			return
-		
+		data = []
+		data.append(ob.name)
+		data.append(round(x))
+		data.append(round(y))
+		data.append(round(radius * 2))
+		data.append(GetColor(ob.data.color))
+		data.append(GetColor(ob.color2))
+		data.append(GetColor(ob.color3))
+		data.append(list(ob.colorPositions))
+		data.append(ob.subtractive)
+		datas.append(data)
 	elif ob.type == 'CURVE':
 		curves.append(ob)
 		bpy.ops.object.select_all(action = 'DESELECT')
@@ -288,28 +309,12 @@ def ExportObject (ob):
 		materialColor = DEFAULT_COLOR
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
-		materialColor = ClampComponents(Round(Multiply(materialColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-		indexOfMaterialColor = IndexOfValue(materialColor, colors)
-		keyOfMaterialColor = ''
-		if indexOfMaterialColor == -1:
-			keyOfMaterialColor = string.ascii_letters[len(colors)]
-			colors[keyOfMaterialColor] = materialColor
-		else:
-			keyOfMaterialColor = string.ascii_letters[indexOfMaterialColor]
-		data.append(keyOfMaterialColor)
+		data.append(GetColor(materialColor))
 		strokeWidth = 0
 		if ob.useSvgStroke:
 			strokeWidth = ob.svgStrokeWidth
 		data.append(round(strokeWidth))
-		strokeColor = ClampComponents(Round(Multiply(ob.svgStrokeColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-		indexOfStrokeColor = IndexOfValue(strokeColor, colors)
-		keyOfStrokeColor = ''
-		if indexOfStrokeColor == -1:
-			keyOfStrokeColor = string.ascii_letters[len(colors)]
-			colors[keyOfStrokeColor] = strokeColor
-		else:
-			keyOfStrokeColor = string.ascii_letters[indexOfStrokeColor]
-		data.append(keyOfStrokeColor)
+		data.append(GetColor(ob.svgStrokeColor))
 		data.append(ob.name)
 		pathsDatas.append(''.join(pathData))
 		data.append(ob.data.splines[0].use_cyclic_u)
@@ -461,7 +466,7 @@ $d($0,1).then((j)=>{
 				for(v of d)
 				{
 					l=v.length
-					if(l>3)
+					if(l>10)
 					{
 						a=[]
 						for(e of p.split('\\n')[i])
@@ -469,6 +474,8 @@ $d($0,1).then((j)=>{
 						$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
 						i++
 					}
+					else if(i>3)
+						$.add_radial_gradient(v[0],v[1],[v[2],v[3]],c[4],c[5],c[6],c[7],v[8],v[9])
 					else if(l>2)
 						$.copy_node(v[0],[v[1],v[2]])
 					else
@@ -561,14 +568,16 @@ class api
 		var indexOfLastChild = html.indexOf('</svg>', html.indexOf('id="' + children[1])) + 6;
 		document.body.innerHTML = html.slice(0, indexOfFirstChild) + '<g id="' + id + '">' + html.slice(indexOfFirstChild, indexOfLastChild) + '</g>' + html.slice(indexOfLastChild);
 	}
-	add_radial_gradient (id, diameter, colors, colorPositions, subtractive)
+	add_radial_gradient (id, pos, diameter, color, color2, color3, colorPositions, subtractive)
 	{
-		var group = document.createEleemnt('g');
+		var group = document.createElement('g');
 		group.id = id;
+		group.setAttribute('x', pos[0]);
+		group.setAttribute('y', pos[1]);
 		var mixMode = 'lighter';
 		if (subtractive)
 			mixMode = 'darker';
-    	group.style = 'position:absolute;background-image:radial-gradient(rgba(' + colors[0][0] + ',' + colors[0][1] + ',' + colors[0][2] + ',' + colors[0][3] + '),rgba(' + colors[1][0] + ',' + colors[1][1] + ',' + colors[1][2] + ',' + colors[1][3] + '),rgba(' + colors[2][0] + ',' + colors[2][1] + ',' + colors[2][2] + ',' + colors[2][3] + ') ' + colorPositions[0] + '% ' + colorPositions[1] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:9;mix-blend-mode:plus-' + mixMode + ';transform:scale(1,1)';
+    	group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + '),rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + '),rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[0] + '% ' + colorPositions[1] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:9;mix-blend-mode:plus-' + mixMode + ';transform:scale(1,1)';
 		document.body.appendChild(group);
 	}
 	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, path, zIndex, collide)
