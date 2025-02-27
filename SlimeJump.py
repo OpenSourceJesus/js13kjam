@@ -34,7 +34,7 @@ def GenLevel ():
 		mixMode = bytes[i + 7]
 		byte = bytes[i + 8]
 		wallOff = [180, 0]
-		if wallPos[0] > 4500 and (byte == 0 or byte == 65):
+		if wallPos[0] > 5678 and byte == 32:
 			wallOff = [Remap(0, 255, 180, 900, wallX), Remap(255, 0, -500, 500, wallY)]
 			if abs(wallOff[1]) < 20:
 				wallOff[1] = 0

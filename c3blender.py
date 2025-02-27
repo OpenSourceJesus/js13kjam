@@ -190,8 +190,8 @@ def GetSvgPathData (pathValues : list, cyclic : bool):
 DEFAULT_COLOR = [ 0, 0, 0, 0 ]
 colors = {}
 exportedObs = []
-meshes = []
 curves = []
+lights = []
 empties = []
 initCode = []
 updateCode = []
@@ -209,7 +209,6 @@ def ExportObject (ob):
 	off = Vector(( offX, offY ))
 	x, y, z = ob.location * SCALE
 	y = -y
-	z = -z
 	x += offX
 	y += offY
 	sx, sy, sz = ob.scale * SCALE
@@ -222,6 +221,18 @@ def ExportObject (ob):
 		firstAndLastChildIdsTxt = ''
 		firstAndLastChildIdsTxt += ob.children[0].name + ';' + ob.children[-1].name
 		datas.append([ob.name, firstAndLastChildIdsTxt])
+	elif ob.type == 'LIGHT':
+		lights.append(ob)
+		radius = ob.data.shadow_soft_size
+		x, y, z = ob.location * SCALE
+		x -= radius
+		y -= radius
+		y = -y
+		x += offX
+		y += offY
+		if HandleCopyObject(ob, Vector((x, y))):
+			return
+		
 	elif ob.type == 'CURVE':
 		curves.append(ob)
 		bpy.ops.object.select_all(action = 'DESELECT')
@@ -290,7 +301,7 @@ def ExportObject (ob):
 		if ob.useSvgStroke:
 			strokeWidth = ob.svgStrokeWidth
 		data.append(round(strokeWidth))
-		strokeColor = ClampComponents(Round(Multiply(ob.svgStrokeColor, [255, 255, 255])), [0, 0, 0], [255, 255, 255])
+		strokeColor = ClampComponents(Round(Multiply(ob.svgStrokeColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
 		indexOfStrokeColor = IndexOfValue(strokeColor, colors)
 		keyOfStrokeColor = ''
 		if indexOfStrokeColor == -1:
@@ -328,8 +339,8 @@ def HandleCopyObject (ob, pos):
 def GetBlenderData ():
 	global datas
 	global colors
-	global meshes
 	global curves
+	global lights
 	global userJS
 	global empties
 	global initCode
@@ -339,7 +350,7 @@ def GetBlenderData ():
 	exportedObs = []
 	userJS = ''
 	colors = {}
-	meshes = []
+	lights = []
 	curves = []
 	empties = []
 	datas = []
@@ -550,6 +561,16 @@ class api
 		var indexOfLastChild = html.indexOf('</svg>', html.indexOf('id="' + children[1])) + 6;
 		document.body.innerHTML = html.slice(0, indexOfFirstChild) + '<g id="' + id + '">' + html.slice(indexOfFirstChild, indexOfLastChild) + '</g>' + html.slice(indexOfLastChild);
 	}
+	add_radial_gradient (id, diameter, colors, colorPositions, subtractive)
+	{
+		var group = document.createEleemnt('g');
+		group.id = id;
+		var mixMode = 'lighter';
+		if (subtractive)
+			mixMode = 'darker';
+    	group.style = 'position:absolute;background-image:radial-gradient(rgba(' + colors[0][0] + ',' + colors[0][1] + ',' + colors[0][2] + ',' + colors[0][3] + '),rgba(' + colors[1][0] + ',' + colors[1][1] + ',' + colors[1][2] + ',' + colors[1][3] + '),rgba(' + colors[2][0] + ',' + colors[2][1] + ',' + colors[2][2] + ',' + colors[2][3] + ') ' + colorPositions[0] + '% ' + colorPositions[1] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:9;mix-blend-mode:plus-' + mixMode + ';transform:scale(1,1)';
+		document.body.appendChild(group);
+	}
 	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, path, zIndex, collide)
 	{
 		var fillColorTxt = 'transparent';
@@ -735,8 +756,13 @@ bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export i
 bpy.types.World.invalid_html = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useSvgStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
-bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name='Svg stroke width', default = 0)
-bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name='Svg stroke color', subtype = 'COLOR', default = [0, 0, 0])
+bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke width', default = 0)
+bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name = 'Svg stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
+bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
+bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
+bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Center alpha', min = 0, max = 1, default = 1)
+bpy.types.Object.colorPositions = bpy.props.FloatVectorProperty(name = 'Color Positions', size = 2, min = 0, max = 1, default = [0, 0])
+bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive')
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -766,7 +792,7 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 	)
 
 @bpy.utils.register_class
-class ScriptsPanel (bpy.types.Panel):
+class ObjectPanel (bpy.types.Panel):
 	bl_idname = 'OBJECT_PT_Object_Panel'
 	bl_label = 'Object'
 	bl_space_type = 'PROPERTIES'
@@ -774,9 +800,9 @@ class ScriptsPanel (bpy.types.Panel):
 	bl_context = 'object'
 
 	def draw (self, context):
-		if not context.active_object:
-			return
 		ob = context.active_object
+		if not ob:
+			return
 		self.layout.prop(ob, 'collide')
 		self.layout.prop(ob, 'useSvgStroke')
 		self.layout.prop(ob, 'svgStrokeWidth')
@@ -801,6 +827,24 @@ class ScriptsPanel (bpy.types.Panel):
 				row.prop(ob, 'runtimeScript%sDisable' %i)
 			if not foundUnassignedScript:
 				foundUnassignedScript = not hasProperty
+
+@bpy.utils.register_class
+class LightPanel (bpy.types.Panel):
+	bl_idname = 'LIGHT_PT_Light_Panel'
+	bl_label = 'Gradient'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'data'
+
+	def draw (self, context):
+		ob = context.active_object
+		if not ob or ob.type != 'LIGHT':
+			return
+		self.layout.prop(ob, 'color2')
+		self.layout.prop(ob, 'color3')
+		self.layout.prop(ob, 'color1Alpha')
+		self.layout.prop(ob, 'colorPositions')
+		self.layout.prop(ob, 'subtractive')
 
 if __name__ == '__main__':
 	q = o = test = None
