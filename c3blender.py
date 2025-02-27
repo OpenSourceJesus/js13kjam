@@ -225,7 +225,7 @@ def ExportObject (ob):
 	sx, sy, sz = ob.scale * SCALE
 	if ob.type == 'EMPTY' and len(ob.children) > 0:
 		empties.append(ob)
-		if HandleCopyObject(ob, Vector((x, y))):
+		if HandleCopyObject(ob, Vector(( x, y ))):
 			return
 		for child in ob.children:
 			ExportObject (child)
@@ -238,10 +238,9 @@ def ExportObject (ob):
 		x, y, z = ob.location * SCALE
 		x -= radius
 		y -= radius
-		y = -y
 		x += offX
 		y += offY
-		if HandleCopyObject(ob, Vector((x, y))):
+		if HandleCopyObject(ob, Vector(( x, y ))):
 			return
 		data = []
 		data.append(ob.name)
@@ -250,7 +249,7 @@ def ExportObject (ob):
 		data.append(round(ob.location.z))
 		data.append(round(radius * 2))
 		alpha = round(ob.color1Alpha * 255)
-		color = ob.data.color
+		color = Round(Multiply(ob.data.color, [255, 255, 255]))
 		data.append(GetColor([color[0], color[1], color[2], alpha]))
 		data.append(GetColor(ob.color2))
 		data.append(GetColor(ob.color3))
@@ -522,7 +521,7 @@ function random_vector_2d (mD)
 {
 	var dt = random(0, mD);
 	var ag = random(0, 2 * Math.PI);
-	return [ Math.cos(ag) * dt, Math.sin(ag) * dt ];
+	return [Math.cos(ag) * dt, Math.sin(ag) * dt];
 }
 function random (min, max)
 {
