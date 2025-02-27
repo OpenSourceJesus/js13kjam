@@ -247,8 +247,11 @@ def ExportObject (ob):
 		data.append(ob.name)
 		data.append(round(x))
 		data.append(round(y))
+		data.append(round(ob.location.z))
 		data.append(round(radius * 2))
-		data.append(GetColor(ob.data.color))
+		alpha = round(ob.color1Alpha * 255)
+		color = ob.data.color
+		data.append(GetColor([color[0], color[1], color[2], alpha]))
 		data.append(GetColor(ob.color2))
 		data.append(GetColor(ob.color3))
 		data.append(list(ob.colorPositions))
@@ -474,8 +477,8 @@ $d($0,1).then((j)=>{
 						$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
 						i++
 					}
-					else if(i>3)
-						$.add_radial_gradient(v[0],v[1],[v[2],v[3]],c[4],c[5],c[6],c[7],v[8],v[9])
+					else if(l>3)
+						$.add_radial_gradient(v[0],[v[1],v[2]],v[3],v[4],c[v[5]],c[v[6]],c[v[7]],v[8],v[9])
 					else if(l>2)
 						$.copy_node(v[0],[v[1],v[2]])
 					else
@@ -568,7 +571,7 @@ class api
 		var indexOfLastChild = html.indexOf('</svg>', html.indexOf('id="' + children[1])) + 6;
 		document.body.innerHTML = html.slice(0, indexOfFirstChild) + '<g id="' + id + '">' + html.slice(indexOfFirstChild, indexOfLastChild) + '</g>' + html.slice(indexOfLastChild);
 	}
-	add_radial_gradient (id, pos, diameter, color, color2, color3, colorPositions, subtractive)
+	add_radial_gradient (id, pos, zIndex, diameter, color, color2, color3, colorPositions, subtractive)
 	{
 		var group = document.createElement('g');
 		group.id = id;
@@ -577,7 +580,7 @@ class api
 		var mixMode = 'lighter';
 		if (subtractive)
 			mixMode = 'darker';
-    	group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + '),rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + '),rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[0] + '% ' + colorPositions[1] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:9;mix-blend-mode:plus-' + mixMode + ';transform:scale(1,1)';
+    	group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode + ';transform:scale(1,1)';
 		document.body.appendChild(group);
 	}
 	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, path, zIndex, collide)
@@ -769,8 +772,8 @@ bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke wid
 bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name = 'Svg stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
-bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Center alpha', min = 0, max = 1, default = 1)
-bpy.types.Object.colorPositions = bpy.props.FloatVectorProperty(name = 'Color Positions', size = 2, min = 0, max = 1, default = [0, 0])
+bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1)
+bpy.types.Object.colorPositions = bpy.props.IntVectorProperty(name = 'Color Positions', size = 3, min = 0, max = 100, default = [0, 50, 100])
 bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive')
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
