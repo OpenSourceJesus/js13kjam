@@ -476,7 +476,7 @@ $d($0,1).then((j)=>{
 						$.add_radial_gradient(v[0],[v[1],v[2]],v[3],v[4],c[v[5]],c[v[6]],c[v[7]],v[8],v[9])
 					else if(l>2)
 					{
-						if(typeof v[1] === 'string')//v[1] instanceof String)
+						if(typeof v[1] === 'string')
 							$.copy_node(v[0],v[1],[v[2],v[3]])
 						else
 							$.make_object_move(v[0],[v[1],v[2]],v[3])
