@@ -316,11 +316,13 @@ def ExportObject (ob):
 		data.append(round(ob.location.z))
 		data.append(ob.collide)
 		datas.append(data)
+	exportedObs.append(ob)
+
+def HandleMakeObjectMove (ob):
 	if ob.moveSpeed != 0:
 		waypoint1Pos = GetObjectPosition(ob.waypoint1)
 		waypoint2Pos = GetObjectPosition(ob.waypoint2)
 		datas.append([ob.name, waypoint1Pos[0], waypoint1Pos[1], waypoint2Pos[0], waypoint2Pos[1], ob.moveSpeed])
-	exportedObs.append(ob)
 
 def HandleCopyObject (ob, pos):
 	for exportedOb in exportedObs:
@@ -337,7 +339,9 @@ def HandleCopyObject (ob, pos):
 		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
 			datas.append([obNameWithoutPeriod, ob.name, pos[0], pos[1]])
 			exportedObs.append(ob)
+			HandleMakeObjectMove (ob)
 			return True
+	HandleMakeObjectMove (ob)
 	return False
 
 def GetBlenderData ():
@@ -555,6 +559,7 @@ class api
 		ob.setAttribute('pos2x', pos2[0]);
 		ob.setAttribute('pos2y', pos2[1]);
 		ob.setAttribute('movespeed', moveSpeed);
+		ob.setAttribute('dest', 0);
 	}
 	copy_node (id, newId, pos)
 	{
