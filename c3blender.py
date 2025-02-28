@@ -322,7 +322,8 @@ def HandleMakeObjectMove (ob):
 	if ob.moveSpeed != 0:
 		waypoint1Pos = GetObjectPosition(ob.waypoint1)
 		waypoint2Pos = GetObjectPosition(ob.waypoint2)
-		datas.append([ob.name, waypoint1Pos[0], waypoint1Pos[1], waypoint2Pos[0], waypoint2Pos[1], ob.moveSpeed])
+		move = Vector(( waypoint2Pos[0] - waypoint1Pos[0], waypoint2Pos[1] - waypoint1Pos[1] ))
+		datas.append([ob.name, move.x, move.y, move.length / ob.moveSpeed * 1000])
 
 def HandleCopyObject (ob, pos):
 	for exportedOb in exportedObs:
@@ -471,12 +472,15 @@ $d($0,1).then((j)=>{
 						$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
 						i++
 					}
-					else if(l>6)
+					else if(l>5)
 						$.add_radial_gradient(v[0],[v[1],v[2]],v[3],v[4],c[v[5]],c[v[6]],c[v[7]],v[8],v[9])
-					else if(l>4)
-						$.make_object_move(v[0],[v[1],v[2]],[v[3],v[4]],v[5])
 					else if(l>2)
-						$.copy_node(v[0],v[1],[v[2],v[3]])
+					{
+						if(typeof v[1] === 'string')//v[1] instanceof String)
+							$.copy_node(v[0],v[1],[v[2],v[3]])
+						else
+							$.make_object_move(v[0],[v[1],v[2]],v[3])
+					}
 					else
 						$.add_group(v[0],v[1])
 				}
@@ -551,15 +555,12 @@ class api
 			path += 'Z'
 		return path
 	}
-	make_object_move (id, pos, pos2, moveSpeed)
+	make_object_move (id, move, duration)
 	{
 		var ob = document.getElementById(id);
-		ob.setAttribute('posx', pos[0]);
-		ob.setAttribute('posy', pos[1]);
-		ob.setAttribute('pos2x', pos2[0]);
-		ob.setAttribute('pos2y', pos2[1]);
-		ob.setAttribute('movespeed', moveSpeed);
-		ob.setAttribute('dest', 0);
+		ob.setAttribute('movex', move[0]);
+		ob.setAttribute('movey', move[1]);
+		ob.setAttribute('duration', duration);
 	}
 	copy_node (id, newId, pos)
 	{
