@@ -188,26 +188,30 @@ def GetColor (color : list):
 		keyOfColor = string.ascii_letters[indexOfColor]
 	return keyOfColor
 
-def GetSvgPathData (pathValues : list, cyclic : bool):
-	path = 'M ' + pathValues[0] + ',' + pathValues[1] + ' '
-	for i in range(2, len(pathValues), 2):
-		if (i - 2) % 6 == 0:
-			path += 'C '
-		path += '' + pathValues[i] + ',' + pathValues[i + 1] + ' '
-	if cyclic:
-		path += 'Z'
-	return path
+def GetObjectPosition (ob):
+	world = bpy.data.worlds[0]
+	SCALE = world.export_scale
+	offX = world.export_offset_x
+	offY = world.export_offset_y
+	off = Vector(( offX, offY ))
+	x, y, z = ob.location * SCALE
+	if ob.type == 'LIGHT':
+		radius = ob.data.shadow_soft_size
+		x -= radius
+		y -= radius
+	else:
+		y = -y
+	x += offX
+	y += offY
+	return Round(Vector(( x, y )))
 
 DEFAULT_COLOR = [ 0, 0, 0, 0 ]
-colors = {}
 exportedObs = []
-curves = []
-lights = []
-empties = []
+datas = []
+colors = {}
+pathsDatas = []
 initCode = []
 updateCode = []
-datas = []
-pathsDatas = []
 userJS = ''
 
 def ExportObject (ob):
@@ -218,14 +222,9 @@ def ExportObject (ob):
 	offX = world.export_offset_x
 	offY = world.export_offset_y
 	off = Vector(( offX, offY ))
-	x, y, z = ob.location * SCALE
-	y = -y
-	x += offX
-	y += offY
 	sx, sy, sz = ob.scale * SCALE
 	if ob.type == 'EMPTY' and len(ob.children) > 0:
-		empties.append(ob)
-		if HandleCopyObject(ob, Vector(( x, y ))):
+		if HandleCopyObject(ob, GetObjectPosition(ob)):
 			return
 		for child in ob.children:
 			ExportObject (child)
@@ -233,19 +232,14 @@ def ExportObject (ob):
 		firstAndLastChildIdsTxt += ob.children[0].name + ';' + ob.children[-1].name
 		datas.append([ob.name, firstAndLastChildIdsTxt])
 	elif ob.type == 'LIGHT':
-		lights.append(ob)
 		radius = ob.data.shadow_soft_size
-		x, y, z = ob.location * SCALE
-		x -= radius
-		y -= radius
-		x += offX
-		y += offY
-		if HandleCopyObject(ob, Vector(( x, y ))):
+		pos = GetObjectPosition(ob)
+		if HandleCopyObject(ob, pos):
 			return
 		data = []
 		data.append(ob.name)
-		data.append(round(x))
-		data.append(round(y))
+		data.append(pos[0])
+		data.append(pos[1])
 		data.append(round(ob.location.z))
 		data.append(round(radius * 2))
 		alpha = round(ob.color1Alpha * 255)
@@ -257,7 +251,6 @@ def ExportObject (ob):
 		data.append(ob.subtractive)
 		datas.append(data)
 	elif ob.type == 'CURVE':
-		curves.append(ob)
 		bpy.ops.object.select_all(action = 'DESELECT')
 		ob.select_set(True)
 		bpy.ops.curve.export_svg()
@@ -299,7 +292,7 @@ def ExportObject (ob):
 			minPathValue = GetMinComponents(minPathValue, vector, True)
 			pathData.append(x)
 			pathData.append(y)
-		minPathValue *= SCALE
+		minPathValue *= scale
 		offset = -minPathValue
 		for i, pathValue in enumerate(pathData):
 			pathData[i] = ToByteString(pathValue + offset[i % 2], '\n', False)
@@ -323,6 +316,10 @@ def ExportObject (ob):
 		data.append(round(ob.location.z))
 		data.append(ob.collide)
 		datas.append(data)
+	if ob.moveSpeed != 0:
+		waypoint1Pos = GetObjectPosition(ob.waypoint1)
+		waypoint2Pos = GetObjectPosition(ob.waypoint2)
+		datas.append([ob.name, waypoint1Pos[0], waypoint1Pos[1], waypoint2Pos[0], waypoint2Pos[1], ob.moveSpeed])
 	exportedObs.append(ob)
 
 def HandleCopyObject (ob, pos):
@@ -338,7 +335,7 @@ def HandleCopyObject (ob, pos):
 		else:
 			exportedObNameWithoutPeriod = exportedOb.name[: indexOfPeriod]
 		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
-			datas.append([obNameWithoutPeriod, round(pos[0]), round(pos[1])])
+			datas.append([obNameWithoutPeriod, ob.name, pos[0], pos[1]])
 			exportedObs.append(ob)
 			return True
 	return False
@@ -346,21 +343,15 @@ def HandleCopyObject (ob, pos):
 def GetBlenderData ():
 	global datas
 	global colors
-	global curves
-	global lights
 	global userJS
-	global empties
 	global initCode
 	global pathsDatas
 	global updateCode
 	global exportedObs
 	exportedObs = []
 	userJS = ''
-	colors = {}
-	lights = []
-	curves = []
-	empties = []
 	datas = []
+	colors = {}
 	pathsDatas = []
 	initCode = []
 	updateCode = []
@@ -476,10 +467,12 @@ $d($0,1).then((j)=>{
 						$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
 						i++
 					}
-					else if(l>3)
+					else if(l>6)
 						$.add_radial_gradient(v[0],[v[1],v[2]],v[3],v[4],c[v[5]],c[v[6]],c[v[7]],v[8],v[9])
+					else if(l>4)
+						$.make_object_move(v[0],[v[1],v[2]],[v[3],v[4]],v[5])
 					else if(l>2)
-						$.copy_node(v[0],[v[1],v[2]])
+						$.copy_node(v[0],v[1],[v[2],v[3]])
 					else
 						$.add_group(v[0],v[1])
 				}
@@ -527,9 +520,9 @@ function random (min, max)
 {
 	return Math.random() * (max - min) + min;
 }
-function copy_node (id, pos)
+function copy_node (id, newId, pos)
 {
-	return $.copy_node(id, pos);
+	return $.copy_node(id, newId, pos);
 }
 function add_group (id, firstAndLastChildIds)
 {
@@ -554,9 +547,19 @@ class api
 			path += 'Z'
 		return path
 	}
-	copy_node (id, pos)
+	make_object_move (id, pos, pos2, moveSpeed)
+	{
+		var ob = document.getElementById(id);
+		ob.setAttribute('posx', pos[0]);
+		ob.setAttribute('posy', pos[1]);
+		ob.setAttribute('pos2x', pos2[0]);
+		ob.setAttribute('pos2y', pos2[1]);
+		ob.setAttribute('movespeed', moveSpeed);
+	}
+	copy_node (id, newId, pos)
 	{
 		var copy = document.getElementById(id).cloneNode(true);
+		copy.id = newId;
 		copy.setAttribute('x', pos[0]);
 		copy.setAttribute('y', pos[1]);
 		document.body.appendChild(copy);
@@ -637,7 +640,7 @@ def GenHtml (world, datas, background = ''):
 	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', jsTmp ]
 	print(cmd)
 	subprocess.check_call(cmd)
-	
+
 	jsZipped = open(jsTmp + '.gz', 'rb').read()
 	jsB = base64.b64encode(jsZipped).decode('utf-8')
 	datas = json.dumps(datas)
@@ -651,7 +654,7 @@ def GenHtml (world, datas, background = ''):
 		'<!DOCTYPE html>',
 		'<html>',
 		'<body style="%swidth:600px;height:300px;overflow:hidden;">' %background,
-		'<script>', 
+		'<script>',
 		'var $0="%s";' %jsB,
 		'var $1="%s";' %datas,
 		'var $2="%s";' %pathsDatas,
@@ -718,7 +721,7 @@ def Build (world):
 
 		atexit.register(lambda: SERVER_PROC.kill())
 		webbrowser.open('http://localhost:6969')
-	
+
 	if os.path.isfile('SlimeJump.py'):
 		import SlimeJump as slimJump
 		slimJump.GenLevel ()
@@ -774,6 +777,9 @@ bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtyp
 bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1)
 bpy.types.Object.colorPositions = bpy.props.IntVectorProperty(name = 'Color Positions', size = 3, min = 0, max = 100, default = [0, 50, 100])
 bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive')
+bpy.types.Object.moveSpeed = bpy.props.FloatProperty(name = 'Move speed', default = 0)
+bpy.types.Object.waypoint1 = bpy.props.PointerProperty(name = 'Waypoint 1', type = bpy.types.Object)
+bpy.types.Object.waypoint2 = bpy.props.PointerProperty(name = 'Waypoint 2', type = bpy.types.Object)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -814,10 +820,14 @@ class ObjectPanel (bpy.types.Panel):
 		ob = context.active_object
 		if not ob:
 			return
-		self.layout.prop(ob, 'collide')
-		self.layout.prop(ob, 'useSvgStroke')
-		self.layout.prop(ob, 'svgStrokeWidth')
-		self.layout.prop(ob, 'svgStrokeColor')
+		if ob.type == 'CURVE':
+			self.layout.prop(ob, 'collide')
+			self.layout.prop(ob, 'useSvgStroke')
+			self.layout.prop(ob, 'svgStrokeWidth')
+			self.layout.prop(ob, 'svgStrokeColor')
+		self.layout.prop(ob, 'moveSpeed')
+		self.layout.prop(ob, 'waypoint1')
+		self.layout.prop(ob, 'waypoint2')
 		self.layout.label(text = 'Scripts')
 		foundUnassignedScript = False
 		for i in range(MAX_SCRIPTS_PER_OBJECT):
