@@ -445,6 +445,20 @@ class JS13KB_Panel (bpy.types.Panel):
 				self.layout.label(text = 'html KB=%s' %( buildInfo['html-size'] / 1024 ))
 
 HTML = '''
+m={}
+for(o of [Element,Node]){
+	for(n of Object.keys(o.prototype)){
+		console.log(n)
+		a=n[0]
+		b=n[n.length-1]
+		try{
+			if(!(a+b in m))
+				o.prototype[a+b]=o.prototype[n]
+			m[a+b]=1
+		}
+		catch(e){}
+	}
+}
 $d=async(u,t)=>{
 	d=new DecompressionStream('gzip')
 	r=await fetch('data:application/octet-stream;base64,'+u)
@@ -558,17 +572,17 @@ class api
 	make_object_move (id, move, duration)
 	{
 		var ob = document.getElementById(id);
-		ob.setAttribute('movex', move[0]);
-		ob.setAttribute('movey', move[1]);
-		ob.setAttribute('duration', duration);
+		ob.se('movex', move[0]);
+		ob.se('movey', move[1]);
+		ob.se('duration', duration);
 	}
 	copy_node (id, newId, pos)
 	{
 		var copy = document.getElementById(id).cloneNode(true);
 		copy.id = newId;
-		copy.setAttribute('x', pos[0]);
-		copy.setAttribute('y', pos[1]);
-		document.body.appendChild(copy);
+		copy.se('x', pos[0]);
+		copy.se('y', pos[1]);
+		document.body.ad(copy);
 		return copy;
 	}
 	add_group (id, firstAndLastChildIds)
@@ -583,13 +597,13 @@ class api
 	{
 		var group = document.createElement('g');
 		group.id = id;
-		group.setAttribute('x', pos[0]);
-		group.setAttribute('y', pos[1]);
+		group.se('x', pos[0]);
+		group.se('y', pos[1]);
 		var mixMode = 'lighter';
 		if (subtractive)
 			mixMode = 'darker';
-    	group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode + ';transform:scale(1,1)';
-		document.body.appendChild(group);
+		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode + ';transform:scale(1,1)';
+		document.body.ad(group);
 	}
 	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, path, zIndex, collide)
 	{
