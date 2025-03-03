@@ -473,7 +473,7 @@ $d($0,1).then((j)=>{
 						a=[]
 						for(e of p.split('\\n')[i])
 							a.push(e.charCodeAt(0))
-						$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],.get_svg_path(a,v[8]),v[9],v[10])
+						$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
 						i++
 					}
 					else if(l>5)
