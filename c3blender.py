@@ -446,19 +446,9 @@ class JS13KB_Panel (bpy.types.Panel):
 
 HTML = '''
 m={}
-for(o of [Element,Node]){
-	for(n of Object.keys(o.prototype)){
-		console.log(n)
-		a=n[0]
-		b=n[n.length-1]
-		try{
-			if(!(a+b in m))
-				o.prototype[a+b]=o.prototype[n]
-			m[a+b]=1
-		}
-		catch(e){}
-	}
-}
+for(o of [Element,Node]){for(n of Object.keys(o.prototype)){a=n[0]+n[n.length-1]
+try{if(!(a in m))o.prototype[a]=o.prototype[n]
+m[a]=1}catch(e){}}}
 $d=async(u,t)=>{
 	d=new DecompressionStream('gzip')
 	r=await fetch('data:application/octet-stream;base64,'+u)
@@ -483,7 +473,7 @@ $d($0,1).then((j)=>{
 						a=[]
 						for(e of p.split('\\n')[i])
 							a.push(e.charCodeAt(0))
-						$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
+						$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],.get_svg_path(a,v[8]),v[9],v[10])
 						i++
 					}
 					else if(l>5)
@@ -498,7 +488,7 @@ $d($0,1).then((j)=>{
 					else
 						$.add_group(v[0],v[1])
 				}
-				$.main(j)
+				$.main()
 			})
 		})
 	})
@@ -507,7 +497,7 @@ $d($0,1).then((j)=>{
 JS = '''
 function get_pos_and_size (elmt)
 {
-	return [[parseFloat(elmt.getAttribute('x')), parseFloat(elmt.getAttribute('y'))], [parseFloat(elmt.getAttribute('width')), parseFloat(elmt.getAttribute('height'))]]
+	return [[parseFloat(elmt.ge('x')), parseFloat(elmt.ge('y'))], [parseFloat(elmt.ge('width')), parseFloat(elmt.ge('height'))]]
 }
 function lerp (min, max, t)
 {
@@ -554,8 +544,6 @@ function add_group (id, firstAndLastChildIds)
 JS_API = '''
 class api
 {
-	bytes = []
-
 	get_svg_path (pathValues, cyclic)
 	{
 		var path = 'M ' + pathValues[0] + ',' + pathValues[1] + ' '
@@ -615,9 +603,8 @@ class api
 			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		document.body.innerHTML += '<svg xmlns="www.w3.org/2000/svg"id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="' + path + '"/></g></svg>';
 	}
-	main (bytes)
+	main ()
 	{
-		this.bytes=new Uint8Array(bytes);
 		// Init
 		const f=(ts)=>{
 			this.dt=(ts-this.prev)/1000;
