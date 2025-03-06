@@ -540,6 +540,16 @@ function add_group (id, firstAndLastChildIds)
 {
 	$.add_group (id, firstAndLastChildIds);
 }
+function add_group (id, pos, text)
+{
+	var group = document.createElement('g');
+	group.id = id;
+	group.se('x', pos[0]);
+	group.se('y', pos[1]);
+	group.innerHTML = text;
+	document.body.ad(group);
+	return group;
+}
 '''
 JS_API = '''
 class api
@@ -601,7 +611,7 @@ class api
 		var lineColorTxt = 'transparent';d
 		if (lineWidth > 0)
 			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
-		document.body.innerHTML += '<svg xmlns="www.w3.org/2000/svg"id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="' + path + '"/></g></svg>';
+		document.body.innerHTML += '<svg id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="' + path + '"/></g></svg>';
 	}
 	main ()
 	{
