@@ -1,4 +1,4 @@
-from c3blender import *
+from Main import *
 
 def Lerp (min, max, t):
 	return min + t * (max - min)

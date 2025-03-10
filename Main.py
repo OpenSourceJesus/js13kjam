@@ -733,7 +733,7 @@ def Build (world):
 		webbrowser.open(out)
 
 	else:
-		cmd = [ 'python', '-m', 'http.server', '6969' ]
+		cmd = [ 'python3', '-m', 'http.server', '6969' ]
 		SERVER_PROC = subprocess.Popen(cmd, cwd = '/tmp')
 
 		atexit.register(lambda: SERVER_PROC.kill())
