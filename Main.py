@@ -445,10 +445,6 @@ class JS13KB_Panel (bpy.types.Panel):
 				self.layout.label(text = 'html KB=%s' %( buildInfo['html-size'] / 1024 ))
 
 HTML = '''
-m={}
-for(o of [Element,Node]){for(n of Object.keys(o.prototype)){a=n[0]+n[n.length-1]
-try{if(!(a in m))o.prototype[a]=o.prototype[n]
-m[a]=1}catch(e){}}}
 $d=async(u,t)=>{
 	d=new DecompressionStream('gzip')
 	r=await fetch('data:application/octet-stream;base64,'+u)
@@ -656,7 +652,7 @@ def GenHtml (world, datas, background = ''):
 		# js = subprocess.run(['terser', jsTmp, '--compress', '--m', '--mangle-props'], capture_output = True).stdout
 		# open(jsTmp, 'wb').write(js)
 		# subprocess.run(['npx', 'roadroller', jsTmp, '-o', jsTmp])
-		subprocess.run(['python3', 'tinfyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp])
+		subprocess.run(['python3', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp])
 	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', jsTmp ]
 	print(cmd)
 	subprocess.check_call(cmd)
