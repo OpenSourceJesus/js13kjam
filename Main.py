@@ -1,4 +1,4 @@
-import os, sys, subprocess, atexit, webbrowser, base64, json, string, requests
+import os, sys, subprocess, atexit, webbrowser, base64, json, string#, requests
 _thisdir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisdir)
 
@@ -556,15 +556,15 @@ class api
 {
 	get_svg_path (pathValues, cyclic)
 	{
-		var path = 'M ' + pathValues[0] + ',' + pathValues[1] + ' '
+		var path = 'M ' + pathValues[0] + ',' + pathValues[1] + ' ';
 		for (var i = 2; i < pathValues.length; i += 2)
 		{
 			if ((i - 2) % 6 == 0)
-				path += 'C '
+				path += 'C ';
 			path += '' + pathValues[i] + ',' + pathValues[i + 1] + ' '
 		}
 		if (cyclic)
-			path += 'Z'
+			path += 'Z';
 		return path
 	}
 	make_object_move (id, move, duration)
@@ -608,8 +608,8 @@ class api
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
 			fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
-		var lineColorTxt = 'transparent';d
-		if (lineWidth > 0)
+		var lineColorTxt = 'transparent';
+		if (lineWidth > 0);
 			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		document.body.innerHTML += '<svg id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="' + path + '"/></g></svg>';
 	}
@@ -619,7 +619,7 @@ class api
 		const f=(ts)=>{
 			this.dt=(ts-this.prev)/1000;
 			this.prev=ts;
-			window.requestAnimationFrame(f)
+			window.requestAnimationFrame(f);
 			// Update
 		};
 		window.requestAnimationFrame((ts)=>{
@@ -649,8 +649,14 @@ def GenHtml (world, datas, background = ''):
 	js = GenJsAPI()
 	open(jsTmp, 'w').write(js)
 	if world.minify:
-		response = requests.post('https://www.toptal.com/developers/javascript-minifier/api/raw', data = dict(input = js)).text
-		open(jsTmp, 'w').write('{}'.format(response))
+		# js = subprocess.run(['uglifyjs', '-m', '--', jsTmp], capture_output = True).stdout
+		# open(jsTmp, 'wb').write(js)
+		# response = requests.post('https://www.toptal.com/developers/javascript-minifier/api/raw', data = dict(input = js)).text
+		# open(jsTmp, 'w').write('{}'.format(response))
+		# js = subprocess.run(['terser', jsTmp, '--compress', '--m', '--mangle-props'], capture_output = True).stdout
+		# open(jsTmp, 'wb').write(js)
+		# subprocess.run(['npx', 'roadroller', jsTmp, '-o', jsTmp])
+		subprocess.run(['python3', 'tinfyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp])
 	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', jsTmp ]
 	print(cmd)
 	subprocess.check_call(cmd)
