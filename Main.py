@@ -1,4 +1,4 @@
-import os, sys, subprocess, atexit, webbrowser, base64, json, string
+import os, sys, subprocess, atexit, webbrowser, base64, json, string, requests
 _thisdir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisdir)
 
@@ -649,11 +649,8 @@ def GenHtml (world, datas, background = ''):
 	js = GenJsAPI()
 	open(jsTmp, 'w').write(js)
 	if world.minify:
-		js = subprocess.run(('uglifyjs -m -- ' + jsTmp).split(), capture_output = True).stdout
-		open(jsTmp, 'wb').write(js)
-		if os.path.isfile('SlimeJump.py'):
-			import SlimeJump as slimJump
-			slimJump.Minify (jsTmp)
+		response = requests.post('https://www.toptal.com/developers/javascript-minifier/api/raw', data = dict(input = js)).text
+		open(jsTmp, 'w').write('{}'.format(response))
 	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', jsTmp ]
 	print(cmd)
 	subprocess.check_call(cmd)
@@ -740,8 +737,8 @@ def Build (world):
 		webbrowser.open('http://localhost:6969')
 
 	if os.path.isfile('SlimeJump.py'):
-		import SlimeJump as slimJump
-		slimJump.GenLevel ()
+		import SlimeJump as slimeJump
+		slimeJump.GenLevel ()
 	return html
 
 def Update ():

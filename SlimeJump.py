@@ -10,13 +10,6 @@ def Remap (inFrom, inTo, outFrom, outTo, n):
 	t = InvLerp(inFrom, inTo, n)
 	return Lerp(outFrom, outTo, t)
 
-def Minify (filePath):
-	map = { 'pos[' : 'ps[', 'pos=' : 'ps=', 'moveSpeed_Player' : 'mS', 'moveSpeeds' : 'ms', 'prevMove' : 'pM', 'prevGrounded' : 'pG', 'upKeyPressed' : 'uP', 'leftKeyPressed' : 'lP', 'rightKeyPressed' : 'rP', 'prevUpKeyPressed' : 'pU', 'prevLeftKeyPressed' : 'pL', 'prevRightKeyPressed' : 'pR', 'eggsHeld' : 'eH', 'eggsCollected' : 'eC', 'sizeRange_Cloud' : 'sC', 'sizeRange_Stalactite' : 'sS', 'spawnInterval' : 'sI', 'spawnPosRange' : 'sP', 'moveSpeedRange' : 'mR', 'valueRange' : 'vR', 'spawnTimer' : 'sT', 'shootTimer' : 'aa', 'cellSize' : 'cS', 'obMap' : 'oM', 'get_cell_pos' : 'gC', 'get_close_objects_to_cell' : 'go', 'get_close_objects' : 'gO', 'gravity' : 'gr', 'jumpSpeed' : 'jS', 'moveSpeed_Player' : 'Ms', 'sizes' : 'ss', 'scaleX' : 'sX', 'initPositions' : 'iP', 'initPathsDatas' : 'iD', 'initRect' : 'iR', 'rotSpeed' : 'rS', 'shootInterval' : 'si', 'moveAnimSvgIdxs' : 'mI', 'moveAnimMove' : 'mM', 'moveAnimLen' : 'mL', 'moveAnimTimer' : 'mT', 'idleAnimSvgIdxs' : 'iI', 'idleAnimMove' : 'iM', 'idleAnimDelayRange' : 'ir', 'idleAnimLen' : 'iL', 'idleAnimTimer' : 'iT', 'hitWallAnimSvgIdxs' : 'hI', 'hitWallAnimMove' : 'hM', 'hitWallAnimLen' : 'hL', 'hitWallAnimTimer' : 'hT', 'hitGroundAnimSvgIdxs' : 'hi', 'hitGroundAnimMove' : 'hm', 'hitGroundAnimLen' : 'hl', 'hitGroundAnimTimer' : 'ht', 'initPos' : 'ip', 'yVel' : 'yV', 'randomizeSvgDist' : 'rD', 'prevHittingWall' : 'pW', 'wallsForegroundGroup' : 'wF', 'wallsBackgroundGroup' : 'wB', 'camOff' : 'cO', 'moveSpeed_Arrow' : 'MS', 'lastId' : 'lI', 'off' : 'of' }
-	txt = open(filePath, 'r').read()
-	for key in map:
-		txt = txt.replace(key, map[key])
-	open(filePath, 'w').write(txt)
-
 def GenLevel ():
 	bytes = open('/tmp/js13kjam API.js', 'rb').read()
 	obCount = 70
