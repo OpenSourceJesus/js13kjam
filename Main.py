@@ -1,6 +1,6 @@
 import os, sys, subprocess, atexit, webbrowser, base64, json, string#, requests
-_thisdir = os.path.split(os.path.abspath(__file__))[0]
-sys.path.append(_thisdir)
+_thisDir = os.path.split(os.path.abspath(__file__))[0]
+sys.path.append(_thisDir)
 
 isLinux = False
 if sys.platform == 'win32':
@@ -29,7 +29,7 @@ if __name__ == '__main__':
 			if arg.endswith('.blend'):
 				cmd.append(arg)
 				break
-		cmd += [ '--python-exit-code', '1', '--python', __file__, '--python', os.path.join(_thisdir, 'blender-curve-to-svg', 'curve_to_svg.py') ]
+		cmd += [ '--python-exit-code', '1', '--python', __file__, '--python', os.path.join(_thisDir, 'blender-curve-to-svg', 'curve_to_svg.py') ]
 		exArgs = []
 		for arg in sys.argv:
 			if arg.startswith('--'):
@@ -493,7 +493,7 @@ $d($0,1).then((j)=>{
 JS = '''
 function get_pos_and_size (elmt)
 {
-	return [[parseFloat(elmt.ge('x')), parseFloat(elmt.ge('y'))], [parseFloat(elmt.ge('width')), parseFloat(elmt.ge('height'))]]
+	return [[parseFloat(elmt.getAttribute('x')), parseFloat(elmt.getAttribute('y'))], [parseFloat(elmt.getAttribute('width')), parseFloat(elmt.getAttribute('height'))]]
 }
 function lerp (min, max, t)
 {
@@ -540,10 +540,10 @@ function add_group (id, pos, text)
 {
 	var group = document.createElement('g');
 	group.id = id;
-	group.se('x', pos[0]);
-	group.se('y', pos[1]);
+	group.setAttribute('x', pos[0]);
+	group.setAttribute('y', pos[1]);
 	group.innerHTML = text;
-	document.body.ad(group);
+	document.body.appendChild(group);
 	return group;
 }
 '''
@@ -566,17 +566,17 @@ class api
 	make_object_move (id, move, duration)
 	{
 		var ob = document.getElementById(id);
-		ob.se('movex', move[0]);
-		ob.se('movey', move[1]);
-		ob.se('duration', duration);
+		ob.setAttribute('movex', move[0]);
+		ob.setAttribute('movey', move[1]);
+		ob.setAttribute('duration', duration);
 	}
 	copy_node (id, newId, pos)
 	{
 		var copy = document.getElementById(id).cloneNode(true);
 		copy.id = newId;
-		copy.se('x', pos[0]);
-		copy.se('y', pos[1]);
-		document.body.ad(copy);
+		copy.setAttribute('x', pos[0]);
+		copy.setAttribute('y', pos[1]);
+		document.body.appendChild(copy);
 		return copy;
 	}
 	add_group (id, firstAndLastChildIds)
@@ -591,13 +591,13 @@ class api
 	{
 		var group = document.createElement('g');
 		group.id = id;
-		group.se('x', pos[0]);
-		group.se('y', pos[1]);
+		group.setAttribute('x', pos[0]);
+		group.setAttribute('y', pos[1]);
 		var mixMode = 'lighter';
 		if (subtractive)
 			mixMode = 'darker';
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode + ';transform:scale(1,1)';
-		document.body.ad(group);
+		document.body.appendChild(group);
 	}
 	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, path, zIndex, collide)
 	{
@@ -732,7 +732,7 @@ def Build (world):
 		webbrowser.open(out)
 
 	else:
-		cmd = [ 'python3', '-m', 'http.server', '6969' ]
+		cmd = [ 'python3', '-m', 'http.setAttributerver', '6969' ]
 		SERVER_PROC = subprocess.Popen(cmd, cwd = '/tmp')
 
 		atexit.register(lambda: SERVER_PROC.kill())
