@@ -493,7 +493,7 @@ $d($0,1).then((j)=>{
 JS = '''
 function get_pos_and_size (elmt)
 {
-	return [[parseFloat(elmt.getAttribute('x')), parseFloat(elmt.getAttribute('y'))], [parseFloat(elmt.getAttribute('width')), parseFloat(elmt.getAttribute('height'))]]
+	return [[parseInt(elmt.getAttribute('x')), parseInt(elmt.getAttribute('y'))], [parseInt(elmt.getAttribute('width')), parseInt(elmt.getAttribute('height'))]]
 }
 function lerp (min, max, t)
 {
@@ -645,13 +645,6 @@ def GenHtml (world, datas, background = ''):
 	js = GenJsAPI()
 	open(jsTmp, 'w').write(js)
 	if world.minify:
-		# js = subprocess.run(['uglifyjs', '-m', '--', jsTmp], capture_output = True).stdout
-		# open(jsTmp, 'wb').write(js)
-		# response = requests.post('https://www.toptal.com/developers/javascript-minifier/api/raw', data = dict(input = js)).text
-		# open(jsTmp, 'w').write('{}'.format(response))
-		# js = subprocess.run(['terser', jsTmp, '--compress', '--m', '--mangle-props'], capture_output = True).stdout
-		# open(jsTmp, 'wb').write(js)
-		# subprocess.run(['npx', 'roadroller', jsTmp, '-o', jsTmp])
 		subprocess.run(['python3', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp])
 	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', jsTmp ]
 	print(cmd)
@@ -671,10 +664,10 @@ def GenHtml (world, datas, background = ''):
 		'<html>',
 		'<body style="%swidth:600px;height:300px;overflow:hidden;">' %background,
 		'<script>',
-		'var $0="%s";' %jsB,
-		'var $1="%s";' %datas,
-		'var $2="%s";' %pathsDatas,
-		'var $3="%s";' %colors,
+		'$0="%s";' %jsB,
+		'$1="%s";' %datas,
+		'$2="%s";' %pathsDatas,
+		'$3="%s";' %colors,
 		HTML,
 		'</script>',
 	]
