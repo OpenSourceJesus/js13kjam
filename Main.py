@@ -1,4 +1,4 @@
-import os, sys, subprocess, atexit, webbrowser, base64, json, string#, requests
+import os, sys, json, string, atexit, webbrowser, subprocess
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
 
@@ -84,7 +84,7 @@ def Multiply (v : list, multiply : list):
 def Round (v : list):
 	output = []
 	for elmt in v:
-		output.append(round(elmt))
+		output.append(int(round(elmt)))
 	return output
 
 def ClampComponents (v : list, min : list, max : list):
@@ -122,12 +122,6 @@ def IndexOfValue (o, d : dict):
 			return i
 	return -1
 
-def IsInAnyElement (o, arr : list):
-	for elmt in arr:
-		if o in elmt:
-			return True
-	return False
-
 def Copy (ob, copyData = True, copyActions = True, collection = None):
 	copy = ob.copy()
 	if copyData:
@@ -142,7 +136,7 @@ def Copy (ob, copyData = True, copyActions = True, collection = None):
 		childCopy.parent = copy
 	return copy
 
-def ToByteString (n, delimeters = '[,', escapeQuotes : bool = True):
+def ToByteString (n, delimeters = '\n`', escapeQuotes : bool = False):
 	n = round(n)
 	n = Clamp(n, 0, 255)
 	byteStr = chr(n)
@@ -151,31 +145,6 @@ def ToByteString (n, delimeters = '[,', escapeQuotes : bool = True):
 	elif escapeQuotes and byteStr in '"' + "'":
 		byteStr = '\\' + byteStr
 	return byteStr
-
-def RemoveDelimeters (n, delimeters = '[,'):
-	n = round(n)
-	s = str(n)
-	while True:
-		isValid = True
-		for c in s:
-			if chr(int(c)) in delimeters:
-				isValid = False
-				n -= 1
-				s = str(n)
-		if isValid:
-			return s
-
-def Compress (filePath : str, data, delimeter : str = ''):
-	data_ = data
-	if type(data) == list:
-		data_ = delimeter.join(data)
-	open(filePath, 'w').write(data_)
-	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', filePath ]
-	print(cmd)
-	subprocess.check_call(cmd)
-
-	zippedData = open(filePath + '.gz', 'rb').read()
-	return base64.b64encode(zippedData).decode('utf-8')
 
 def GetColor (color : list):
 	color_ = ClampComponents(Round(Multiply(color, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
@@ -238,10 +207,10 @@ def ExportObject (ob):
 			return
 		data = []
 		data.append(ob.name)
-		data.append(pos[0])
-		data.append(pos[1])
-		data.append(round(ob.location.z))
-		data.append(round(radius * 2))
+		data.append(int(pos[0]))
+		data.append(int(pos[1]))
+		data.append(int(round(ob.location.z)))
+		data.append(int(round(radius * 2)))
 		alpha = round(ob.color1Alpha * 255)
 		color = Round(Multiply(ob.data.color, [255, 255, 255]))
 		data.append(GetColor([color[0], color[1], color[2], alpha]))
@@ -295,12 +264,12 @@ def ExportObject (ob):
 		minPathValue *= scale
 		offset = -minPathValue
 		for i, pathValue in enumerate(pathData):
-			pathData[i] = ToByteString(pathValue + offset[i % 2], '\n', False)
-		data.append(round(min.x))
-		data.append(round(min.y))
+			pathData[i] = ToByteString(pathValue + offset[i % 2])
+		data.append(int(round(min.x)))
+		data.append(int(round(min.y)))
 		size = max - min
-		data.append(round(size.x))
-		data.append(round(size.y))
+		data.append(int(round(size.x)))
+		data.append(int(round(size.y)))
 		materialColor = DEFAULT_COLOR
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
@@ -322,8 +291,8 @@ def HandleMakeObjectMove (ob):
 	if ob.moveSpeed != 0:
 		waypoint1Pos = GetObjectPosition(ob.waypoint1)
 		waypoint2Pos = GetObjectPosition(ob.waypoint2)
-		move = Vector(( waypoint2Pos[0] - waypoint1Pos[0], waypoint2Pos[1] - waypoint1Pos[1] ))
-		datas.append([ob.name, move.x, move.y, move.length / ob.moveSpeed * 1000])
+		move = Vector(Round(Vector(( waypoint2Pos[0] - waypoint1Pos[0], waypoint2Pos[1] - waypoint1Pos[1] ))))
+		datas.append([ob.name, int(move[0]), int(move[1]), int(round(move.length / ob.moveSpeed * 1000))])
 
 def HandleCopyObject (ob, pos):
 	for exportedOb in exportedObs:
@@ -338,7 +307,7 @@ def HandleCopyObject (ob, pos):
 		else:
 			exportedObNameWithoutPeriod = exportedOb.name[: indexOfPeriod]
 		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
-			datas.append([obNameWithoutPeriod, ob.name, pos[0], pos[1]])
+			datas.append([obNameWithoutPeriod, ob.name, int(pos[0]), int(pos[1])])
 			exportedObs.append(ob)
 			HandleMakeObjectMove (ob)
 			return True
@@ -346,13 +315,7 @@ def HandleCopyObject (ob, pos):
 	return False
 
 def GetBlenderData ():
-	global datas
-	global colors
-	global userJS
-	global initCode
-	global pathsDatas
-	global updateCode
-	global exportedObs
+	global datas, colors, userJS, initCode, pathsDatas, updateCode, exportedObs
 	exportedObs = []
 	userJS = ''
 	datas = []
@@ -445,50 +408,39 @@ class JS13KB_Panel (bpy.types.Panel):
 				self.layout.label(text = 'html KB=%s' %( buildInfo['html-size'] / 1024 ))
 
 HTML = '''
-$d=async(u,t)=>{
-	d=new DecompressionStream('gzip')
-	r=await fetch('data:application/octet-stream;base64,'+u)
-	b=await r.blob()
-	s=b.stream().pipeThrough(d)
-	o=await new Response(s).blob()
-	return await o.text()
+i=0
+eval(j)
+d=JSON.parse(D)
+c=JSON.parse(C)
+for(v of d)
+{
+	l=v.length
+	if(l>10)
+	{
+		a=[]
+		for(e of p.split('\\n')[i])
+		{
+			if(e=='�')
+				a.push(0)
+			else
+				a.push(e.charCodeAt(0))
+		}
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
+		i++
+	}
+	else if(l>5)
+		$.add_radial_gradient(v[0],[v[1],v[2]],v[3],v[4],c[v[5]],c[v[6]],c[v[7]],v[8],v[9])
+	else if(l>2)
+	{
+		if(typeof v[1] === 'string')
+			$.copy_node(v[0],v[1],[v[2],v[3]])
+		else
+			$.make_object_move(v[0],[v[1],v[2]],v[3])
+	}
+	else
+		$.add_group(v[0],v[1])
 }
-$d($0,1).then((j)=>{
-	$d($1,1).then((d)=>{
-		$d($2,1).then((p)=>{
-			$d($3,1).then((c)=>{
-				i=0
-				$=eval(j)
-				d=JSON.parse(d)
-				c=JSON.parse(c)
-				for(v of d)
-				{
-					l=v.length
-					if(l>10)
-					{
-						a=[]
-						for(e of p.split('\\n')[i])
-							a.push(e.charCodeAt(0))
-						$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
-						i++
-					}
-					else if(l>5)
-						$.add_radial_gradient(v[0],[v[1],v[2]],v[3],v[4],c[v[5]],c[v[6]],c[v[7]],v[8],v[9])
-					else if(l>2)
-					{
-						if(typeof v[1] === 'string')
-							$.copy_node(v[0],v[1],[v[2],v[3]])
-						else
-							$.make_object_move(v[0],[v[1],v[2]],v[3])
-					}
-					else
-						$.add_group(v[0],v[1])
-				}
-				$.main()
-			})
-		})
-	})
-})
+$.main()
 '''
 JS = '''
 function get_pos_and_size (elmt)
@@ -605,7 +557,7 @@ class api
 		if (fillColor[3] > 0)
 			fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
 		var lineColorTxt = 'transparent';
-		if (lineWidth > 0);
+		if (lineWidth > 0)
 			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		document.body.innerHTML += '<svg id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="' + path + '"/></g></svg>';
 	}
@@ -624,7 +576,7 @@ class api
 		});
 	}
 }
-var $=new api
+$=new api
 '''
 
 def GenJsAPI ():
@@ -636,27 +588,14 @@ def GenJsAPI ():
 	return js
 
 def GenHtml (world, datas, background = ''):
-	global userJS
-	global colors
-	global initCode
-	global updateCode
-	global pathsDatas
+	global userJS, colors, initCode, updateCode, pathsDatas
 	jsTmp = '/tmp/js13kjam API.js'
 	js = GenJsAPI()
 	open(jsTmp, 'w').write(js)
 	if world.minify:
 		subprocess.run(['python3', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp])
-	cmd = [ 'gzip', '--keep', '--force', '--verbose', '--best', jsTmp ]
-	print(cmd)
-	subprocess.check_call(cmd)
-
-	jsZipped = open(jsTmp + '.gz', 'rb').read()
-	jsB = base64.b64encode(jsZipped).decode('utf-8')
-	datas = json.dumps(datas)
-	datas = Compress('/tmp/js13kjam Data', datas)
-	pathsDatas = Compress('/tmp/js13kjam Paths', pathsDatas, '\n')
-	colors = json.dumps(colors)
-	colors = Compress('/tmp/js13kjam Colors', colors)
+	datas = json.dumps(datas).replace(' ', '')
+	colors = json.dumps(colors).replace(' ', '')
 	if background:
 		background = 'background-color:%s;' %background
 	o = [
@@ -664,16 +603,15 @@ def GenHtml (world, datas, background = ''):
 		'<html>',
 		'<body style="%swidth:600px;height:300px;overflow:hidden;">' %background,
 		'<script>',
-		'$0="%s";' %jsB,
-		'$1="%s";' %datas,
-		'$2="%s";' %pathsDatas,
-		'$3="%s";' %colors,
-		HTML,
+		'j=`%s`;' %js,
+		'D=`%s`;' %datas,
+		'p=`%s`;' %'\n'.join(pathsDatas),
+		'C=`%s`;' %colors,
+		HTML.replace('\t', ''),
 		'</script>',
 	]
 	htmlSize = len('\n'.join(o))
 	buildInfo['js-size'] = len(js)
-	buildInfo['js-gz-size'] = len(jsZipped)
 	if not world.invalid_html:
 		o += [
 			'</body>',
