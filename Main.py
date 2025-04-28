@@ -407,9 +407,8 @@ class JS13KB_Panel (bpy.types.Panel):
 			else:
 				self.layout.label(text = 'html KB=%s' %( buildInfo['html-size'] / 1024 ))
 
-HTML = '''
+JS_SUFFIX = '''
 i=0
-eval(j)
 d=JSON.parse(D)
 c=JSON.parse(C)
 for(v of d)
@@ -432,7 +431,7 @@ for(v of d)
 		$.add_radial_gradient(v[0],[v[1],v[2]],v[3],v[4],c[v[5]],c[v[6]],c[v[7]],v[8],v[9])
 	else if(l>2)
 	{
-		if(typeof v[1] === 'string')
+		if(typeof(v[1]) === 'string')
 			$.copy_node(v[0],v[1],[v[2],v[3]])
 		else
 			$.make_object_move(v[0],[v[1],v[2]],v[3])
@@ -479,14 +478,6 @@ function random_vector_2d (mD)
 function random (min, max)
 {
 	return Math.random() * (max - min) + min;
-}
-function copy_node (id, newId, pos)
-{
-	return $.copy_node(id, newId, pos);
-}
-function add_group (id, firstAndLastChildIds)
-{
-	$.add_group (id, firstAndLastChildIds);
 }
 function add_group (id, pos, text)
 {
@@ -579,35 +570,40 @@ class api
 $=new api
 '''
 
-def GenJsAPI ():
-	global userJS
-	js = [ userJS, JS, JS_API ]
+def GenJsAPI (world):
+	global datas, userJS, colors
+	js = [JS, JS_API, userJS]
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
 	js = js.replace('// Update', '\n'.join(updateCode))
+	datas = json.dumps(datas).replace(' ', '')
+	colors = json.dumps(colors).replace(' ', '')
+	if world.minify:
+		dataStartIndctr = '// Data start'
+		dataEndIndctr = '// Data end'
+		js += dataStartIndctr + '''\nj=''\nD=''\nC=''\np=''\n''' + dataEndIndctr +'\n' + JS_SUFFIX
+		jsTmp = '/tmp/js13kjam API.js'
+		open(jsTmp, 'w').write(js)
+		subprocess.run(['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d'])
+		js = open(jsTmp, 'r').read()
+		dataStartIdx = js.find(dataStartIndctr)
+		dataEndIdx = js.find(dataEndIndctr) + len(dataEndIndctr)
+		js = 'j=`' + js[: dataStartIdx].replace('`', '\`') + '`\neval(j)\nD=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + js[dataEndIdx :]
+	else:
+		js = 'j=`'+ js.replace('`', '\`') + '`\neval(j)\nD=`' + datas + '`;\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX.replace('\t', '')
 	return js
 
 def GenHtml (world, datas, background = ''):
 	global userJS, colors, initCode, updateCode, pathsDatas
-	jsTmp = '/tmp/js13kjam API.js'
-	js = GenJsAPI()
-	open(jsTmp, 'w').write(js)
-	if world.minify:
-		subprocess.run(['python3', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp])
-	datas = json.dumps(datas).replace(' ', '')
-	colors = json.dumps(colors).replace(' ', '')
+	js = GenJsAPI(world)
 	if background:
 		background = 'background-color:%s;' %background
 	o = [
 		'<!DOCTYPE html>',
 		'<html>',
-		'<body style="%swidth:600px;height:300px;overflow:hidden;">' %background,
+		'<body style="%swidth:600px;height:300px;overflow:hidden">' %background,
 		'<script>',
-		'j=`%s`;' %js,
-		'D=`%s`;' %datas,
-		'p=`%s`;' %'\n'.join(pathsDatas),
-		'C=`%s`;' %colors,
-		HTML.replace('\t', ''),
+		js,
 		'</script>',
 	]
 	htmlSize = len('\n'.join(o))
@@ -663,7 +659,7 @@ def Build (world):
 		webbrowser.open(out)
 
 	else:
-		cmd = [ 'python3', '-m', 'http.setAttributerver', '6969' ]
+		cmd = ['python', '-m', 'http.setAttributerver', '6969']
 		SERVER_PROC = subprocess.Popen(cmd, cwd = '/tmp')
 
 		atexit.register(lambda: SERVER_PROC.kill())
