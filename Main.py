@@ -226,16 +226,16 @@ def ExportObject (ob):
 		bpy.ops.object.select_all(action = 'DESELECT')
 		ob.select_set(True)
 		bpy.ops.curve.export_svg()
-		svgText = open('/tmp/Output.svg', 'r').read()
-		indexOfName = svgText.find(ob.name)
-		indexOfGroupStart = svgText.rfind('\n', 0, indexOfName)
+		svgTxt = open('/tmp/Output.svg', 'r').read()
+		indexOfName = svgTxt.find(ob.name)
+		indexOfGroupStart = svgTxt.rfind('\n', 0, indexOfName)
 		groupEndIndicator = '</g>'
-		indexOfGroupEnd = svgText.find(groupEndIndicator, indexOfGroupStart) + len(groupEndIndicator)
-		group = svgText[indexOfGroupStart : indexOfGroupEnd]
+		indexOfGroupEnd = svgTxt.find(groupEndIndicator, indexOfGroupStart) + len(groupEndIndicator)
+		group = svgTxt[indexOfGroupStart : indexOfGroupEnd]
 		parentGroupIndicator = '\n  <g'
-		indexOfParentGroupStart = svgText.find(parentGroupIndicator)
-		indexOfParentGroupContents = svgText.find('\n', indexOfParentGroupStart + len(parentGroupIndicator))
-		indexOfParentGroupEnd = svgText.rfind('</g')
+		indexOfParentGroupStart = svgTxt.find(parentGroupIndicator)
+		indexOfParentGroupContents = svgTxt.find('\n', indexOfParentGroupStart + len(parentGroupIndicator))
+		indexOfParentGroupEnd = svgTxt.rfind('</g')
 		min, max = GetCurveRectMinMax(ob)
 		scale = Vector((sx, sy))
 		min *= scale
@@ -245,11 +245,11 @@ def ExportObject (ob):
 		max *= scale
 		max += off
 		data = []
-		svgText = svgText[: indexOfParentGroupContents] + group + svgText[indexOfParentGroupEnd :]
+		svgTxt = svgTxt[: indexOfParentGroupContents] + group + svgTxt[indexOfParentGroupEnd :]
 		pathDataIndicator = ' d="'
-		indexOfPathDataStart = svgText.find(pathDataIndicator) + len(pathDataIndicator)
-		indexOfPathDataEnd = svgText.find('"', indexOfPathDataStart)
-		pathData = svgText[indexOfPathDataStart : indexOfPathDataEnd]
+		indexOfPathDataStart = svgTxt.find(pathDataIndicator) + len(pathDataIndicator)
+		indexOfPathDataEnd = svgTxt.find('"', indexOfPathDataStart)
+		pathData = svgTxt[indexOfPathDataStart : indexOfPathDataEnd]
 		pathData = pathData.replace('.0', '')
 		vectors = pathData.split(' ')
 		pathData = []
@@ -268,9 +268,8 @@ def ExportObject (ob):
 		offset = -minPathValue + Vector((32, 32))
 		for i, pathValue in enumerate(pathData):
 			pathData[i] = ToByteString(pathValue + offset[i % 2], world.quantizeSvgs)
-		min -= offset
 		data.append(int(round(min.x)))
-		data.append(int(round(min.y)))
+		data.append(int(round(max.y)))
 		size = max - min
 		data.append(int(round(size.x)))
 		data.append(int(round(size.y)))
@@ -550,7 +549,25 @@ class api
 		var lineColorTxt = 'transparent';
 		if (lineWidth > 0)
 			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
-		document.body.innerHTML += '<svg id="' + id + '"viewBox="0 0 ' + (size[0] + lineWidth * 2) + ' ' + (size[1] + lineWidth * 2) + '"style="z-index:' + zIndex + ';position:absolute"collide=' + collide + ' x=' + pos[0] + ' y=' + pos[1] + ' width=' + size[0] + ' height=' + size[1] + ' transform="scale(1,-1)translate(' + pos[0] + ',' + pos[1] + ')"><g><path style="fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt + '" d="' + path + '"/></g></svg>';
+		var svg = document.createElement('svg');
+		svg.id = id;
+		svg.style = 'z-index:' + zIndex + ';position:absolute';
+		svg.setAttribute('collide', collide);
+		svg.setAttribute('x', pos[0]);
+		svg.setAttribute('y', pos[1]);
+		svg.setAttribute('width', size[0]);
+		svg.setAttribute('height', size[1]);
+		svg.setAttribute('transform', 'scale(1,-1)translate(' + pos[0] + ',' + pos[1] +')');
+		var path_ = document.createElement('path');
+		path_.id = id + ' ';
+		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
+		path_.setAttribute('d', path);
+		svg.appendChild(path_);
+		document.body.innerHTML += svg.outerHTML;
+		var svgRect = document.getElementById(id).getBoundingClientRect();
+		path_ = document.getElementById(id + ' ');
+		var pathRect = path_.getBoundingClientRect();
+		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x) + ',' + (pathRect.y - svgRect.y) + ')');
 	}
 	main ()
 	{
