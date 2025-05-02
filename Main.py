@@ -24,12 +24,12 @@ if __name__ == '__main__':
 	if bpy:
 		pass
 	else:
-		cmd = [ BLENDER ]
+		cmd = [BLENDER]
 		for arg in sys.argv:
 			if arg.endswith('.blend'):
 				cmd.append(arg)
 				break
-		cmd += [ '--python-exit-code', '1', '--python', __file__, '--python', os.path.join(_thisDir, 'blender-curve-to-svg', 'curve_to_svg.py') ]
+		cmd += ['--python-exit-code', '1', '--python', __file__, '--python', os.path.join(_thisDir, 'blender-curve-to-svg', 'curve_to_svg.py')]
 		exArgs = []
 		for arg in sys.argv:
 			if arg.startswith('--'):
@@ -64,7 +64,7 @@ def GetScripts (ob, isAPI : bool):
 			if isAPI:
 				scripts.append(txt.as_string())
 			else:
-				scripts.append(( txt.as_string(), getattr(ob, 'initScript' + str(i)) ))
+				scripts.append((txt.as_string(), getattr(ob, 'initScript' + str(i))))
 	return scripts
 
 def Clamp (n : float, min : float, max : float):
@@ -95,25 +95,25 @@ def ClampComponents (v : list, min : list, max : list):
 
 def GetMinComponents (v : Vector, v2 : Vector, use2D : bool = False):
 	if use2D:
-		return Vector(( min(v.x, v2.x), min(v.y, v2.y) ))
+		return Vector((min(v.x, v2.x), min(v.y, v2.y)))
 	else:
-		return Vector(( min(v.x, v2.x), min(v.y, v2.y), min(v.z, v2.z) ))
+		return Vector((min(v.x, v2.x), min(v.y, v2.y), min(v.z, v2.z)))
 
 def GetMaxComponents (v : Vector, v2 : Vector, use2D : bool = False):
 	if use2D:
-		return Vector(( max(v.x, v2.x), max(v.y, v2.y) ))
+		return Vector((max(v.x, v2.x), max(v.y, v2.y)))
 	else:
-		return Vector(( max(v.x, v2.x), max(v.y, v2.y), max(v.z, v2.z) ))
+		return Vector((max(v.x, v2.x), max(v.y, v2.y), max(v.z, v2.z)))
 
 def GetCurveRectMinMax (ob):
-	bounds = [( ob.matrix_world @ Vector(corner) ) for corner in ob.bound_box]
+	bounds = [(ob.matrix_world @ Vector(corner)) for corner in ob.bound_box]
 	box = []
-	box.append(min([ bounds[0][0], bounds[1][0], bounds[2][0], bounds[3][0] ]))
-	box.append(min([ bounds[0][1], bounds[1][1], bounds[4][1], bounds[5][1] ]))
-	box.append(max([ bounds[4][0], bounds[5][0], bounds[6][0], bounds[7][0] ]))
-	box.append(max([ bounds[2][1], bounds[3][1], bounds[6][1], bounds[7][1] ]))
-	_min = Vector(( box[0], box[1] ))
-	_max = Vector(( box[2], box[3] ))
+	box.append(min([bounds[0][0], bounds[1][0], bounds[2][0], bounds[3][0]]))
+	box.append(min([bounds[0][1], bounds[1][1], bounds[4][1], bounds[5][1]]))
+	box.append(max([bounds[4][0], bounds[5][0], bounds[6][0], bounds[7][0]]))
+	box.append(max([bounds[2][1], bounds[3][1], bounds[6][1], bounds[7][1]]))
+	_min = Vector((box[0], box[1]))
+	_max = Vector((box[2], box[3]))
 	return _min, _max
 
 def IndexOfValue (o, d : dict):
@@ -136,12 +136,15 @@ def Copy (ob, copyData = True, copyActions = True, collection = None):
 		childCopy.parent = copy
 	return copy
 
-def ToByteString (n, delimeters = '\n`', escapeQuotes : bool = False):
+def ToByteString (n, clamp = True, delimeters = '\n`', escapeQuotes : bool = False):
 	n = round(n)
-	n = Clamp(n, 0, 255)
+	if clamp:
+		n = Clamp(n, 32, 255)
+	elif n < 32:
+		n = 32
 	byteStr = chr(n)
 	if byteStr in delimeters:
-		byteStr = chr(n - 1)
+		byteStr = chr(n + 1)
 	elif escapeQuotes and byteStr in '"' + "'":
 		byteStr = '\\' + byteStr
 	return byteStr
@@ -162,7 +165,7 @@ def GetObjectPosition (ob):
 	SCALE = world.export_scale
 	offX = world.export_offset_x
 	offY = world.export_offset_y
-	off = Vector(( offX, offY ))
+	off = Vector((offX, offY))
 	x, y, z = ob.location * SCALE
 	if ob.type == 'LIGHT':
 		radius = ob.data.shadow_soft_size
@@ -172,9 +175,9 @@ def GetObjectPosition (ob):
 		y = -y
 	x += offX
 	y += offY
-	return Round(Vector(( x, y )))
+	return Round(Vector((x, y)))
 
-DEFAULT_COLOR = [ 0, 0, 0, 0 ]
+DEFAULT_COLOR = [0, 0, 0, 0]
 exportedObs = []
 datas = []
 colors = {}
@@ -190,7 +193,7 @@ def ExportObject (ob):
 	SCALE = world.export_scale
 	offX = world.export_offset_x
 	offY = world.export_offset_y
-	off = Vector(( offX, offY ))
+	off = Vector((offX, offY))
 	sx, sy, sz = ob.scale * SCALE
 	if ob.type == 'EMPTY' and len(ob.children) > 0:
 		if HandleCopyObject(ob, GetObjectPosition(ob)):
@@ -234,7 +237,7 @@ def ExportObject (ob):
 		indexOfParentGroupContents = svgText.find('\n', indexOfParentGroupStart + len(parentGroupIndicator))
 		indexOfParentGroupEnd = svgText.rfind('</g')
 		min, max = GetCurveRectMinMax(ob)
-		scale = Vector(( sx, sy ))
+		scale = Vector((sx, sy))
 		min *= scale
 		min += off
 		if HandleCopyObject(ob, min):
@@ -250,21 +253,22 @@ def ExportObject (ob):
 		pathData = pathData.replace('.0', '')
 		vectors = pathData.split(' ')
 		pathData = []
-		minPathValue = Vector(( float('inf'), float('inf') ))
+		minPathValue = Vector((float('inf'), float('inf')))
 		for vector in vectors:
 			if len(vector) == 1:
 				continue
 			components = vector.split(',')
 			x = int(components[0])
 			y = int(components[1])
-			vector = Vector(( x, y ))
+			vector = Vector((x, y))
 			minPathValue = GetMinComponents(minPathValue, vector, True)
 			pathData.append(x)
 			pathData.append(y)
 		minPathValue *= scale
-		offset = -minPathValue
+		offset = -minPathValue + Vector((32, 32))
 		for i, pathValue in enumerate(pathData):
-			pathData[i] = ToByteString(pathValue + offset[i % 2])
+			pathData[i] = ToByteString(pathValue + offset[i % 2], world.quantizeSvgs)
+		min -= offset
 		data.append(int(round(min.x)))
 		data.append(int(round(min.y)))
 		size = max - min
@@ -291,7 +295,7 @@ def HandleMakeObjectMove (ob):
 	if ob.moveSpeed != 0:
 		waypoint1Pos = GetObjectPosition(ob.waypoint1)
 		waypoint2Pos = GetObjectPosition(ob.waypoint2)
-		move = Vector(Round(Vector(( waypoint2Pos[0] - waypoint1Pos[0], waypoint2Pos[1] - waypoint1Pos[1] ))))
+		move = Vector(Round(Vector((waypoint2Pos[0] - waypoint1Pos[0], waypoint2Pos[1] - waypoint1Pos[1]))))
 		datas.append([ob.name, int(move[0]), int(move[1]), int(round(move.length / ob.moveSpeed * 1000))])
 
 def HandleCopyObject (ob, pos):
@@ -389,6 +393,7 @@ class JS13KB_Panel (bpy.types.Panel):
 		row = self.layout.row()
 		row.prop(context.world, 'minify')
 		row.prop(context.world, 'invalid_html')
+		row.prop(context.world, 'quantizeSvgs')
 		if context.world.js13kb:
 			self.layout.prop(context.world, 'export_zip')
 			if buildInfo['zip-size']:
@@ -418,12 +423,7 @@ for(v of d)
 	{
 		a=[]
 		for(e of p.split('\\n')[i])
-		{
-			if(e=='�')
-				a.push(0)
-			else
-				a.push(e.charCodeAt(0))
-		}
+			a.push(e.charCodeAt(0))
 		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
 		i++
 	}
@@ -634,7 +634,7 @@ def Build (world):
 	open('/tmp/index.html', 'w').write(html)
 	if world.js13kb:
 		if os.path.isfile('/usr/bin/zip'):
-			cmd = [ 'zip', '-9', 'index.html.zip', 'index.html' ]
+			cmd = ['zip', '-9', 'index.html.zip', 'index.html']
 			print(cmd)
 			subprocess.check_call(cmd, cwd='/tmp')
 
@@ -711,6 +711,7 @@ bpy.types.World.export_zip = bpy.props.StringProperty(name = 'Export (.zip)')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
 bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
 bpy.types.World.invalid_html = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
+bpy.types.World.quantizeSvgs = bpy.props.BoolProperty(name = 'Quantize svgs')
 bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useSvgStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
 bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke width', default = 0)
