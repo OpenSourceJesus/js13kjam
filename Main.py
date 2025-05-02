@@ -271,8 +271,8 @@ def ExportObject (ob):
 		data.append(int(round(min.x)))
 		data.append(int(round(max.y)))
 		size = max - min
-		data.append(int(round(size.x)))
-		data.append(int(round(size.y)))
+		data.append(int(round(size.x)) + 3)
+		data.append(int(round(size.y)) + 3)
 		materialColor = DEFAULT_COLOR
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
@@ -287,6 +287,9 @@ def ExportObject (ob):
 		data.append(ob.data.splines[0].use_cyclic_u)
 		data.append(round(ob.location.z))
 		data.append(ob.collide)
+		data.append(ob.jiggleDist)
+		data.append(ob.jiggleSpeed)
+		data.append(ob.jiggleFrames * int(ob.useJiggle))
 		datas.append(data)
 	exportedObs.append(ob)
 
@@ -423,7 +426,7 @@ for(v of d)
 		a=[]
 		for(e of p.split('\\n')[i])
 			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],$.get_svg_path(a,v[8]),v[9],v[10])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13])
 		i++
 	}
 	else if(l>5)
@@ -468,23 +471,32 @@ function overlaps (pos, size, pos2, size2)
 		|| pos[1] + size[1] < pos2[1]
 		|| pos[1] > pos2[1] + size2[1])
 }
-function random_vector_2d (mD)
+function random_vector_2d (maxDist)
 {
-	var dt = random(0, mD);
-	var ag = random(0, 2 * Math.PI);
-	return [Math.cos(ag) * dt, Math.sin(ag) * dt];
+	var dist = random(0, maxDist);
+	var ang = random(0, 2 * Math.PI);
+	return [Math.cos(ang) * dist, Math.sin(ang) * dist];
+}
+function magnitude (v)
+{
+	return Math.sqrt(v[0] * v[0] + v[1] * v[1]);
+}
+function normalize (v)
+{
+	var mag = magnitdue(v);
+	return [v[0] / mag, v[1] / mag];
 }
 function random (min, max)
 {
 	return Math.random() * (max - min) + min;
 }
-function add_group (id, pos, text)
+function add_group (id, pos, txt)
 {
 	var group = document.createElement('g');
 	group.id = id;
 	group.setAttribute('x', pos[0]);
 	group.setAttribute('y', pos[1]);
-	group.innerHTML = text;
+	group.innerHTML = txt;
 	document.body.appendChild(group);
 	return group;
 }
@@ -541,7 +553,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode + ';transform:scale(1,1)';
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, path, zIndex, collide)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleSpeed, jiggleFrames)
 	{
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
@@ -561,13 +573,23 @@ class api
 		var path_ = document.createElement('path');
 		path_.id = id + ' ';
 		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
-		path_.setAttribute('d', path);
+		path_.setAttribute('d', $.get_svg_path(pathValues, cyclic));
 		svg.appendChild(path_);
 		document.body.innerHTML += svg.outerHTML;
 		var svgRect = document.getElementById(id).getBoundingClientRect();
 		path_ = document.getElementById(id + ' ');
 		var pathRect = path_.getBoundingClientRect();
 		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x) + ',' + (pathRect.y - svgRect.y) + ')');
+		if (jiggleFrames > 0)
+		{
+			var anim = document.createElement('animate');
+			for (var i = 0; i < jiggleFrames; i ++)
+			{
+				var offset = normalize(random_vector_2d(1)) * jiggleDist;
+				
+			}
+			svg.appendChild(anim);
+		}
 	}
 	main ()
 	{
@@ -733,6 +755,10 @@ bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useSvgStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
 bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke width', default = 0)
 bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name = 'Svg stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
+bpy.types.Object.useJiggle = bpy.props.BoolProperty(name = 'Use jiggle')
+bpy.types.Object.jiggleDist = bpy.props.FloatProperty(name = 'Jiggle distance', default = 0, min = 0)
+bpy.types.Object.jiggleSpeed = bpy.props.FloatProperty(name = 'Jiggle speed', default = 0, min = 0)
+bpy.types.Object.jiggleFrames = bpy.props.IntProperty(name = 'Jiggle frames', default = 0, min = 0)
 bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1)
@@ -786,6 +812,12 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'useSvgStroke')
 			self.layout.prop(ob, 'svgStrokeWidth')
 			self.layout.prop(ob, 'svgStrokeColor')
+			self.layout.label(text = 'Animation')
+			self.layout.prop(ob, 'useJiggle')
+			self.layout.prop(ob, 'jiggleDist')
+			self.layout.prop(ob, 'jiggleSpeed')
+			self.layout.prop(ob, 'jiggleFrames')
+		self.layout.label(text = 'Movement')
 		self.layout.prop(ob, 'moveSpeed')
 		self.layout.prop(ob, 'waypoint1')
 		self.layout.prop(ob, 'waypoint2')
