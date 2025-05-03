@@ -660,13 +660,15 @@ class api
 			anim.setAttribute('additive', 'sum');
 			svg.innerHTML += anim.outerHTML;
 		}
-		var totalScaleDur = scaleDur * 2 + scaleHaltDurAtMin + scaleHaltDurAtMax;
+		var totalScaleDur = scaleDur + scaleHaltDurAtMin + scaleHaltDurAtMax;
 		if (totalScaleDur > 0)
 		{
 			var anim = document.createElement('animatetransform');
 			anim.setAttribute('attributename', 'transform');
 			anim.setAttribute('type', 'scale');
 			anim.setAttribute('repeatcount', 'indefinite');
+			if (scalePingPong)
+				totalScaleDur += scaleDur;
 			anim.setAttribute('dur', totalScaleDur + 's');
 			var firstFrame = scaleXRange[0] + ' ' + scaleYRange[0];
 			anim.setAttribute('from', firstFrame);
@@ -677,12 +679,12 @@ class api
 			time += scaleDur / totalScaleDur;
 			times += time + ';';
 			time += scaleHaltDurAtMax / totalScaleDur;
-			times += time + ';';
+			times += time;
 			if (scalePingPong)
 			{
 				anim.setAttribute('to', firstFrame);
 				frames += ';' + firstFrame;
-				times += totalScaleDur / totalScaleDur;
+				times += ';' + 1;
 			}
 			else
 				anim.setAttribute('to', thirdFrame);
