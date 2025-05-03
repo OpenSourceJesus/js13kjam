@@ -303,10 +303,18 @@ def ExportObject (ob):
 		data.append(ob.jiggleDist * int(ob.useJiggle))
 		data.append(ob.jiggleDur)
 		data.append(ob.jiggleFrames * int(ob.useJiggle))
-		data.append(ob.rotateAngRange[0])
-		data.append(ob.rotateAngRange[1])
-		data.append(ob.rotateDur * int(ob.useRotate))
-		data.append(ob.pingPong)
+		data.append(ob.rotAngRange[0])
+		data.append(ob.rotAngRange[1])
+		data.append(ob.rotDur * int(ob.useRotate))
+		data.append(ob.rotPingPong)
+		data.append(ob.scaleXRange[0])
+		data.append(ob.scaleXRange[1])
+		data.append(ob.scaleYRange[0])
+		data.append(ob.scaleYRange[1])
+		data.append(ob.scaleDur * int(ob.useScale))
+		data.append(ob.scaleHaltDurAtMin * int(ob.useScale))
+		data.append(ob.scaleHaltDurAtMax * int(ob.useScale))
+		data.append(ob.scalePingPong)
 		data.append(ob.origin[0])
 		data.append(ob.origin[1])
 		datas.append(data)
@@ -445,7 +453,7 @@ for(v of d)
 		a=[]
 		for(e of p.split('\\n')[i])
 			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]])
 		i++
 	}
 	else if(l>5)
@@ -572,7 +580,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotateAngRange, rotateDur, pingPong, origin)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin)
 	{
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
@@ -631,25 +639,55 @@ class api
 			anim.setAttribute('values', frames + firstFrame);
 			path_.innerHTML = anim.outerHTML;
 		}
-		if (rotateDur > 0)
+		if (rotDur > 0)
 		{
 			var anim = document.createElement('animatetransform');
 			anim.setAttribute('attributename', 'transform');
 			anim.setAttribute('type', 'rotate');
 			anim.setAttribute('repeatcount', 'indefinite');
-			anim.setAttribute('dur', rotateDur + 's');
-			var firstFrame = '' + rotateAngRange[0];
+			anim.setAttribute('dur', rotDur + 's');
+			var firstFrame = rotAngRange[0];
 			anim.setAttribute('from', firstFrame);
-			if (pingPong)
+			var frames = firstFrame + ';' + rotAngRange[1];
+			if (rotPingPong)
 			{
 				anim.setAttribute('to', firstFrame);
-				anim.setAttribute('values', firstFrame + ';' + rotateAngRange[1] + ';' + firstFrame);
+				frames += ';' + firstFrame;
 			}
 			else
+				anim.setAttribute('to', rotAngRange[1]);
+			anim.setAttribute('values', frames);
+			anim.setAttribute('additive', 'sum');
+			svg.innerHTML += anim.outerHTML;
+		}
+		var totalScaleDur = scaleDur * 2 + scaleHaltDurAtMin + scaleHaltDurAtMax;
+		if (totalScaleDur > 0)
+		{
+			var anim = document.createElement('animatetransform');
+			anim.setAttribute('attributename', 'transform');
+			anim.setAttribute('type', 'scale');
+			anim.setAttribute('repeatcount', 'indefinite');
+			anim.setAttribute('dur', totalScaleDur + 's');
+			var firstFrame = scaleXRange[0] + ' ' + scaleYRange[0];
+			anim.setAttribute('from', firstFrame);
+			var thirdFrame = scaleXRange[1] + ' ' + scaleYRange[1];
+			var frames = firstFrame + ';' + firstFrame + ';' + thirdFrame + ';' + thirdFrame;
+			var time = scaleHaltDurAtMin / totalScaleDur;
+			var times = '0;' + time + ';';
+			time += scaleDur / totalScaleDur;
+			times += time + ';';
+			time += scaleHaltDurAtMax / totalScaleDur;
+			times += time + ';';
+			if (scalePingPong)
 			{
-				anim.setAttribute('to', rotateAngRange[1]);
-				anim.setAttribute('values', firstFrame + ';' + rotateAngRange[1]);
+				anim.setAttribute('to', firstFrame);
+				frames += ';' + firstFrame;
+				times += totalScaleDur / totalScaleDur;
 			}
+			else
+				anim.setAttribute('to', thirdFrame);
+			anim.setAttribute('values', frames);
+			anim.setAttribute('keytimes', times);
 			anim.setAttribute('additive', 'sum');
 			svg.innerHTML += anim.outerHTML;
 		}
@@ -824,9 +862,16 @@ bpy.types.Object.jiggleDist = bpy.props.FloatProperty(name = 'Jiggle distance', 
 bpy.types.Object.jiggleDur = bpy.props.FloatProperty(name = 'Jiggle duration', min = 0)
 bpy.types.Object.jiggleFrames = bpy.props.IntProperty(name = 'Jiggle frames', min = 0)
 bpy.types.Object.useRotate = bpy.props.BoolProperty(name = 'Use rotate')
-bpy.types.Object.pingPong = bpy.props.BoolProperty(name = 'Ping pong')
-bpy.types.Object.rotateAngRange = bpy.props.FloatVectorProperty(name = 'Rotate angle range', size = 2, default = [0, 0])
-bpy.types.Object.rotateDur = bpy.props.FloatProperty(name = 'Rotate duration', min = 0)
+bpy.types.Object.rotPingPong = bpy.props.BoolProperty(name = 'Ping pong rotate')
+bpy.types.Object.rotAngRange = bpy.props.FloatVectorProperty(name = 'Rotate angle range', size = 2)
+bpy.types.Object.rotDur = bpy.props.FloatProperty(name = 'Rotate duration', min = 0)
+bpy.types.Object.useScale = bpy.props.BoolProperty(name = 'Use scale')
+bpy.types.Object.scalePingPong = bpy.props.BoolProperty(name = 'Ping pong scale')
+bpy.types.Object.scaleXRange = bpy.props.FloatVectorProperty(name = 'X scale range', size = 2)
+bpy.types.Object.scaleYRange = bpy.props.FloatVectorProperty(name = 'Y scale range', size = 2)
+bpy.types.Object.scaleDur = bpy.props.FloatProperty(name = 'Scale duration', min = 0)
+bpy.types.Object.scaleHaltDurAtMin = bpy.props.FloatProperty(name = 'Halt duration at min', min = 0)
+bpy.types.Object.scaleHaltDurAtMax = bpy.props.FloatProperty(name = 'Halt duration at max', min = 0)
 bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1)
@@ -889,9 +934,17 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'jiggleFrames')
 			self.layout.label(text = 'Rotate')
 			self.layout.prop(ob, 'useRotate')
-			self.layout.prop(ob, 'pingPong')
-			self.layout.prop(ob, 'rotateAngRange')
-			self.layout.prop(ob, 'rotateDur')
+			self.layout.prop(ob, 'rotPingPong')
+			self.layout.prop(ob, 'rotAngRange')
+			self.layout.prop(ob, 'rotDur')
+			self.layout.label(text = 'Scale')
+			self.layout.prop(ob, 'useScale')
+			self.layout.prop(ob, 'scalePingPong')
+			self.layout.prop(ob, 'scaleXRange')
+			self.layout.prop(ob, 'scaleYRange')
+			self.layout.prop(ob, 'scaleDur')
+			self.layout.prop(ob, 'scaleHaltDurAtMin')
+			self.layout.prop(ob, 'scaleHaltDurAtMax')
 		self.layout.label(text = 'Movement')
 		self.layout.prop(ob, 'moveSpeed')
 		self.layout.prop(ob, 'waypoint1')
