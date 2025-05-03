@@ -300,7 +300,7 @@ def ExportObject (ob):
 		data.append(ob.data.splines[0].use_cyclic_u)
 		data.append(round(ob.location.z))
 		data.append(ob.collide)
-		data.append(ob.jiggleDist)
+		data.append(ob.jiggleDist * int(ob.useJiggle))
 		data.append(ob.jiggleDur)
 		data.append(ob.jiggleFrames * int(ob.useJiggle))
 		datas.append(data)
@@ -578,11 +578,11 @@ class api
 		svg.id = id;
 		svg.style = 'z-index:' + zIndex + ';position:absolute';
 		svg.setAttribute('collide', collide);
-		svg.setAttribute('x', pos[0]);
-		svg.setAttribute('y', pos[1]);
-		svg.setAttribute('width', size[0]);
-		svg.setAttribute('height', size[1]);
-		svg.setAttribute('transform', 'translate(' + pos[0] + ',' + pos[1] +')');
+		svg.setAttribute('x', pos[0] - jiggleDist);
+		svg.setAttribute('y', pos[1] - jiggleDist);
+		svg.setAttribute('width', size[0] + jiggleDist * 2);
+		svg.setAttribute('height', size[1] + jiggleDist * 2);
+		svg.setAttribute('transform', 'translate(' + (pos[0] - jiggleDist) + ',' + (pos[1] - jiggleDist) +')');
 		var path_ = document.createElement('path');
 		path_.id = id + ' ';
 		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
@@ -593,7 +593,7 @@ class api
 		var svgRect = document.getElementById(id).getBoundingClientRect();
 		path_ = document.getElementById(id + ' ');
 		var pathRect = path_.getBoundingClientRect();
-		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x) + ',' + (svgRect.y - pathRect.y) + ')');
+		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x + jiggleDist) + ',' + (svgRect.y - pathRect.y + jiggleDist) + ')');
 		if (jiggleFrames > 0)
 		{
 			var anim = document.createElement('animate');
