@@ -171,9 +171,9 @@ def GetColor (color : list):
 
 def GetObjectPosition (ob):
 	world = bpy.data.worlds[0]
-	SCALE = world.export_scale
-	offX = world.export_offset_x
-	offY = world.export_offset_y
+	SCALE = world.exportScale
+	offX = world.exportOffsetX
+	offY = world.exportOffsetY
 	off = Vector((offX, offY))
 	x, y, z = ob.location * SCALE
 	if ob.type == 'LIGHT':
@@ -199,9 +199,9 @@ def ExportObject (ob):
 	if ob.hide_get() or ob in exportedObs:
 		return
 	world = bpy.data.worlds[0]
-	SCALE = world.export_scale
-	offX = world.export_offset_x
-	offY = world.export_offset_y
+	SCALE = world.exportScale
+	offX = world.exportOffsetX
+	offY = world.exportOffsetY
 	off = Vector((offX, offY))
 	sx, sy, sz = ob.scale * SCALE
 	if ob.type == 'EMPTY' and len(ob.children) > 0:
@@ -303,6 +303,11 @@ def ExportObject (ob):
 		data.append(ob.jiggleDist * int(ob.useJiggle))
 		data.append(ob.jiggleDur)
 		data.append(ob.jiggleFrames * int(ob.useJiggle))
+		data.append(ob.rotateAngRange[0])
+		data.append(ob.rotateAngRange[1])
+		data.append(ob.rotateDur * int(ob.useRotate))
+		data.append(ob.origin[0])
+		data.append(ob.origin[1])
 		datas.append(data)
 	exportedObs.append(ob)
 
@@ -388,11 +393,11 @@ class WorldPanel (bpy.types.Panel):
 
 	def draw (self, context):
 		row = self.layout.row()
-		row.prop(context.world, 'export_scale')
+		row.prop(context.world, 'exportScale')
 		row = self.layout.row()
-		row.prop(context.world, 'export_offset_x')
-		row.prop(context.world, 'export_offset_y')
-		self.layout.prop(context.world, 'export_html')
+		row.prop(context.world, 'exportOffsetX')
+		row.prop(context.world, 'exportOffsetY')
+		self.layout.prop(context.world, 'exportHtml')
 		self.layout.operator('world.export', icon = 'CONSOLE')
 
 @bpy.utils.register_class
@@ -407,10 +412,10 @@ class JS13KB_Panel (bpy.types.Panel):
 		self.layout.prop(context.world, 'js13kb')
 		row = self.layout.row()
 		row.prop(context.world, 'minify')
-		row.prop(context.world, 'invalid_html')
+		row.prop(context.world, 'invalidHtml')
 		row.prop(context.world, 'quantizeSvgs')
 		if context.world.js13kb:
-			self.layout.prop(context.world, 'export_zip')
+			self.layout.prop(context.world, 'exportZip')
 			if buildInfo['zip-size']:
 				self.layout.label(text = buildInfo['zip'])
 				if buildInfo['zip-size'] <= 1024*13:
@@ -439,7 +444,7 @@ for(v of d)
 		a=[]
 		for(e of p.split('\\n')[i])
 			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],[v[17],v[18]])
 		i++
 	}
 	else if(l>5)
@@ -566,7 +571,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotateAngRange, rotateDur, origin)
 	{
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
@@ -576,7 +581,7 @@ class api
 			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		var svg = document.createElement('svg');
 		svg.id = id;
-		svg.style = 'z-index:' + zIndex + ';position:absolute';
+		svg.style = 'z-index:' + zIndex + ';position:absolute;transform-origin:' + origin[0] + '% ' + origin[1] + '%';
 		svg.setAttribute('collide', collide);
 		svg.setAttribute('x', pos[0] - jiggleDist);
 		svg.setAttribute('y', pos[1] - jiggleDist);
@@ -590,7 +595,8 @@ class api
 		svg.appendChild(path_);
 		document.body.innerHTML += svg.outerHTML;
 		var svgTxt = svg.outerHTML;
-		var svgRect = document.getElementById(id).getBoundingClientRect();
+		svg = document.getElementById(id);
+		var svgRect = svg.getBoundingClientRect();
 		path_ = document.getElementById(id + ' ');
 		var pathRect = path_.getBoundingClientRect();
 		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x + jiggleDist) + ',' + (svgRect.y - pathRect.y + jiggleDist) + ')');
@@ -623,6 +629,19 @@ class api
 			}
 			anim.setAttribute('values', frames + firstFrame);
 			path_.innerHTML = anim.outerHTML;
+		}
+		if (rotateDur > 0)
+		{
+			var anim = document.createElement('animatetransform');
+			anim.setAttribute('attributename', 'transform');
+			anim.setAttribute('type', 'rotate');
+			anim.setAttribute('repeatcount', 'indefinite');
+			anim.setAttribute('dur', rotateDur + 's');
+			var firstFrame = '' + rotateAngRange[0];
+			anim.setAttribute('from', firstFrame);
+			anim.setAttribute('to', firstFrame);
+			anim.setAttribute('values', firstFrame + ';' + rotateAngRange[1] + ';' + firstFrame);
+			svg.innerHTML += anim.outerHTML;
 		}
 	}
 	main ()
@@ -681,7 +700,7 @@ def GenHtml (world, datas, background = ''):
 	]
 	htmlSize = len('\n'.join(o))
 	buildInfo['js-size'] = len(js)
-	if not world.invalid_html:
+	if not world.invalidHtml:
 		o += [
 			'</body>',
 			'</html>',
@@ -713,8 +732,8 @@ def Build (world):
 
 			zip = open('/tmp/index.html.zip','rb').read()
 			buildInfo['zip-size'] = len(zip)
-			if world.export_zip:
-				out = os.path.expanduser(world.export_zip)
+			if world.exportZip:
+				out = os.path.expanduser(world.exportZip)
 				if not out.endswith('.zip'):
 					out += '.zip'
 				buildInfo['zip'] = out
@@ -725,8 +744,8 @@ def Build (world):
 		else:
 			if len(html.encode('utf-8')) > 1024 * 13:
 				raise SyntaxError('HTML is over 13kb')
-	if world.export_html:
-		out = os.path.expanduser(world.export_html)
+	if world.exportHtml:
+		out = os.path.expanduser(world.exportHtml)
 		print('saving:', out)
 		open(out,'w').write(html)
 		webbrowser.open(out)
@@ -776,29 +795,33 @@ def Update ():
 			bpy.data.texts.remove(txt)
 	return 0.1
 
-bpy.types.World.export_scale = bpy.props.FloatProperty(name = 'Scale', default = 1)
-bpy.types.World.export_offset_x = bpy.props.IntProperty(name = 'Offset X', default = 0)
-bpy.types.World.export_offset_y = bpy.props.IntProperty(name = 'Offset Y', default = 0)
-bpy.types.World.export_html = bpy.props.StringProperty(name = 'Export (.html)')
-bpy.types.World.export_zip = bpy.props.StringProperty(name = 'Export (.zip)')
+bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
+bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
+bpy.types.World.exportOffsetY = bpy.props.IntProperty(name = 'Offset Y')
+bpy.types.World.exportHtml = bpy.props.StringProperty(name = 'Export (.html)')
+bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export (.zip)')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
 bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
-bpy.types.World.invalid_html = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
+bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.World.quantizeSvgs = bpy.props.BoolProperty(name = 'Quantize svgs')
+bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50])
 bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useSvgStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
-bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke width', default = 0)
+bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke width')
 bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name = 'Svg stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.useJiggle = bpy.props.BoolProperty(name = 'Use jiggle')
-bpy.types.Object.jiggleDist = bpy.props.FloatProperty(name = 'Jiggle distance', default = 0, min = 0)
-bpy.types.Object.jiggleDur = bpy.props.FloatProperty(name = 'Jiggle duration', default = 0, min = 0)
-bpy.types.Object.jiggleFrames = bpy.props.IntProperty(name = 'Jiggle frames', default = 0, min = 0)
+bpy.types.Object.jiggleDist = bpy.props.FloatProperty(name = 'Jiggle distance', min = 0)
+bpy.types.Object.jiggleDur = bpy.props.FloatProperty(name = 'Jiggle duration', min = 0)
+bpy.types.Object.jiggleFrames = bpy.props.IntProperty(name = 'Jiggle frames', min = 0)
+bpy.types.Object.useRotate = bpy.props.BoolProperty(name = 'Use rotate')
+bpy.types.Object.rotateAngRange = bpy.props.FloatVectorProperty(name = 'Rotate angle range', size = 2, default = [0, 0])
+bpy.types.Object.rotateDur = bpy.props.FloatProperty(name = 'Rotate duration', min = 0)
 bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1)
 bpy.types.Object.colorPositions = bpy.props.IntVectorProperty(name = 'Color Positions', size = 3, min = 0, max = 100, default = [0, 50, 100])
 bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive')
-bpy.types.Object.moveSpeed = bpy.props.FloatProperty(name = 'Move speed', default = 0)
+bpy.types.Object.moveSpeed = bpy.props.FloatProperty(name = 'Move speed')
 bpy.types.Object.waypoint1 = bpy.props.PointerProperty(name = 'Waypoint 1', type = bpy.types.Object)
 bpy.types.Object.waypoint2 = bpy.props.PointerProperty(name = 'Waypoint 2', type = bpy.types.Object)
 
@@ -842,15 +865,21 @@ class ObjectPanel (bpy.types.Panel):
 		if not ob:
 			return
 		if ob.type == 'CURVE':
+			self.layout.prop(ob, 'origin')
 			self.layout.prop(ob, 'collide')
 			self.layout.prop(ob, 'useSvgStroke')
 			self.layout.prop(ob, 'svgStrokeWidth')
 			self.layout.prop(ob, 'svgStrokeColor')
 			self.layout.label(text = 'Animation')
+			self.layout.label(text = 'Jiggle')
 			self.layout.prop(ob, 'useJiggle')
 			self.layout.prop(ob, 'jiggleDist')
 			self.layout.prop(ob, 'jiggleDur')
 			self.layout.prop(ob, 'jiggleFrames')
+			self.layout.label(text = 'Rotate')
+			self.layout.prop(ob, 'useRotate')
+			self.layout.prop(ob, 'rotateAngRange')
+			self.layout.prop(ob, 'rotateDur')
 		self.layout.label(text = 'Movement')
 		self.layout.prop(ob, 'moveSpeed')
 		self.layout.prop(ob, 'waypoint1')
@@ -904,13 +933,13 @@ if __name__ == '__main__':
 		elif arg.startswith('--test='):
 			test = arg.split('=')[-1]
 		elif arg.startswith('--output='):
-			bpy.data.worlds[0].export_html = arg.split('=')[-1]
+			bpy.data.worlds[0].exportHtml = arg.split('=')[-1]
 		elif arg == '--minifiy':
 			bpy.data.worlds[0].minify = True
 		elif arg == '--js13k':
 			bpy.data.worlds[0].minify = True
 			bpy.data.worlds[0].js13kb = True
-			bpy.data.worlds[0].invalid_html = True
+			bpy.data.worlds[0].invalidHtml = True
 	bpy.app.timers.register(Update)
 	if '--build' in sys.argv:
 		Build (bpy.data.worlds[0])
