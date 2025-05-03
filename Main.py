@@ -306,6 +306,7 @@ def ExportObject (ob):
 		data.append(ob.rotateAngRange[0])
 		data.append(ob.rotateAngRange[1])
 		data.append(ob.rotateDur * int(ob.useRotate))
+		data.append(ob.pingPong)
 		data.append(ob.origin[0])
 		data.append(ob.origin[1])
 		datas.append(data)
@@ -444,7 +445,7 @@ for(v of d)
 		a=[]
 		for(e of p.split('\\n')[i])
 			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],[v[17],v[18]])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]])
 		i++
 	}
 	else if(l>5)
@@ -571,7 +572,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotateAngRange, rotateDur, origin)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotateAngRange, rotateDur, pingPong, origin)
 	{
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
@@ -639,8 +640,17 @@ class api
 			anim.setAttribute('dur', rotateDur + 's');
 			var firstFrame = '' + rotateAngRange[0];
 			anim.setAttribute('from', firstFrame);
-			anim.setAttribute('to', firstFrame);
-			anim.setAttribute('values', firstFrame + ';' + rotateAngRange[1] + ';' + firstFrame);
+			if (pingPong)
+			{
+				anim.setAttribute('to', firstFrame);
+				anim.setAttribute('values', firstFrame + ';' + rotateAngRange[1] + ';' + firstFrame);
+			}
+			else
+			{
+				anim.setAttribute('to', rotateAngRange[1]);
+				anim.setAttribute('values', firstFrame + ';' + rotateAngRange[1]);
+			}
+			anim.setAttribute('additive', 'sum');
 			svg.innerHTML += anim.outerHTML;
 		}
 	}
@@ -814,6 +824,7 @@ bpy.types.Object.jiggleDist = bpy.props.FloatProperty(name = 'Jiggle distance', 
 bpy.types.Object.jiggleDur = bpy.props.FloatProperty(name = 'Jiggle duration', min = 0)
 bpy.types.Object.jiggleFrames = bpy.props.IntProperty(name = 'Jiggle frames', min = 0)
 bpy.types.Object.useRotate = bpy.props.BoolProperty(name = 'Use rotate')
+bpy.types.Object.pingPong = bpy.props.BoolProperty(name = 'Ping pong')
 bpy.types.Object.rotateAngRange = bpy.props.FloatVectorProperty(name = 'Rotate angle range', size = 2, default = [0, 0])
 bpy.types.Object.rotateDur = bpy.props.FloatProperty(name = 'Rotate duration', min = 0)
 bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
@@ -878,6 +889,7 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'jiggleFrames')
 			self.layout.label(text = 'Rotate')
 			self.layout.prop(ob, 'useRotate')
+			self.layout.prop(ob, 'pingPong')
 			self.layout.prop(ob, 'rotateAngRange')
 			self.layout.prop(ob, 'rotateDur')
 		self.layout.label(text = 'Movement')
