@@ -75,6 +75,15 @@ def Clamp (n : float, min : float, max : float):
 	else:
 		return n
 
+def Lerp (min, max, t):
+	return min + t * (max - min)
+
+def InverseLerp (from_, to, n):
+	return (n - from_) / (to - from_)
+
+def Remap (inFrom, inTo, outFrom, outTo, n):
+	return Lerp(outFrom, outTo, InverseLerp(inFrom, inTo, n))
+
 def Multiply (v : list, multiply : list):
 	output = []
 	for i, elmt in enumerate(v):
@@ -253,7 +262,8 @@ def ExportObject (ob):
 		pathData = pathData.replace('.0', '')
 		vectors = pathData.split(' ')
 		pathData = []
-		minPathValue = Vector((float('inf'), float('inf')))
+		minPathVector = Vector((float('inf'), float('inf')))
+		maxPathVector = Vector((-float('inf'), -float('inf')))
 		for vector in vectors:
 			if len(vector) == 1:
 				continue
@@ -261,15 +271,18 @@ def ExportObject (ob):
 			x = int(components[0])
 			y = int(components[1])
 			vector = Vector((x, y))
-			minPathValue = GetMinComponents(minPathValue, vector, True)
+			minPathVector = GetMinComponents(minPathVector, vector, True)
+			maxPathVector = GetMaxComponents(maxPathVector, vector, True)
 			pathData.append(x)
 			pathData.append(y)
-		minPathValue *= scale
-		offset = -minPathValue + Vector((32, 32))
+		offset = -minPathVector + Vector((32, 32))
 		for i, pathValue in enumerate(pathData):
-			pathData[i] = ToByteString(pathValue + offset[i % 2], world.quantizeSvgs)
+			if i % 2 == 1:
+				pathData[i] = ToByteString(Remap(minPathVector[1], maxPathVector[1], maxPathVector[1], minPathVector[1], pathValue) + offset[1], world.quantizeSvgs)
+			else:
+				pathData[i] = ToByteString(pathValue + offset[0], world.quantizeSvgs)
 		data.append(int(round(min.x)))
-		data.append(int(round(max.y)))
+		data.append(int(round(-max.y)))
 		size = max - min
 		data.append(int(round(size.x)) + 3)
 		data.append(int(round(size.y)) + 3)
@@ -288,7 +301,7 @@ def ExportObject (ob):
 		data.append(round(ob.location.z))
 		data.append(ob.collide)
 		data.append(ob.jiggleDist)
-		data.append(ob.jiggleSpeed)
+		data.append(ob.jiggleDur)
 		data.append(ob.jiggleFrames * int(ob.useJiggle))
 		datas.append(data)
 	exportedObs.append(ob)
@@ -483,7 +496,7 @@ function magnitude (v)
 }
 function normalize (v)
 {
-	var mag = magnitdue(v);
+	var mag = magnitude(v);
 	return [v[0] / mag, v[1] / mag];
 }
 function random (min, max)
@@ -550,10 +563,10 @@ class api
 		var mixMode = 'lighter';
 		if (subtractive)
 			mixMode = 'darker';
-		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode + ';transform:scale(1,1)';
+		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleSpeed, jiggleFrames)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames)
 	{
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
@@ -569,26 +582,47 @@ class api
 		svg.setAttribute('y', pos[1]);
 		svg.setAttribute('width', size[0]);
 		svg.setAttribute('height', size[1]);
-		svg.setAttribute('transform', 'scale(1,-1)translate(' + pos[0] + ',' + pos[1] +')');
+		svg.setAttribute('transform', 'translate(' + pos[0] + ',' + pos[1] +')');
 		var path_ = document.createElement('path');
 		path_.id = id + ' ';
 		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
 		path_.setAttribute('d', $.get_svg_path(pathValues, cyclic));
 		svg.appendChild(path_);
 		document.body.innerHTML += svg.outerHTML;
+		var svgTxt = svg.outerHTML;
 		var svgRect = document.getElementById(id).getBoundingClientRect();
 		path_ = document.getElementById(id + ' ');
 		var pathRect = path_.getBoundingClientRect();
-		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x) + ',' + (pathRect.y - svgRect.y) + ')');
+		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x) + ',' + (svgRect.y - pathRect.y) + ')');
 		if (jiggleFrames > 0)
 		{
 			var anim = document.createElement('animate');
+			anim.setAttribute('attributename', 'd');
+			anim.setAttribute('repeatcount', 'indefinite');
+			anim.setAttribute('dur', jiggleDur + 's');
+			var frames = '';
+			var firstFrame = '';
 			for (var i = 0; i < jiggleFrames; i ++)
 			{
-				var offset = normalize(random_vector_2d(1)) * jiggleDist;
-				
+				var pathValues_ = pathValues.slice();
+				for (var i2 = 0; i2 < pathValues.length; i2 += 2)
+				{
+					var offset = normalize(random_vector_2d(1));
+					offset = [offset[0] * jiggleDist, offset[1] * jiggleDist];
+					pathValues_[i2] += offset[0];
+					pathValues_[i2 + 1] += offset[1];
+				}
+				var frame = $.get_svg_path(pathValues_, cyclic);
+				if (i == 0)
+				{
+					firstFrame = frame;
+					anim.setAttribute('from', frame);
+					anim.setAttribute('to', frame);
+				}
+				frames += frame + ';';
 			}
-			svg.appendChild(anim);
+			anim.setAttribute('values', frames + firstFrame);
+			path_.innerHTML = anim.outerHTML;
 		}
 	}
 	main ()
@@ -757,7 +791,7 @@ bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke wid
 bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name = 'Svg stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.useJiggle = bpy.props.BoolProperty(name = 'Use jiggle')
 bpy.types.Object.jiggleDist = bpy.props.FloatProperty(name = 'Jiggle distance', default = 0, min = 0)
-bpy.types.Object.jiggleSpeed = bpy.props.FloatProperty(name = 'Jiggle speed', default = 0, min = 0)
+bpy.types.Object.jiggleDur = bpy.props.FloatProperty(name = 'Jiggle duration', default = 0, min = 0)
 bpy.types.Object.jiggleFrames = bpy.props.IntProperty(name = 'Jiggle frames', default = 0, min = 0)
 bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
@@ -815,7 +849,7 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.label(text = 'Animation')
 			self.layout.prop(ob, 'useJiggle')
 			self.layout.prop(ob, 'jiggleDist')
-			self.layout.prop(ob, 'jiggleSpeed')
+			self.layout.prop(ob, 'jiggleDur')
 			self.layout.prop(ob, 'jiggleFrames')
 		self.layout.label(text = 'Movement')
 		self.layout.prop(ob, 'moveSpeed')
