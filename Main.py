@@ -498,7 +498,7 @@ function overlaps (pos, size, pos2, size2)
 		|| pos[1] + size[1] < pos2[1]
 		|| pos[1] > pos2[1] + size2[1])
 }
-function dir_from_ang (ang)
+function ang_to_dir (ang)
 {
 	return [Math.cos(ang), Math.sin(ang)];
 }
@@ -506,7 +506,7 @@ function random_vector (maxDist)
 {
 	var dist = random(0, maxDist);
 	var ang = random(0, 2 * Math.PI);
-	var dir = dir_from_ang(ang);
+	var dir = ang_to_dir(ang);
 	return [dir[0] * dist, dir[1] * dist];
 }
 function magnitude (v)
