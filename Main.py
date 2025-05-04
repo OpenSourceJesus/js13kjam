@@ -498,11 +498,16 @@ function overlaps (pos, size, pos2, size2)
 		|| pos[1] + size[1] < pos2[1]
 		|| pos[1] > pos2[1] + size2[1])
 }
-function random_vector_2d (maxDist)
+function dir_from_ang (ang)
+{
+	return [Math.cos(ang), Math.sin(ang)];
+}
+function random_vector (maxDist)
 {
 	var dist = random(0, maxDist);
 	var ang = random(0, 2 * Math.PI);
-	return [Math.cos(ang) * dist, Math.sin(ang) * dist];
+	var dir = dir_from_ang(ang);
+	return [dir[0] * dist, dir[1] * dist];
 }
 function magnitude (v)
 {
@@ -622,7 +627,7 @@ class api
 				var pathValues_ = pathValues.slice();
 				for (var i2 = 0; i2 < pathValues.length; i2 += 2)
 				{
-					var offset = normalize(random_vector_2d(1));
+					var offset = normalize(random_vector(1));
 					offset = [offset[0] * jiggleDist, offset[1] * jiggleDist];
 					pathValues_[i2] += offset[0];
 					pathValues_[i2 + 1] += offset[1];
