@@ -532,6 +532,16 @@ function add_group (id, pos, txt)
 	document.body.appendChild(group);
 	return group;
 }
+function shuffle (list)
+{
+	var currentIdx = list.length;
+	while (currentIdx != 0)
+	{
+		var randIdx = Math.floor(Math.random() * currentIdx);
+		currentIdx --;
+		[list[currentIdx], list[randIdx]] = [list[randIdx], list[currentIdx]];
+	}
+}
 '''
 JS_API = '''
 class api
