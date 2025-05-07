@@ -317,6 +317,8 @@ def ExportObject (ob):
 		data.append(ob.scalePingPong)
 		data.append(ob.origin[0])
 		data.append(ob.origin[1])
+		data.append(ob.fillCrosshatchDensity * int(ob.useFillCrosshatch))
+		data.append(ob.strokeCrosshatchDensity * int(ob.useStrokeCrosshatch))
 		datas.append(data)
 	exportedObs.append(ob)
 
@@ -453,7 +455,7 @@ for(v of d)
 		a=[]
 		for(e of p.split('\\n')[i])
 			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],v[28],v[29])
 		i++
 	}
 	else if(l>5)
@@ -595,7 +597,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillCrosshatchDensity, strokeCrosshatchDensity)
 	{
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
@@ -614,6 +616,12 @@ class api
 		svg.setAttribute('transform', 'translate(' + (pos[0] - jiggleDist) + ',' + (pos[1] - jiggleDist) +')');
 		var path_ = document.createElement('path');
 		path_.id = id + ' ';
+		var fillColorTxt_ = fillColorTxt;
+		if (fillCrosshatchDensity > 0)
+			fillColorTxt_ = 'url(#_' + id + ')';
+		var lineColorTxt_ = lineColorTxt;
+		if (strokeCrosshatchDensity > 0)
+			lineColorTxt_ = 'url(#|' + id + ')';
 		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
 		path_.setAttribute('d', $.get_svg_path(pathValues, cyclic));
 		svg.appendChild(path_);
@@ -707,6 +715,36 @@ class api
 			anim.setAttribute('keytimes', times);
 			anim.setAttribute('additive', 'sum');
 			svg.innerHTML += anim.outerHTML;
+		}
+		var luminance = (.2126 * fillColor[0] + .7152 * fillColor[1] + .0722 * fillColor[2]) / 255;
+		if (fillCrosshatchDensity > 0)
+		{
+			var pattern = document.createElement('pattern');
+			pattern.id = '_' + id;
+			pattern.setAttribute('width', 100 / fillCrosshatchDensity * luminance / ((size[0] + jiggleDist * 2) / (size[1] + jiggleDist * 2)) + '%');
+			pattern.setAttribute('height', 100 / fillCrosshatchDensity * luminance + '%');
+			var line = document.createElement('line');
+			line.setAttribute('x1', 0);
+			line.setAttribute('y1', 0);
+			line.setAttribute('x2', 9);
+			line.setAttribute('y2', 9);
+			line.style = 'stroke-width:1;stroke:black';
+			pattern.appendChild(line);
+			var line = document.createElement('line');
+			line.setAttribute('x1', 0);
+			line.setAttribute('y1', 9);
+			line.setAttribute('x2', 9);
+			line.setAttribute('y2', 0);
+			line.style = 'stroke-width:1;stroke:black';
+			pattern.appendChild(line);
+			svg.innerHTML += pattern.outerHTML;
+		}
+		if (fillCrosshatchDensity > 0 || strokeCrosshatchDensity > 0)
+		{
+			path_ = path_.cloneNode();
+			path_.style.fill = fillColorTxt_;
+			path_.style.stroke = lineColorTxt_;
+			svg.innerHTML += path_.outerHTML;
 		}
 	}
 	main ()
@@ -897,6 +935,10 @@ bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive')
 bpy.types.Object.moveSpeed = bpy.props.FloatProperty(name = 'Move speed')
 bpy.types.Object.waypoint1 = bpy.props.PointerProperty(name = 'Waypoint 1', type = bpy.types.Object)
 bpy.types.Object.waypoint2 = bpy.props.PointerProperty(name = 'Waypoint 2', type = bpy.types.Object)
+bpy.types.Object.useFillCrosshatch = bpy.props.BoolProperty(name = 'Use fill crosshatch')
+bpy.types.Object.fillCrosshatchDensity = bpy.props.FloatProperty(name = 'Fill crosshatch density', min = 0)
+bpy.types.Object.useStrokeCrosshatch = bpy.props.BoolProperty(name = 'Use stroke crosshatch')
+bpy.types.Object.strokeCrosshatchDensity = bpy.props.FloatProperty(name = 'Stroke crosshatch density', min = 0)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1004,6 +1046,23 @@ class LightPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'color1Alpha')
 		self.layout.prop(ob, 'colorPositions')
 		self.layout.prop(ob, 'subtractive')
+
+@bpy.utils.register_class
+class MaterialPanel (bpy.types.Panel):
+	bl_idname = 'MATERIAL_PT_Material_Panel'
+	bl_label = 'Material'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'material'
+
+	def draw (self, context):
+		ob = context.active_object
+		if not ob or ob.type != 'CURVE':
+			return
+		self.layout.prop(ob, 'useFillCrosshatch')
+		self.layout.prop(ob, 'fillCrosshatchDensity')
+		self.layout.prop(ob, 'useStrokeCrosshatch')
+		self.layout.prop(ob, 'strokeCrosshatchDensity')
 
 if __name__ == '__main__':
 	q = o = test = None
