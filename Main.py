@@ -716,52 +716,10 @@ class api
 			anim.setAttribute('additive', 'sum');
 			svg.innerHTML += anim.outerHTML;
 		}
-		var luminance = (.2126 * fillColor[0] + .7152 * fillColor[1] + .0722 * fillColor[2]) / 255;
 		if (fillCrosshatchDensity > 0)
-		{
-			var pattern = document.createElement('pattern');
-			pattern.id = '_' + id;
-			pattern.setAttribute('width', 100 / fillCrosshatchDensity * luminance / ((size[0] + jiggleDist * 2) / (size[1] + jiggleDist * 2)) + '%');
-			pattern.setAttribute('height', 100 / fillCrosshatchDensity * luminance + '%');
-			var line = document.createElement('line');
-			line.setAttribute('x1', 0);
-			line.setAttribute('y1', 0);
-			line.setAttribute('x2', 9);
-			line.setAttribute('y2', 9);
-			line.style = 'stroke-width:1;stroke:black';
-			pattern.appendChild(line);
-			var line = document.createElement('line');
-			line.setAttribute('x1', 0);
-			line.setAttribute('y1', 9);
-			line.setAttribute('x2', 9);
-			line.setAttribute('y2', 0);
-			line.style = 'stroke-width:1;stroke:black';
-			pattern.appendChild(line);
-			svg.innerHTML += pattern.outerHTML;
-		}
+			svg.innerHTML += $.crosshatch('_' + id, fillColor, fillCrosshatchDensity, ((size[0] + jiggleDist * 2) / (size[1] + jiggleDist * 2))).outerHTML;
 		if (strokeCrosshatchDensity > 0)
-		{
-			luminance = (.2126 * lineColor[0] + .7152 * lineColor[1] + .0722 * lineColor[2]) / 255;
-			var pattern = document.createElement('pattern');
-			pattern.id = '|' + id;
-			pattern.setAttribute('width', 100 / strokeCrosshatchDensity * luminance / ((size[0] + jiggleDist * 2) / (size[1] + jiggleDist * 2)) + '%');
-			pattern.setAttribute('height', 100 / strokeCrosshatchDensity * luminance + '%');
-			var line = document.createElement('line');
-			line.setAttribute('x1', 0);
-			line.setAttribute('y1', 0);
-			line.setAttribute('x2', 9);
-			line.setAttribute('y2', 9);
-			line.style = 'stroke-width:1;stroke:black';
-			pattern.appendChild(line);
-			var line = document.createElement('line');
-			line.setAttribute('x1', 0);
-			line.setAttribute('y1', 9);
-			line.setAttribute('x2', 9);
-			line.setAttribute('y2', 0);
-			line.style = 'stroke-width:1;stroke:black';
-			pattern.appendChild(line);
-			svg.innerHTML += pattern.outerHTML;
-		}
+			svg.innerHTML += $.crosshatch('|' + id, lineColor, strokeCrosshatchDensity, ((size[0] + jiggleDist * 2) / (size[1] + jiggleDist * 2))).outerHTML;
 		if (fillCrosshatchDensity > 0 || strokeCrosshatchDensity > 0)
 		{
 			path_ = path_.cloneNode();
@@ -783,6 +741,29 @@ class api
 			this.prev=ts;
 			window.requestAnimationFrame(f)
 		});
+	}
+	crosshatch (id, color, density, aspectRatio)
+	{
+		var luminance = (.2126 * color[0] + .7152 * color[1] + .0722 * color[2]) / 255;
+		var pattern = document.createElement('pattern');
+		pattern.id = id;
+		pattern.setAttribute('width', 100 / density * luminance / aspectRatio + '%');
+		pattern.setAttribute('height', 100 / density * luminance + '%');
+		var line = document.createElement('line');
+		line.setAttribute('x1', 0);
+		line.setAttribute('y1', 0);
+		line.setAttribute('x2', 9);
+		line.setAttribute('y2', 9);
+		line.style = 'stroke-width:1;stroke:black';
+		pattern.appendChild(line);
+		var line = document.createElement('line');
+		line.setAttribute('x1', 0);
+		line.setAttribute('y1', 9);
+		line.setAttribute('x2', 9);
+		line.setAttribute('y2', 0);
+		line.style = 'stroke-width:1;stroke:black';
+		pattern.appendChild(line);
+		return pattern;
 	}
 }
 $=new api
