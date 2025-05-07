@@ -741,6 +741,7 @@ class api
 		}
 		if (strokeCrosshatchDensity > 0)
 		{
+			luminance = (.2126 * lineColor[0] + .7152 * lineColor[1] + .0722 * lineColor[2]) / 255;
 			var pattern = document.createElement('pattern');
 			pattern.id = '|' + id;
 			pattern.setAttribute('width', 100 / strokeCrosshatchDensity * luminance / ((size[0] + jiggleDist * 2) / (size[1] + jiggleDist * 2)) + '%');
