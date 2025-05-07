@@ -370,6 +370,7 @@ def GetBlenderData ():
 				initCode.append(script)
 			else:
 				updateCode.append(script)
+	userJS = userJS.replace('\\', '\\\\')
 	return (datas, initCode, updateCode, userJS)
 
 buildInfo = {
