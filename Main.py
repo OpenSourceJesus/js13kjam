@@ -739,6 +739,28 @@ class api
 			pattern.appendChild(line);
 			svg.innerHTML += pattern.outerHTML;
 		}
+		if (strokeCrosshatchDensity > 0)
+		{
+			var pattern = document.createElement('pattern');
+			pattern.id = '|' + id;
+			pattern.setAttribute('width', 100 / strokeCrosshatchDensity * luminance / ((size[0] + jiggleDist * 2) / (size[1] + jiggleDist * 2)) + '%');
+			pattern.setAttribute('height', 100 / strokeCrosshatchDensity * luminance + '%');
+			var line = document.createElement('line');
+			line.setAttribute('x1', 0);
+			line.setAttribute('y1', 0);
+			line.setAttribute('x2', 9);
+			line.setAttribute('y2', 9);
+			line.style = 'stroke-width:1;stroke:black';
+			pattern.appendChild(line);
+			var line = document.createElement('line');
+			line.setAttribute('x1', 0);
+			line.setAttribute('y1', 9);
+			line.setAttribute('x2', 9);
+			line.setAttribute('y2', 0);
+			line.style = 'stroke-width:1;stroke:black';
+			pattern.appendChild(line);
+			svg.innerHTML += pattern.outerHTML;
+		}
 		if (fillCrosshatchDensity > 0 || strokeCrosshatchDensity > 0)
 		{
 			path_ = path_.cloneNode();
