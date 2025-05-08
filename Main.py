@@ -474,6 +474,24 @@ for(v of d)
 $.main()
 '''
 JS = '''
+function dot (from, to)
+{
+	return from[0] * to[0] + from[1] * to[1];
+}
+function ang (from, to)
+{
+	return Math.acos(dot(normalize(from), normalize(to))) * (180 / Math.PI);
+}
+function signed_ang (from, to)
+{
+    return ang(from, to) * Math.sign(from[0] * to[1] - from[1] * to[0]);
+}
+function rotate_to (from, to, maxAng)
+{
+	var ang = Math.atan2(from[1], from[0]) + clamp(signed_ang(from, to), -maxAng, maxAng) / (180 / Math.PI);
+	var mag = magnitude(from);
+	return [Math.cos(ang) * mag, Math.sin(ang) * mag];
+}
 function get_pos_and_size (elmt)
 {
 	return [[parseInt(elmt.getAttribute('x')), parseInt(elmt.getAttribute('y'))], [parseInt(elmt.getAttribute('width')), parseInt(elmt.getAttribute('height'))]]
