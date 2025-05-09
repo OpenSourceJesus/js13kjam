@@ -630,8 +630,9 @@ class api
 		svg.setAttribute('collide', collide);
 		svg.setAttribute('x', pos[0] - jiggleDist);
 		svg.setAttribute('y', pos[1] - jiggleDist);
-		svg.setAttribute('width', size[0] + jiggleDist * 2);
-		svg.setAttribute('height', size[1] + jiggleDist * 2);
+		size = [size[0] + jiggleDist * 2, size[1] + jiggleDist * 2];
+		svg.setAttribute('width', size[0]);
+		svg.setAttribute('height', size[1]);
 		svg.setAttribute('transform', 'translate(' + (pos[0] - jiggleDist) + ',' + (pos[1] - jiggleDist) +')');
 		var path_ = document.createElement('path');
 		path_.id = id + ' ';
@@ -736,9 +737,9 @@ class api
 			svg.innerHTML += anim.outerHTML;
 		}
 		if (fillCrosshatchDensity > 0)
-			svg.innerHTML += $.crosshatch('_' + id, fillColor, fillCrosshatchDensity, ((size[0] + jiggleDist * 2) / (size[1] + jiggleDist * 2))).outerHTML;
+			svg.innerHTML += $.crosshatch('_' + id, fillColor, fillCrosshatchDensity, size[0] / size[1]).outerHTML;
 		if (strokeCrosshatchDensity > 0)
-			svg.innerHTML += $.crosshatch('|' + id, lineColor, strokeCrosshatchDensity, ((size[0] + jiggleDist * 2) / (size[1] + jiggleDist * 2))).outerHTML;
+			svg.innerHTML += $.crosshatch('|' + id, lineColor, strokeCrosshatchDensity, size[0] / size[1]).outerHTML;
 		if (fillCrosshatchDensity > 0 || strokeCrosshatchDensity > 0)
 		{
 			path_ = path_.cloneNode();
@@ -768,20 +769,10 @@ class api
 		pattern.id = id;
 		pattern.setAttribute('width', 100 / density * luminance / aspectRatio + '%');
 		pattern.setAttribute('height', 100 / density * luminance + '%');
-		var line = document.createElement('line');
-		line.setAttribute('x1', 0);
-		line.setAttribute('y1', 0);
-		line.setAttribute('x2', 9);
-		line.setAttribute('y2', 9);
-		line.style = 'stroke-width:1;stroke:black';
-		pattern.appendChild(line);
-		var line = document.createElement('line');
-		line.setAttribute('x1', 0);
-		line.setAttribute('y1', 9);
-		line.setAttribute('x2', 9);
-		line.setAttribute('y2', 0);
-		line.style = 'stroke-width:1;stroke:black';
-		pattern.appendChild(line);
+		var path_ = document.createElement('path');
+		path_.setAttribute('d', 'M 0 0 L 9 9 M 9 0 L 0 9');
+		path_.style = 'stroke-width:1;stroke:black';
+		pattern.appendChild(path_);
 		return pattern;
 	}
 }
