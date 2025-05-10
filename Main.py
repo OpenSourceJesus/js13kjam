@@ -319,6 +319,8 @@ def ExportObject (ob):
 		data.append(ob.origin[1])
 		data.append(ob.fillCrosshatchDensity * int(ob.useFillCrosshatch))
 		data.append(ob.strokeCrosshatchDensity * int(ob.useStrokeCrosshatch))
+		data.append(ob.mirrorX)
+		data.append(ob.mirrorY)
 		datas.append(data)
 	exportedObs.append(ob)
 
@@ -456,7 +458,7 @@ for(v of d)
 		a=[]
 		for(e of p.split('\\n')[i])
 			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],v[28],v[29])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],v[28],v[29],v[30],v[31])
 		i++
 	}
 	else if(l>5)
@@ -616,7 +618,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillCrosshatchDensity, strokeCrosshatchDensity)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillCrosshatchDensity, strokeCrosshatchDensity, mirrorX, mirrorY)
 	{
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
@@ -626,14 +628,17 @@ class api
 			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		var svg = document.createElement('svg');
 		svg.id = id;
-		svg.style = 'z-index:' + zIndex + ';position:absolute;transform-origin:' + origin[0] + '% ' + origin[1] + '%';
+		svg.style = 'z-index:' + zIndex + ';position:absolute';
+		svg.setAttribute('transform-origin', origin[0] + '% ' + origin[1] + '%');
 		svg.setAttribute('collide', collide);
-		svg.setAttribute('x', pos[0] - jiggleDist);
-		svg.setAttribute('y', pos[1] - jiggleDist);
+		pos = [pos[0] + jiggleDist, pos[1] + jiggleDist];
+		svg.setAttribute('x', pos[0]);
+		svg.setAttribute('y', pos[1]);
 		size = [size[0] + jiggleDist * 2, size[1] + jiggleDist * 2];
 		svg.setAttribute('width', size[0]);
 		svg.setAttribute('height', size[1]);
-		svg.setAttribute('transform', 'translate(' + (pos[0] - jiggleDist) + ',' + (pos[1] - jiggleDist) +')');
+		var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
+		svg.setAttribute('transform', trs);
 		var path_ = document.createElement('path');
 		path_.id = id + ' ';
 		var fillColorTxt_ = fillColorTxt;
@@ -746,6 +751,18 @@ class api
 			path_.style.fill = fillColorTxt_;
 			path_.style.stroke = lineColorTxt_;
 			svg.innerHTML += path_.outerHTML;
+		}
+		if (mirrorX)
+		{
+			svg = $.copy_node(id, '~' + id, pos);
+			svg.setAttribute('transform', trs + ',scale(-1 1)');
+			svg.setAttribute('transform-origin', 50 - (origin[0] - 50) + '% ' + origin[1] + '%');
+		}
+		if (mirrorY)
+		{
+			svg = $.copy_node(id, '`' + id, pos);
+			svg.setAttribute('transform', trs + ',scale(1 -1)');
+			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
 		}
 	}
 	main ()
@@ -926,6 +943,8 @@ bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useSvgStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
 bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke width')
 bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name = 'Svg stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
+bpy.types.Object.mirrorX = bpy.props.BoolProperty(name = 'Mirror on x-axis')
+bpy.types.Object.mirrorY = bpy.props.BoolProperty(name = 'Mirror on y-axis')
 bpy.types.Object.useJiggle = bpy.props.BoolProperty(name = 'Use jiggle')
 bpy.types.Object.jiggleDist = bpy.props.FloatProperty(name = 'Jiggle distance', min = 0)
 bpy.types.Object.jiggleDur = bpy.props.FloatProperty(name = 'Jiggle duration', min = 0)
@@ -999,6 +1018,8 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'useSvgStroke')
 			self.layout.prop(ob, 'svgStrokeWidth')
 			self.layout.prop(ob, 'svgStrokeColor')
+			self.layout.prop(ob, 'mirrorX')
+			self.layout.prop(ob, 'mirrorY')
 			self.layout.label(text = 'Animation')
 			self.layout.label(text = 'Jiggle')
 			self.layout.prop(ob, 'useJiggle')
