@@ -308,8 +308,18 @@ def ExportObject (ob):
 		data.append(ob.scalePingPong)
 		data.append(ob.origin[0])
 		data.append(ob.origin[1])
-		data.append(ob.fillCrosshatchDensity * int(ob.useFillCrosshatch))
-		data.append(ob.strokeCrosshatchDensity * int(ob.useStrokeCrosshatch))
+		data.append(ob.fillHatchDensity[0] * int(ob.useFillHatch[0]))
+		data.append(ob.fillHatchDensity[1] * int(ob.useFillHatch[1]))
+		data.append(ob.fillHatchRandDensity[0] / 100 * int(ob.useFillHatch[0]))
+		data.append(ob.fillHatchRandDensity[1] / 100 * int(ob.useFillHatch[1]))
+		data.append(ob.fillHatchAng[0] * int(ob.useFillHatch[0]))
+		data.append(ob.fillHatchAng[1] * int(ob.useFillHatch[1]))
+		data.append(ob.strokeHatchDensity[0] * int(ob.useStrokeHatch[0]))
+		data.append(ob.strokeHatchDensity[1] * int(ob.useStrokeHatch[1]))
+		data.append(ob.strokeHatchRandDensity[0] / 100 * int(ob.useStrokeHatch[0]))
+		data.append(ob.strokeHatchRandDensity[1] / 100 * int(ob.useStrokeHatch[1]))
+		data.append(ob.strokeHatchAng[0] * int(ob.useStrokeHatch[0]))
+		data.append(ob.strokeHatchAng[1] * int(ob.useStrokeHatch[1]))
 		data.append(ob.mirrorX)
 		data.append(ob.mirrorY)
 		datas.append(data)
@@ -363,7 +373,6 @@ def GetBlenderData ():
 				initCode.append(script)
 			else:
 				updateCode.append(script)
-	userJS = userJS.replace('\\', '\\\\')
 	return (datas, initCode, updateCode, userJS)
 
 buildInfo = {
@@ -449,7 +458,7 @@ for(v of d)
 		a=[]
 		for(e of p.split('\\n')[i])
 			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],v[28],v[29],v[30],v[31])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],[v[28],v[29]],[v[30],v[31]],[v[32],v[33]],[v[34],v[35]],[v[36],v[37]],[v[38],v[39]],v[40],v[41])
 		i++
 	}
 	else if(l>5)
@@ -609,7 +618,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillCrosshatchDensity, strokeCrosshatchDensity, mirrorX, mirrorY)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, strokeHatchDensity, strokeHatchRandDensity, strokeHatchAng, mirrorX, mirrorY)
 	{
 		var fillColorTxt = 'transparent';
 		if (fillColor[3] > 0)
@@ -632,12 +641,6 @@ class api
 		svg.setAttribute('transform', trs);
 		var path_ = document.createElement('path');
 		path_.id = id + ' ';
-		var fillColorTxt_ = fillColorTxt;
-		if (fillCrosshatchDensity > 0)
-			fillColorTxt_ = 'url(#_' + id + ')';
-		var lineColorTxt_ = lineColorTxt;
-		if (strokeCrosshatchDensity > 0)
-			lineColorTxt_ = 'url(#|' + id + ')';
 		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
 		path_.setAttribute('d', $.get_svg_path(pathValues, cyclic));
 		svg.appendChild(path_);
@@ -732,16 +735,40 @@ class api
 			anim.setAttribute('additive', 'sum');
 			svg.innerHTML += anim.outerHTML;
 		}
-		if (fillCrosshatchDensity > 0)
-			svg.innerHTML += $.crosshatch('_' + id, fillColor, fillCrosshatchDensity, size[0] / size[1]).outerHTML;
-		if (strokeCrosshatchDensity > 0)
-			svg.innerHTML += $.crosshatch('|' + id, lineColor, strokeCrosshatchDensity, size[0] / size[1]).outerHTML;
-		if (fillCrosshatchDensity > 0 || strokeCrosshatchDensity > 0)
+		var aspectRatio = size[0] / size[1];
+		if (magnitude(fillHatchDensity) > 0)
 		{
-			path_ = path_.cloneNode();
-			path_.style.fill = fillColorTxt_;
-			path_.style.stroke = lineColorTxt_;
-			svg.innerHTML += path_.outerHTML;
+			if (fillHatchDensity[0] > 0)
+			{
+				svg.innerHTML += $.hatch('_' + id, fillColor, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], aspectRatio).outerHTML;
+				var path2 = path_.cloneNode();
+				path2.style.fill = 'url(#_' + id + ')';
+				svg.innerHTML += path2.outerHTML;
+			}
+			if (fillHatchDensity[1] > 0)
+			{
+				svg.innerHTML += $.hatch('@' + id, fillColor, fillHatchDensity[1], fillHatchRandDensity[1], fillHatchAng[1], aspectRatio).outerHTML;
+				var path2 = path_.cloneNode();
+				path2.style.fill = 'url(#@' + id + ')';
+				svg.innerHTML += path2.outerHTML;
+			}
+		}
+		if (magnitude(strokeHatchDensity) > 0)
+		{
+			if (strokeHatchDensity[0] > 0)
+			{
+				svg.innerHTML += $.hatch('|' + id, lineColor, strokeHatchDensity[0], strokeHatchRandDensity[0], strokeHatchAng[0], aspectRatio).outerHTML;
+				var path2 = path_.cloneNode();
+				path2.style.stroke = 'url(#|' + id + ')';
+				svg.innerHTML += path2.outerHTML;
+			}
+			if (strokeHatchDensity[1] > 0)
+			{
+				svg.innerHTML += $.hatch('$' + id, lineColor, strokeHatchDensity[1], strokeHatchRandDensity[1], strokeHatchAng[1], aspectRatio).outerHTML;
+				var path2 = path_.cloneNode();
+				path2.style.stroke = 'url(#$' + id + ')';
+				svg.innerHTML += path2.outerHTML;
+			}
 		}
 		if (mirrorX)
 		{
@@ -770,15 +797,23 @@ class api
 			window.requestAnimationFrame(f)
 		});
 	}
-	crosshatch (id, color, density, aspectRatio)
+	hatch (id, color, density, randDensity, ang, aspectRatio)
 	{
 		var luminance = (.2126 * color[0] + .7152 * color[1] + .0722 * color[2]) / 255;
 		var pattern = document.createElement('pattern');
 		pattern.id = id;
+		pattern.style = 'transform:rotate(' + ang + 'deg)';
 		pattern.setAttribute('width', 100 / density * luminance / aspectRatio + '%');
 		pattern.setAttribute('height', 100 / density * luminance + '%');
 		var path_ = document.createElement('path');
-		path_.setAttribute('d', 'M 0 0 L 9 9 M 9 0 L 0 9');
+		var pathTxt = '';
+		var x = 0;
+		for (var i = 0; i < 9; i ++)
+		{
+			pathTxt += 'M ' + x + ' 0 L ' + x + ' ' + 99 + ' ';
+			x += random(density - density * randDensity, density + density * randDensity);
+		}
+		path_.setAttribute('d', pathTxt);
 		path_.style = 'stroke-width:1;stroke:black';
 		pattern.appendChild(path_);
 		return pattern;
@@ -954,10 +989,14 @@ bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive')
 bpy.types.Object.moveSpeed = bpy.props.FloatProperty(name = 'Move speed')
 bpy.types.Object.waypoint1 = bpy.props.PointerProperty(name = 'Waypoint 1', type = bpy.types.Object)
 bpy.types.Object.waypoint2 = bpy.props.PointerProperty(name = 'Waypoint 2', type = bpy.types.Object)
-bpy.types.Object.useFillCrosshatch = bpy.props.BoolProperty(name = 'Use fill crosshatch')
-bpy.types.Object.fillCrosshatchDensity = bpy.props.FloatProperty(name = 'Fill crosshatch density', min = 0)
-bpy.types.Object.useStrokeCrosshatch = bpy.props.BoolProperty(name = 'Use stroke crosshatch')
-bpy.types.Object.strokeCrosshatchDensity = bpy.props.FloatProperty(name = 'Stroke crosshatch density', min = 0)
+bpy.types.Object.useFillHatch = bpy.props.BoolVectorProperty(name = 'Use fill hatch', size = 2)
+bpy.types.Object.fillHatchDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch density', size = 2, min = 0)
+bpy.types.Object.fillHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch randomize density percent', size = 2, min = 0)
+bpy.types.Object.fillHatchAng = bpy.props.FloatVectorProperty(name = 'Fill hatch angle', size = 2, min = -360, max = 360)
+bpy.types.Object.useStrokeHatch = bpy.props.BoolVectorProperty(name = 'Use stroke hatch', size = 2)
+bpy.types.Object.strokeHatchDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch density', size = 2, min = 0)
+bpy.types.Object.strokeHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch randomize density percent', size = 2, min = 0)
+bpy.types.Object.strokeHatchAng = bpy.props.FloatVectorProperty(name = 'Stroke hatch angle', size = 2, min = -360, max = 360)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1080,10 +1119,14 @@ class MaterialPanel (bpy.types.Panel):
 		ob = context.active_object
 		if not ob or ob.type != 'CURVE':
 			return
-		self.layout.prop(ob, 'useFillCrosshatch')
-		self.layout.prop(ob, 'fillCrosshatchDensity')
-		self.layout.prop(ob, 'useStrokeCrosshatch')
-		self.layout.prop(ob, 'strokeCrosshatchDensity')
+		self.layout.prop(ob, 'useFillHatch')
+		self.layout.prop(ob, 'fillHatchDensity')
+		self.layout.prop(ob, 'fillHatchRandDensity')
+		self.layout.prop(ob, 'fillHatchAng')
+		self.layout.prop(ob, 'useStrokeHatch')
+		self.layout.prop(ob, 'strokeHatchDensity')
+		self.layout.prop(ob, 'strokeHatchRandDensity')
+		self.layout.prop(ob, 'strokeHatchAng')
 
 if __name__ == '__main__':
 	q = o = test = None
