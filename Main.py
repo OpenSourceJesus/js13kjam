@@ -810,8 +810,9 @@ class api
 		var x = 0;
 		for (var i = 0; i < 9; i ++)
 		{
-			pathTxt += 'M ' + x + ' 0 L ' + x + ' ' + 99 + ' ';
-			x += random(density - density * randDensity, density + density * randDensity);
+			var off = random(-density * randDensity, density * randDensity);
+			pathTxt += 'M ' + (x + off) + ' 0 L ' + (x + off) + ' ' + 99 + ' ';
+			x += density;
 		}
 		path_.setAttribute('d', pathTxt);
 		path_.style = 'stroke-width:1;stroke:black';
