@@ -272,18 +272,19 @@ def ExportObject (ob):
 				pathData[i] = ToByteString((maxPathVector[1] - pathValue + minPathVector[1]) + offset[1], world.quantizeSvgs)
 			else:
 				pathData[i] = ToByteString(pathValue + offset[0], world.quantizeSvgs)
-		data.append(int(round(min.x)))
-		data.append(int(round(-max.y)))
+		strokeWidth = 0
+		if ob.useSvgStroke:
+			strokeWidth = ob.svgStrokeWidth
+		jiggleDist = ob.jiggleDist * int(ob.useJiggle)
+		data.append(int(round(min.x - strokeWidth / 2 - jiggleDist)))
+		data.append(int(round(-max.y + strokeWidth / 2 + jiggleDist)))
 		size = max - min
-		data.append(int(round(size.x)) + 3)
-		data.append(int(round(size.y)) + 3)
+		data.append(int(round(size.x + strokeWidth + jiggleDist * 2)) + 3)
+		data.append(int(round(size.y + strokeWidth + jiggleDist * 2)) + 3)
 		materialColor = DEFAULT_COLOR
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
 		data.append(GetColor(materialColor))
-		strokeWidth = 0
-		if ob.useSvgStroke:
-			strokeWidth = ob.svgStrokeWidth
 		data.append(round(strokeWidth))
 		data.append(GetColor(ob.svgStrokeColor))
 		data.append(ob.name)
@@ -606,7 +607,7 @@ class api
 		var indexOfLastChild = html.indexOf('</svg>', html.indexOf('id="' + children[1])) + 6;
 		document.body.innerHTML = html.slice(0, indexOfFirstChild) + '<g id="' + id + '">' + html.slice(indexOfFirstChild, indexOfLastChild) + '</g>' + html.slice(indexOfLastChild);
 	}
-	add_radial_gradient (id, pos, zIndex, diameter, color, color2, color3, colorPositions, subtractive)
+	add_radial_gradient (id, pos, zIdx, diameter, color, color2, color3, colorPositions, subtractive)
 	{
 		var group = document.createElement('g');
 		group.id = id;
@@ -615,23 +616,21 @@ class api
 		var mixMode = 'lighter';
 		if (subtractive)
 			mixMode = 'darker';
-		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIndex + ';mix-blend-mode:plus-' + mixMode;
+		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, strokeHatchDensity, strokeHatchRandDensity, strokeHatchAng, mirrorX, mirrorY)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIdx, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, strokeHatchDensity, strokeHatchRandDensity, strokeHatchAng, mirrorX, mirrorY)
 	{
 		var fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
 		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		var svg = document.createElement('svg');
 		svg.setAttribute('fill-opacity', fillColor[3] / 255);
 		svg.id = id;
-		svg.style = 'z-index:' + zIndex + ';position:absolute';
+		svg.style = 'z-index:' + zIdx + ';position:absolute';
 		svg.setAttribute('transform-origin', origin[0] + '% ' + origin[1] + '%');
 		svg.setAttribute('collide', collide);
-		pos = [pos[0] + jiggleDist, pos[1] + jiggleDist];
 		svg.setAttribute('x', pos[0]);
 		svg.setAttribute('y', pos[1]);
-		size = [size[0] + lineWidth + jiggleDist * 2, size[1] + lineWidth + jiggleDist * 2];
 		svg.setAttribute('width', size[0]);
 		svg.setAttribute('height', size[1]);
 		var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
@@ -641,13 +640,16 @@ class api
 		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
 		path_.setAttribute('d', $.get_svg_path(pathValues, cyclic));
 		svg.appendChild(path_);
+		//document.body.appendChild(svg);
 		document.body.innerHTML += svg.outerHTML;
-		var svgTxt = svg.outerHTML;
+		var off = lineWidth / 2 + jiggleDist;
+		var min = 32 - off;
+		svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
 		svg = document.getElementById(id);
-		var svgRect = svg.getBoundingClientRect();
 		path_ = document.getElementById(id + ' ');
+		var svgRect = svg.getBoundingClientRect();
 		var pathRect = path_.getBoundingClientRect();
-		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x + jiggleDist) + ',' + (svgRect.y - pathRect.y + jiggleDist) + ')');
+		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x + off) + ' ' + (svgRect.y - pathRect.y + off) + ')');
 		if (jiggleFrames > 0)
 		{
 			var anim = document.createElement('animate');
@@ -661,10 +663,10 @@ class api
 				var pathValues_ = pathValues.slice();
 				for (var i2 = 0; i2 < pathValues.length; i2 += 2)
 				{
-					var offset = normalize(random_vector(1));
-					offset = [offset[0] * jiggleDist, offset[1] * jiggleDist];
-					pathValues_[i2] += offset[0];
-					pathValues_[i2 + 1] += offset[1];
+					off = normalize(random_vector(1));
+					off = [off[0] * jiggleDist, off[1] * jiggleDist];
+					pathValues_[i2] += off[0];
+					pathValues_[i2 + 1] += off[1];
 				}
 				var frame = $.get_svg_path(pathValues_, cyclic);
 				if (i == 0)
