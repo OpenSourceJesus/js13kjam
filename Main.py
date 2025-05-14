@@ -640,7 +640,6 @@ class api
 		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
 		path_.setAttribute('d', $.get_svg_path(pathValues, cyclic));
 		svg.appendChild(path_);
-		//document.body.appendChild(svg);
 		document.body.innerHTML += svg.outerHTML;
 		var off = lineWidth / 2 + jiggleDist;
 		var min = 32 - off;
