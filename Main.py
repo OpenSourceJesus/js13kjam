@@ -620,13 +620,10 @@ class api
 	}
 	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIndex, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, strokeHatchDensity, strokeHatchRandDensity, strokeHatchAng, mirrorX, mirrorY)
 	{
-		var fillColorTxt = 'transparent';
-		if (fillColor[3] > 0)
-			fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
-		var lineColorTxt = 'transparent';
-		if (lineWidth > 0)
-			lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
+		var fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
+		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		var svg = document.createElement('svg');
+		svg.setAttribute('fill-opacity', fillColor[3] / 255);
 		svg.id = id;
 		svg.style = 'z-index:' + zIndex + ';position:absolute';
 		svg.setAttribute('transform-origin', origin[0] + '% ' + origin[1] + '%');
@@ -634,7 +631,7 @@ class api
 		pos = [pos[0] + jiggleDist, pos[1] + jiggleDist];
 		svg.setAttribute('x', pos[0]);
 		svg.setAttribute('y', pos[1]);
-		size = [size[0] + jiggleDist * 2, size[1] + jiggleDist * 2];
+		size = [size[0] + lineWidth + jiggleDist * 2, size[1] + lineWidth + jiggleDist * 2];
 		svg.setAttribute('width', size[0]);
 		svg.setAttribute('height', size[1]);
 		var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
@@ -752,6 +749,7 @@ class api
 				path2.style.fill = 'url(#@' + id + ')';
 				svg.innerHTML += path2.outerHTML;
 			}
+			lineColor[3] = 255;
 		}
 		if (magnitude(strokeHatchDensity) > 0)
 		{
@@ -769,7 +767,9 @@ class api
 				path2.style.stroke = 'url(#$' + id + ')';
 				svg.innerHTML += path2.outerHTML;
 			}
+			lineColor[3] = 255;
 		}
+		svg.setAttribute('stroke-opacity', lineColor[3] / 255);
 		if (mirrorX)
 		{
 			svg = $.copy_node(id, '~' + id, pos);
@@ -782,6 +782,28 @@ class api
 			svg.setAttribute('transform', trs + ',scale(1 -1)');
 			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
 		}
+	}
+	hatch (id, color, density, randDensity, ang, aspectRatio)
+	{
+		var luminance = (.2126 * color[0] + .7152 * color[1] + .0722 * color[2]) / 255;
+		var pattern = document.createElement('pattern');
+		pattern.id = id;
+		pattern.style = 'transform:rotate(' + ang + 'deg)';
+		pattern.setAttribute('width', 100 / density * luminance / aspectRatio + '%');
+		pattern.setAttribute('height', 100 / density * luminance + '%');
+		var path_ = document.createElement('path');
+		var pathTxt = '';
+		var x = 0;
+		for (var i = 0; i < 99; i ++)
+		{
+			var off = random(-15 * randDensity, 15 * randDensity);
+			pathTxt += 'M ' + (x + off) + ' 0 L ' + (x + off) + ' ' + 99 + ' ';
+			x += 15;
+		}
+		path_.setAttribute('d', pathTxt);
+		path_.style = 'stroke-width:1;stroke:black';
+		pattern.appendChild(path_);
+		return pattern;
 	}
 	main ()
 	{
@@ -796,28 +818,6 @@ class api
 			this.prev=ts;
 			window.requestAnimationFrame(f)
 		});
-	}
-	hatch (id, color, density, randDensity, ang, aspectRatio)
-	{
-		var luminance = (.2126 * color[0] + .7152 * color[1] + .0722 * color[2]) / 255;
-		var pattern = document.createElement('pattern');
-		pattern.id = id;
-		pattern.style = 'transform:rotate(' + ang + 'deg)';
-		pattern.setAttribute('width', 100 / density * luminance / aspectRatio + '%');
-		pattern.setAttribute('height', 100 / density * luminance + '%');
-		var path_ = document.createElement('path');
-		var pathTxt = '';
-		var x = 0;
-		for (var i = 0; i < 9; i ++)
-		{
-			var off = random(-density * randDensity, density * randDensity);
-			pathTxt += 'M ' + (x + off) + ' 0 L ' + (x + off) + ' ' + 99 + ' ';
-			x += density;
-		}
-		path_.setAttribute('d', pathTxt);
-		path_.style = 'stroke-width:1;stroke:black';
-		pattern.appendChild(path_);
-		return pattern;
 	}
 }
 $=new api
