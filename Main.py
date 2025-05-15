@@ -315,12 +315,16 @@ def ExportObject (ob):
 		data.append(ob.fillHatchRandDensity[1] / 100 * int(ob.useFillHatch[1]))
 		data.append(ob.fillHatchAng[0] * int(ob.useFillHatch[0]))
 		data.append(ob.fillHatchAng[1] * int(ob.useFillHatch[1]))
+		data.append(ob.fillHatchWidth[0] * int(ob.useFillHatch[0]))
+		data.append(ob.fillHatchWidth[1] * int(ob.useFillHatch[1]))
 		data.append(ob.strokeHatchDensity[0] * int(ob.useStrokeHatch[0]))
 		data.append(ob.strokeHatchDensity[1] * int(ob.useStrokeHatch[1]))
 		data.append(ob.strokeHatchRandDensity[0] / 100 * int(ob.useStrokeHatch[0]))
 		data.append(ob.strokeHatchRandDensity[1] / 100 * int(ob.useStrokeHatch[1]))
 		data.append(ob.strokeHatchAng[0] * int(ob.useStrokeHatch[0]))
 		data.append(ob.strokeHatchAng[1] * int(ob.useStrokeHatch[1]))
+		data.append(ob.strokeHatchWidth[0] * int(ob.useStrokeHatch[0]))
+		data.append(ob.strokeHatchWidth[1] * int(ob.useStrokeHatch[1]))
 		data.append(ob.mirrorX)
 		data.append(ob.mirrorY)
 		datas.append(data)
@@ -459,7 +463,7 @@ for(v of d)
 		a=[]
 		for(e of p.split('\\n')[i])
 			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],[v[28],v[29]],[v[30],v[31]],[v[32],v[33]],[v[34],v[35]],[v[36],v[37]],[v[38],v[39]],v[40],v[41])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],[v[28],v[29]],[v[30],v[31]],[v[32],v[33]],[v[34],v[35]],[v[36],v[37]],[v[38],v[39]],[v[40],v[41]],[v[42],v[43]],v[44],v[45])
 		i++
 	}
 	else if(l>5)
@@ -619,7 +623,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIdx, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, strokeHatchDensity, strokeHatchRandDensity, strokeHatchAng, mirrorX, mirrorY)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIdx, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY)
 	{
 		var fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
 		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
@@ -736,38 +740,20 @@ class api
 		var aspectRatio = size[0] / size[1];
 		if (magnitude(fillHatchDensity) > 0)
 		{
+			var args = [fillColor, aspectRatio, true, svg, path_]; 
 			if (fillHatchDensity[0] > 0)
-			{
-				svg.innerHTML += $.hatch('_' + id, fillColor, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], aspectRatio).outerHTML;
-				var path2 = path_.cloneNode();
-				path2.style.fill = 'url(#_' + id + ')';
-				svg.innerHTML += path2.outerHTML;
-			}
+				$.hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
 			if (fillHatchDensity[1] > 0)
-			{
-				svg.innerHTML += $.hatch('@' + id, fillColor, fillHatchDensity[1], fillHatchRandDensity[1], fillHatchAng[1], aspectRatio).outerHTML;
-				var path2 = path_.cloneNode();
-				path2.style.fill = 'url(#@' + id + ')';
-				svg.innerHTML += path2.outerHTML;
-			}
+				$.hatch ('|' + id, ...args, fillHatchDensity[1], fillHatchRandDensity[1], fillHatchAng[1], fillHatchWidth[1]);
 			lineColor[3] = 255;
 		}
-		if (magnitude(strokeHatchDensity) > 0)
+		if (magnitude(lineHatchDensity) > 0)
 		{
-			if (strokeHatchDensity[0] > 0)
-			{
-				svg.innerHTML += $.hatch('|' + id, lineColor, strokeHatchDensity[0], strokeHatchRandDensity[0], strokeHatchAng[0], aspectRatio).outerHTML;
-				var path2 = path_.cloneNode();
-				path2.style.stroke = 'url(#|' + id + ')';
-				svg.innerHTML += path2.outerHTML;
-			}
-			if (strokeHatchDensity[1] > 0)
-			{
-				svg.innerHTML += $.hatch('$' + id, lineColor, strokeHatchDensity[1], strokeHatchRandDensity[1], strokeHatchAng[1], aspectRatio).outerHTML;
-				var path2 = path_.cloneNode();
-				path2.style.stroke = 'url(#$' + id + ')';
-				svg.innerHTML += path2.outerHTML;
-			}
+			var args = [lineColor, aspectRatio, false, svg, path_]; 
+			if (lineHatchDensity[0] > 0)
+				$.hatch ('@' + id, ...args, lineHatchDensity[0], lineHatchRandDensity[0], lineHatchAng[0], lineHatchWidth[0]);
+			if (lineHatchDensity[1] > 0)
+				$.hatch ('$' + id, ...args, lineHatchDensity[1], lineHatchRandDensity[1], lineHatchAng[1], lineHatchWidth[1]);
 			lineColor[3] = 255;
 		}
 		svg.setAttribute('stroke-opacity', lineColor[3] / 255);
@@ -784,44 +770,52 @@ class api
 			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
 		}
 	}
-	hatch (id, color, density, randDensity, ang, aspectRatio)
+	hatch (id, color, aspectRatio, useFIll, svg, path, density, randDensity, ang, width)
 	{
 		var luminance = (.2126 * color[0] + .7152 * color[1] + .0722 * color[2]) / 255;
 		var pattern = document.createElement('pattern');
 		pattern.id = id;
 		pattern.style = 'transform:rotate(' + ang + 'deg)';
-		pattern.setAttribute('width', 100 / density * luminance / aspectRatio + '%');
-		pattern.setAttribute('height', 100 / density * luminance + '%');
+		pattern.setAttribute('width', '100%');
+		pattern.setAttribute('height', '100%');
+		pattern.setAttribute('patternunits', 'userSpaceOnUse');
 		var path_ = document.createElement('path');
 		var pathTxt = '';
 		var x = 0;
+		var interval = 15 / density * luminance;
 		for (var i = 0; i < 99; i ++)
 		{
-			var off = random(-15 * randDensity, 15 * randDensity);
-			pathTxt += 'M ' + (x + off) + ' 0 L ' + (x + off) + ' ' + 99 + ' ';
-			x += 15;
+			var off = random(-interval * randDensity, interval * randDensity);
+			pathTxt += 'M ' + (x + off) + ' 0 L ' + (x + off) + ' ' + 999 + ' ';
+			x += interval;
 		}
 		path_.setAttribute('d', pathTxt);
-		path_.style = 'stroke-width:1;stroke:black';
+		path_.style = 'stroke-width:' + (width * (1 - luminance)) + ';stroke:black';
 		pattern.appendChild(path_);
-		return pattern;
+		svg.innerHTML += pattern.outerHTML;
+		path_ = path.cloneNode();
+		if (useFIll)
+			path_.style.fill = 'url(#' + id + ')';
+		else
+			path_.style.stroke = 'url(#' + id + ')';
+		svg.innerHTML += path_.outerHTML;
 	}
 	main ()
 	{
 		// Init
-		const f=(ts)=>{
-			this.dt=(ts-this.prev)/1000;
-			this.prev=ts;
+		const f = ts => {
+			$.dt = (ts - $.prev) / 1000;
+			$.prev = ts;
 			window.requestAnimationFrame(f);
 			// Update
 		};
-		window.requestAnimationFrame((ts)=>{
-			this.prev=ts;
+		window.requestAnimationFrame(ts => {
+			$.prev = ts;
 			window.requestAnimationFrame(f)
 		});
 	}
 }
-$=new api
+$ = new api
 '''
 
 def GenJsAPI (world):
@@ -955,8 +949,8 @@ def Update ():
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
 bpy.types.World.exportOffsetY = bpy.props.IntProperty(name = 'Offset Y')
-bpy.types.World.exportHtml = bpy.props.StringProperty(name = 'Export (.html)')
-bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export (.zip)')
+bpy.types.World.exportHtml = bpy.props.StringProperty(name = 'Export .html')
+bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
 bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
@@ -995,10 +989,12 @@ bpy.types.Object.useFillHatch = bpy.props.BoolVectorProperty(name = 'Use fill ha
 bpy.types.Object.fillHatchDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch density', size = 2, min = 0)
 bpy.types.Object.fillHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch randomize density percent', size = 2, min = 0)
 bpy.types.Object.fillHatchAng = bpy.props.FloatVectorProperty(name = 'Fill hatch angle', size = 2, min = -360, max = 360)
+bpy.types.Object.fillHatchWidth = bpy.props.FloatVectorProperty(name = 'Fill hatch width', size = 2, min = 0)
 bpy.types.Object.useStrokeHatch = bpy.props.BoolVectorProperty(name = 'Use stroke hatch', size = 2)
 bpy.types.Object.strokeHatchDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch density', size = 2, min = 0)
 bpy.types.Object.strokeHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch randomize density percent', size = 2, min = 0)
 bpy.types.Object.strokeHatchAng = bpy.props.FloatVectorProperty(name = 'Stroke hatch angle', size = 2, min = -360, max = 360)
+bpy.types.Object.strokeHatchWidth = bpy.props.FloatVectorProperty(name = 'Stroke hatch width', size = 2, min = 0)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1125,10 +1121,12 @@ class MaterialPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'fillHatchDensity')
 		self.layout.prop(ob, 'fillHatchRandDensity')
 		self.layout.prop(ob, 'fillHatchAng')
+		self.layout.prop(ob, 'fillHatchWidth')
 		self.layout.prop(ob, 'useStrokeHatch')
 		self.layout.prop(ob, 'strokeHatchDensity')
 		self.layout.prop(ob, 'strokeHatchRandDensity')
 		self.layout.prop(ob, 'strokeHatchAng')
+		self.layout.prop(ob, 'strokeHatchWidth')
 
 if __name__ == '__main__':
 	q = o = test = None
