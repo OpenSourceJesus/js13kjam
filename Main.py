@@ -333,14 +333,15 @@ def ExportObject (ob):
 		data.append(ob.strokeHatchWidth[1] * int(ob.useStrokeHatch[1]))
 		data.append(ob.mirrorX)
 		data.append(ob.mirrorY)
-		data.append(ob.capType)
-		data.append(ob.joinType)
+		data.append(CAP_TYPES.index(ob.capType))
+		data.append(JOIN_TYPES.index(ob.joinType))
 		dashArr = []
 		for value in ob.dashLengthsAndSpaces:
 			if value == 0:
 				break
 			dashArr.append(value)
 		data.append(dashArr)
+		data.append(ob.cycleDur)
 		datas.append(data)
 	exportedObs.append(ob)
 
@@ -476,7 +477,7 @@ for(v of d)
 		a=[]
 		for(e of p.split('\\n')[i])
 			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],[v[28],v[29]],[v[30],v[31]],[v[32],v[33]],[v[34],v[35]],[v[36],v[37]],[v[38],v[39]],[v[40],v[41]],[v[42],v[43]],v[44],v[45],v[46],v[47],v[48])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],[v[28],v[29]],[v[30],v[31]],[v[32],v[33]],[v[34],v[35]],[v[36],v[37]],[v[38],v[39]],[v[40],v[41]],[v[42],v[43]],v[44],v[45],v[46],v[47],v[48],v[49])
 		i++
 	}
 	else if(l>5)
@@ -641,7 +642,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIdx, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIdx, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
 	{
 		var fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
 		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
@@ -671,6 +672,7 @@ class api
 		var svgRect = svg.getBoundingClientRect();
 		var pathRect = path_.getBoundingClientRect();
 		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x + off) + ' ' + (svgRect.y - pathRect.y + off) + ')');
+		var pathAnims = [];
 		if (jiggleFrames > 0)
 		{
 			var anim = document.createElement('animate');
@@ -699,7 +701,7 @@ class api
 				frames += frame + ';';
 			}
 			anim.setAttribute('values', frames + firstFrame);
-			path_.innerHTML = anim.outerHTML;
+			path_.appendChild(anim);
 		}
 		if (rotDur > 0)
 		{
@@ -727,7 +729,6 @@ class api
 		{
 			var anim = document.createElement('animatetransform');
 			anim.setAttribute('attributename', 'transform');
-			anim.setAttribute('type', 'scale');
 			anim.setAttribute('repeatcount', 'indefinite');
 			if (scalePingPong)
 				totalScaleDur += scaleDur;
@@ -755,6 +756,20 @@ class api
 			anim.setAttribute('additive', 'sum');
 			svg.innerHTML += anim.outerHTML;
 		}
+		if (cycleDur != 0)
+		{
+			var anim = document.createElement('animate');
+			anim.setAttribute('attributename', 'stroke-dashoffset');
+			anim.setAttribute('repeatcount', 'indefinite');
+			var pathLen = path_.getTotalLength();
+			anim.setAttribute('dur', cycleDur + 's');
+			anim.setAttribute('from', 0);
+			anim.setAttribute('to', pathLen);
+			anim.setAttribute('values', '0;' + pathLen);
+			path_.appendChild(anim);
+		}
+		document.getElementById(id + ' ').remove();
+		svg.appendChild(path_);
 		var capTypes = ['butt', 'round', 'square'];
 		svg.setAttribute('stroke-linecap', capTypes[capType]);
 		var joinTypes = ['arcs', 'bevel', 'miter', 'miter-clip', 'round'];
@@ -801,7 +816,7 @@ class api
 		pattern.setAttribute('width', '100%');
 		pattern.setAttribute('height', '100%');
 		pattern.setAttribute('patternunits', 'userSpaceOnUse');
-		var path_ = document.createElement('path');
+		var path_ = path.cloneNode();
 		var pathTxt = '';
 		var x = 0;
 		var interval = 15 / density * luminance;
@@ -814,8 +829,8 @@ class api
 		path_.setAttribute('d', pathTxt);
 		path_.style = 'stroke-width:' + (width * (1 - luminance)) + ';stroke:black';
 		pattern.appendChild(path_);
-		svg.innerHTML += pattern.outerHTML;
-		path_ = path.cloneNode();
+		svg.appendChild(pattern);
+		path_ = path.cloneNode(true);
 		if (useFIll)
 			path_.style.fill = 'url(#' + id + ')';
 		else
@@ -968,6 +983,11 @@ def Update ():
 			bpy.data.texts.remove(txt)
 	return 0.1
 
+CAP_TYPES = ['butt', 'round', 'square']
+CAP_TYPE_ITEMS = [('butt', 'butt', ''), ('round', 'round', ''), ('square', 'square', '')]
+JOIN_TYPES = ['arcs', 'bevl', 'miter', 'miter-clip', 'round']
+JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')]
+
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
 bpy.types.World.exportOffsetY = bpy.props.IntProperty(name = 'Offset Y')
@@ -982,8 +1002,8 @@ bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useSvgStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
 bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke width')
 bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name = 'Svg stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
-bpy.types.Object.capType = bpy.props.EnumProperty(name = 'Stroke cap type', items = [('butt', 'butt', ''), ('round', 'round', ''), ('square', 'square', '')])
-bpy.types.Object.joinType = bpy.props.EnumProperty(name = 'Stroke corner type', items = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')])
+bpy.types.Object.capType = bpy.props.EnumProperty(name = 'Stroke cap type', items = CAP_TYPE_ITEMS)
+bpy.types.Object.joinType = bpy.props.EnumProperty(name = 'Stroke corner type', items = JOIN_TYPE_ITEMS)
 bpy.types.Object.dashLengthsAndSpaces = bpy.props.FloatVectorProperty(name = 'Stroke dash lengths and spaces', size = 5, min = 0)
 bpy.types.Object.mirrorX = bpy.props.BoolProperty(name = 'Mirror on x-axis')
 bpy.types.Object.mirrorY = bpy.props.BoolProperty(name = 'Mirror on y-axis')
@@ -1002,6 +1022,7 @@ bpy.types.Object.scaleYRange = bpy.props.FloatVectorProperty(name = 'Y scale ran
 bpy.types.Object.scaleDur = bpy.props.FloatProperty(name = 'Scale duration', min = 0)
 bpy.types.Object.scaleHaltDurAtMin = bpy.props.FloatProperty(name = 'Halt duration at min', min = 0)
 bpy.types.Object.scaleHaltDurAtMax = bpy.props.FloatProperty(name = 'Halt duration at max', min = 0)
+bpy.types.Object.cycleDur = bpy.props.FloatProperty(name = 'Cycle stroke duration')
 bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1)
@@ -1101,6 +1122,8 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'scaleDur')
 			self.layout.prop(ob, 'scaleHaltDurAtMin')
 			self.layout.prop(ob, 'scaleHaltDurAtMax')
+			self.layout.label(text = 'Cycle')
+			self.layout.prop(ob, 'cycleDur')
 		self.layout.label(text = 'Movement')
 		self.layout.prop(ob, 'moveSpeed')
 		self.layout.prop(ob, 'waypoint1')
