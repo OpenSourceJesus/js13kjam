@@ -257,11 +257,8 @@ def ExportObject (ob):
 			if len(vector) == 1:
 				continue
 			components = vector.split(',')
-			x = int(components[0])
-			y = int(components[1])
-			if ob.roundSvgData:
-				x = int(round(x))
-				y = int(round(y))
+			x = int(round(float(components[0])))
+			y = int(round(float(components[1])))
 			vector = Vector((x, y))
 			minPathVector = GetMinComponents(minPathVector, vector, True)
 			maxPathVector = GetMaxComponents(maxPathVector, vector, True)
@@ -281,7 +278,7 @@ def ExportObject (ob):
 		y = -max.y + strokeWidth / 2 + jiggleDist
 		size = max - min
 		size += Vector((1, 1)) * (strokeWidth + jiggleDist * 2)
-		if ob.roundSvgData:
+		if ob.roundPosAndSize:
 			x = int(round(x))
 			y = int(round(y))
 			size = Round(size)
@@ -336,6 +333,14 @@ def ExportObject (ob):
 		data.append(ob.strokeHatchWidth[1] * int(ob.useStrokeHatch[1]))
 		data.append(ob.mirrorX)
 		data.append(ob.mirrorY)
+		data.append(ob.capType)
+		data.append(ob.joinType)
+		dashArr = []
+		for value in ob.dashLengthsAndSpaces:
+			if value == 0:
+				break
+			dashArr.append(value)
+		data.append(dashArr)
 		datas.append(data)
 	exportedObs.append(ob)
 
@@ -471,7 +476,7 @@ for(v of d)
 		a=[]
 		for(e of p.split('\\n')[i])
 			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],[v[28],v[29]],[v[30],v[31]],[v[32],v[33]],[v[34],v[35]],[v[36],v[37]],[v[38],v[39]],[v[40],v[41]],[v[42],v[43]],v[44],v[45])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],[v[28],v[29]],[v[30],v[31]],[v[32],v[33]],[v[34],v[35]],[v[36],v[37]],[v[38],v[39]],[v[40],v[41]],[v[42],v[43]],v[44],v[45],v[46],v[47],v[48])
 		i++
 	}
 	else if(l>5)
@@ -501,11 +506,16 @@ function signed_ang (from, to)
 {
     return ang(from, to) * Math.sign(from[0] * to[1] - from[1] * to[0]);
 }
-function f (from, to, maxAng)
+function rotate (v, ang)
 {
-	var ang = Math.atan2(from[1], from[0]) + clamp(signed_ang(from, to), -maxAng, maxAng) / (180 / Math.PI);
-	var mag = magnitude(from);
+	ang /= 180 / Math.PI;
+	ang += Math.atan2(v[1], v[0]);
+	var mag = magnitude(v);
 	return [Math.cos(ang) * mag, Math.sin(ang) * mag];
+}
+function rotate_to (from, to, maxAng)
+{
+	return rotate(from, clamp(signed_ang(from, to), -maxAng, maxAng) / (180 / Math.PI));
 }
 function get_pos_and_size (elmt)
 {
@@ -631,7 +641,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIdx, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIdx, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr)
 	{
 		var fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
 		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
@@ -745,10 +755,14 @@ class api
 			anim.setAttribute('additive', 'sum');
 			svg.innerHTML += anim.outerHTML;
 		}
-		var aspectRatio = size[0] / size[1];
+		var capTypes = ['butt', 'round', 'square'];
+		svg.setAttribute('stroke-linecap', capTypes[capType]);
+		var joinTypes = ['arcs', 'bevel', 'miter', 'miter-clip', 'round'];
+		svg.setAttribute('stroke-linejoin', joinTypes[joinType]);
+		svg.setAttribute('stroke-dasharray', dashArr);
 		if (magnitude(fillHatchDensity) > 0)
 		{
-			var args = [fillColor, aspectRatio, true, svg, path_]; 
+			var args = [fillColor, true, svg, path_]; 
 			if (fillHatchDensity[0] > 0)
 				$.hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
 			if (fillHatchDensity[1] > 0)
@@ -757,7 +771,7 @@ class api
 		}
 		if (magnitude(lineHatchDensity) > 0)
 		{
-			var args = [lineColor, aspectRatio, false, svg, path_]; 
+			var args = [lineColor, false, svg, path_]; 
 			if (lineHatchDensity[0] > 0)
 				$.hatch ('@' + id, ...args, lineHatchDensity[0], lineHatchRandDensity[0], lineHatchAng[0], lineHatchWidth[0]);
 			if (lineHatchDensity[1] > 0)
@@ -778,7 +792,7 @@ class api
 			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
 		}
 	}
-	hatch (id, color, aspectRatio, useFIll, svg, path, density, randDensity, ang, width)
+	hatch (id, color, useFIll, svg, path, density, randDensity, ang, width)
 	{
 		var luminance = (.2126 * color[0] + .7152 * color[1] + .0722 * color[2]) / 255;
 		var pattern = document.createElement('pattern');
@@ -962,12 +976,15 @@ bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
 bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
-bpy.types.Object.roundSvgData = bpy.props.BoolProperty(name = 'Round svg position, size, and path data', default = True)
+bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True)
 bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50])
 bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useSvgStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
 bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke width')
 bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name = 'Svg stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
+bpy.types.Object.capType = bpy.props.EnumProperty(name = 'Stroke cap type', items = [('butt', 'butt', ''), ('round', 'round', ''), ('square', 'square', '')])
+bpy.types.Object.joinType = bpy.props.EnumProperty(name = 'Stroke corner type', items = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')])
+bpy.types.Object.dashLengthsAndSpaces = bpy.props.FloatVectorProperty(name = 'Stroke dash lengths and spaces', size = 5, min = 0)
 bpy.types.Object.mirrorX = bpy.props.BoolProperty(name = 'Mirror on x-axis')
 bpy.types.Object.mirrorY = bpy.props.BoolProperty(name = 'Mirror on y-axis')
 bpy.types.Object.useJiggle = bpy.props.BoolProperty(name = 'Use jiggle')
@@ -1044,12 +1061,25 @@ class ObjectPanel (bpy.types.Panel):
 		if not ob:
 			return
 		if ob.type == 'CURVE':
-			self.layout.prop(ob, 'roundSvgData')
+			self.layout.prop(ob, 'roundPosAndSize')
 			self.layout.prop(ob, 'origin')
 			self.layout.prop(ob, 'collide')
 			self.layout.prop(ob, 'useSvgStroke')
 			self.layout.prop(ob, 'svgStrokeWidth')
 			self.layout.prop(ob, 'svgStrokeColor')
+			self.layout.prop(ob, 'capType')
+			self.layout.prop(ob, 'joinType')
+			self.layout.prop(ob, 'dashLengthsAndSpaces')
+			self.layout.prop(ob, 'useFillHatch')
+			self.layout.prop(ob, 'fillHatchDensity')
+			self.layout.prop(ob, 'fillHatchRandDensity')
+			self.layout.prop(ob, 'fillHatchAng')
+			self.layout.prop(ob, 'fillHatchWidth')
+			self.layout.prop(ob, 'useStrokeHatch')
+			self.layout.prop(ob, 'strokeHatchDensity')
+			self.layout.prop(ob, 'strokeHatchRandDensity')
+			self.layout.prop(ob, 'strokeHatchAng')
+			self.layout.prop(ob, 'strokeHatchWidth')
 			self.layout.prop(ob, 'mirrorX')
 			self.layout.prop(ob, 'mirrorY')
 			self.layout.label(text = 'Animation')
@@ -1113,29 +1143,6 @@ class LightPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'color1Alpha')
 		self.layout.prop(ob, 'colorPositions')
 		self.layout.prop(ob, 'subtractive')
-
-@bpy.utils.register_class
-class MaterialPanel (bpy.types.Panel):
-	bl_idname = 'MATERIAL_PT_Material_Panel'
-	bl_label = 'Material'
-	bl_space_type = 'PROPERTIES'
-	bl_region_type = 'WINDOW'
-	bl_context = 'material'
-
-	def draw (self, context):
-		ob = context.active_object
-		if not ob or ob.type != 'CURVE':
-			return
-		self.layout.prop(ob, 'useFillHatch')
-		self.layout.prop(ob, 'fillHatchDensity')
-		self.layout.prop(ob, 'fillHatchRandDensity')
-		self.layout.prop(ob, 'fillHatchAng')
-		self.layout.prop(ob, 'fillHatchWidth')
-		self.layout.prop(ob, 'useStrokeHatch')
-		self.layout.prop(ob, 'strokeHatchDensity')
-		self.layout.prop(ob, 'strokeHatchRandDensity')
-		self.layout.prop(ob, 'strokeHatchAng')
-		self.layout.prop(ob, 'strokeHatchWidth')
 
 if __name__ == '__main__':
 	q = o = test = None
