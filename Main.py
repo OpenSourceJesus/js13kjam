@@ -136,11 +136,9 @@ def Copy (ob, copyData = True, copyActions = True, collection = None):
 		childCopy.parent = copy
 	return copy
 
-def ToByteString (n, clamp = True, delimeters = '\`', escapeQuotes : bool = True):
+def ToByteString (n, delimeters = '\\`', escapeQuotes : bool = True):
 	n = round(n)
-	if clamp:
-		n = Clamp(n, 32, 255)
-	elif n < 32:
+	if n < 32:
 		n = 32
 	byteStr = chr(n)
 	if byteStr in delimeters:
@@ -261,6 +259,9 @@ def ExportObject (ob):
 			components = vector.split(',')
 			x = int(components[0])
 			y = int(components[1])
+			if ob.roundSvgData:
+				x = int(round(x))
+				y = int(round(y))
 			vector = Vector((x, y))
 			minPathVector = GetMinComponents(minPathVector, vector, True)
 			maxPathVector = GetMaxComponents(maxPathVector, vector, True)
@@ -269,18 +270,26 @@ def ExportObject (ob):
 		offset = -minPathVector + Vector((32, 32))
 		for i, pathValue in enumerate(pathData):
 			if i % 2 == 1:
-				pathData[i] = ToByteString((maxPathVector[1] - pathValue + minPathVector[1]) + offset[1], world.quantizeSvgs)
+				pathData[i] = ToByteString((maxPathVector[1] - pathValue + minPathVector[1]) + offset[1])
 			else:
-				pathData[i] = ToByteString(pathValue + offset[0], world.quantizeSvgs)
+				pathData[i] = ToByteString(pathValue + offset[0])
 		strokeWidth = 0
 		if ob.useSvgStroke:
 			strokeWidth = ob.svgStrokeWidth
 		jiggleDist = ob.jiggleDist * int(ob.useJiggle)
-		data.append(int(round(min.x - strokeWidth / 2 - jiggleDist)))
-		data.append(int(round(-max.y + strokeWidth / 2 + jiggleDist)))
+		x = min.x - strokeWidth / 2 - jiggleDist
+		y = -max.y + strokeWidth / 2 + jiggleDist
 		size = max - min
-		data.append(int(round(size.x + strokeWidth + jiggleDist * 2)) + 3)
-		data.append(int(round(size.y + strokeWidth + jiggleDist * 2)) + 3)
+		size += Vector((1, 1)) * (strokeWidth + jiggleDist * 2)
+		if ob.roundSvgData:
+			x = int(round(x))
+			y = int(round(y))
+			size = Round(size)
+			size = Vector(size)
+		data.append(x)
+		data.append(y)
+		data.append(size.x)
+		data.append(size.y)
 		materialColor = DEFAULT_COLOR
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
@@ -432,7 +441,6 @@ class JS13KB_Panel (bpy.types.Panel):
 		row = self.layout.row()
 		row.prop(context.world, 'minify')
 		row.prop(context.world, 'invalidHtml')
-		row.prop(context.world, 'quantizeSvgs')
 		if context.world.js13kb:
 			self.layout.prop(context.world, 'exportZip')
 			if buildInfo['zip-size']:
@@ -493,7 +501,7 @@ function signed_ang (from, to)
 {
     return ang(from, to) * Math.sign(from[0] * to[1] - from[1] * to[0]);
 }
-function rotate_to (from, to, maxAng)
+function f (from, to, maxAng)
 {
 	var ang = Math.atan2(from[1], from[0]) + clamp(signed_ang(from, to), -maxAng, maxAng) / (180 / Math.PI);
 	var mag = magnitude(from);
@@ -954,7 +962,7 @@ bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
 bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
-bpy.types.World.quantizeSvgs = bpy.props.BoolProperty(name = 'Quantize svgs')
+bpy.types.Object.roundSvgData = bpy.props.BoolProperty(name = 'Round svg position, size, and path data', default = True)
 bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50])
 bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useSvgStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
@@ -1036,6 +1044,7 @@ class ObjectPanel (bpy.types.Panel):
 		if not ob:
 			return
 		if ob.type == 'CURVE':
+			self.layout.prop(ob, 'roundSvgData')
 			self.layout.prop(ob, 'origin')
 			self.layout.prop(ob, 'collide')
 			self.layout.prop(ob, 'useSvgStroke')
