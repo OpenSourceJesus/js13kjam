@@ -516,7 +516,7 @@ function rotate (v, ang)
 }
 function rotate_to (from, to, maxAng)
 {
-	return rotate(from, clamp(signed_ang(from, to), -maxAng, maxAng) / (180 / Math.PI));
+	return rotate(from, clamp(signed_ang(from, to), -maxAng, maxAng));
 }
 function get_pos_and_size (elmt)
 {
