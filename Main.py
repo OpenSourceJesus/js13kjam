@@ -729,6 +729,7 @@ class api
 		{
 			var anim = document.createElement('animatetransform');
 			anim.setAttribute('attributename', 'transform');
+			anim.setAttribute('type', 'scale');
 			anim.setAttribute('repeatcount', 'indefinite');
 			if (scalePingPong)
 				totalScaleDur += scaleDur;
