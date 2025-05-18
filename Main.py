@@ -3,9 +3,6 @@ _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
 sys.path.append(os.path.join(_thisDir, 'Extensions'))
 from MathExtensions import *
-from SystemExtensions import *
-
-UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
 
 isLinux = False
 if sys.platform == 'win32':
@@ -400,81 +397,6 @@ buildInfo = {
 	'js-size' : None,
 	'js-gz-size' : None,
 }
-
-@bpy.utils.register_class
-class HTMLExport (bpy.types.Operator):
-	bl_idname = 'world.html_export'
-	bl_label = 'Export to HTML'
-
-	@classmethod
-	def poll (cls, context):
-		return True
-
-	def execute (self, context):
-		BuildHtml (context.world)
-		return { 'FINISHED' }
-
-@bpy.utils.register_class
-class UnityExport (bpy.types.Operator):
-	bl_idname = 'world.unity_export'
-	bl_label = 'Export to Unity'
-
-	@classmethod
-	def poll (cls, context):
-		return True
-
-	def execute (self, context):
-		BuildUnity (context.world)
-		return { 'FINISHED' }
-
-@bpy.utils.register_class
-class WorldPanel (bpy.types.Panel):
-	bl_idname = 'WORLD_PT_World_Panel'
-	bl_label = 'Export'
-	bl_space_type = 'PROPERTIES'
-	bl_region_type = 'WINDOW'
-	bl_context = 'world'
-
-	def draw (self, context):
-		row = self.layout.row()
-		row.prop(context.world, 'exportScale')
-		row = self.layout.row()
-		row.prop(context.world, 'exportOffsetX')
-		row.prop(context.world, 'exportOffsetY')
-		self.layout.prop(context.world, 'exportHtml')
-		self.layout.operator('world.html_export', icon = 'CONSOLE')
-		self.layout.operator('world.unity_export', icon = 'CONSOLE')
-
-@bpy.utils.register_class
-class JS13KB_Panel (bpy.types.Panel):
-	bl_idname = 'WORLD_PT_JS13KB_Panel'
-	bl_label = 'js13kgames.com'
-	bl_space_type = 'PROPERTIES'
-	bl_region_type = 'WINDOW'
-	bl_context = 'world'
-
-	def draw (self, context):
-		self.layout.prop(context.world, 'js13kb')
-		row = self.layout.row()
-		row.prop(context.world, 'minify')
-		row.prop(context.world, 'invalidHtml')
-		if context.world.js13kb:
-			self.layout.prop(context.world, 'exportZip')
-			if buildInfo['zip-size']:
-				self.layout.label(text = buildInfo['zip'])
-				if buildInfo['zip-size'] <= 1024*13:
-					self.layout.label(text = 'zip bytes=%s' %( buildInfo['zip-size'] ))
-				else:
-					self.layout.label(text = 'zip KB=%s' %( buildInfo['zip-size'] / 1024 ))
-				self.layout.label(text = 'html-size=%s' %buildInfo['html-size'])
-				self.layout.label(text = 'js-size=%s' %buildInfo['js-size'])
-				self.layout.label(text = 'js-gz-size=%s' %buildInfo['js-gz-size'])
-		if buildInfo['html-size']:
-			self.layout.label(text = buildInfo['html'])
-			if buildInfo['html-size'] < 1024*16:
-				self.layout.label(text = 'html bytes=%s' %( buildInfo['html-size'] ))
-			else:
-				self.layout.label(text = 'html KB=%s' %( buildInfo['html-size'] / 1024 ))
 
 JS_SUFFIX = '''
 i=0
@@ -969,15 +891,28 @@ def BuildHtml (world):
 
 def BuildUnity (world):
 	PreBuild ()
-	dataPath = '/tmp/js13kjam Data'
-	MakeFolderForFile (dataPath)
-	open(dataPath, 'w').write()
-	MakeFolderForFile (os.path.join(unityProjPath, 'Assets', 'Editor', ''))
-	CopyFile (os.path.join(UNITY_SCRIPTS_PATH, 'GetUnityProjectInfo.cs'), os.path.join(unityProjPath, 'Assets', 'Editor', 'GetUnityProjectInfo.cs'))
-	CopyFile (os.path.join(EXTENSIONS_PATH, 'SystemExtensions.cs'), os.path.join(scriptsPath, 'SystemExtensions.cs'))
-	CopyFile (os.path.join(EXTENSIONS_PATH, 'StringExtensions.cs'), os.path.join(scriptsPath, 'StringExtensions.cs'))
-	cmd = unityVersionPath + ' -quit -createProject ' + unityProjPath + ' -executeMethod GetUnityProjectInfo.Do ' + unityProjPath
+	for ob in bpy.data.objects:
+		bpy.ops.object.select_all(action = 'DESELECT')
+		ob.select_set(True)
+		bpy.context.scene.export_svg_output = os.path.join(world.unityProjPath, 'Assets', 'Art', 'Svgs', ob.name + '.svg')
+		bpy.ops.curve.export_svg()
+	if sys.platform == 'win32':
+		unityVersionsPath = os.path.join('/', 'Program Files', 'Unity', 'Hub', 'Editor')
+	else:
+		unityVersionsPath = os.path.expanduser(os.path.join('~', 'Unity', 'Hub', 'Editor'))
+	unityVersionPath = ''
+	if os.path.isdir(unityVersionsPath):
+		unityVersions = os.listdir(unityVersionsPath)
+		for unityVersion in unityVersions:
+			unityVersionPath = unityVersionsPath + '/' + unityVersion + '/Editor/Unity'
+			if os.path.isfile(unityVersionPath):
+				break
+	if unityVersionPath == '':
+		print('No Unity version installed')
+		return
+	cmd = unityVersionPath + ' -createProject ' + world.unityProjPath
 	subprocess.check_call(cmd.split())
+	bpy.context.scene.export_svg_output = 'export_svg_output'
 	PostBuild ()
 
 def Update ():
@@ -1099,6 +1034,83 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 		'initScript' + str(i),
 		bpy.props.BoolProperty(name = 'Is init'),
 	)
+
+@bpy.utils.register_class
+class HTMLExport (bpy.types.Operator):
+	bl_idname = 'world.html_export'
+	bl_label = 'Export to HTML'
+
+	@classmethod
+	def poll (cls, context):
+		return True
+
+	def execute (self, context):
+		BuildHtml (context.world)
+		return { 'FINISHED' }
+
+@bpy.utils.register_class
+class UnityExport (bpy.types.Operator):
+	bl_idname = 'world.unity_export'
+	bl_label = 'Export to Unity'
+
+	@classmethod
+	def poll (cls, context):
+		return True
+
+	def execute (self, context):
+		BuildUnity (context.world)
+		return { 'FINISHED' }
+
+@bpy.utils.register_class
+class WorldPanel (bpy.types.Panel):
+	bl_idname = 'WORLD_PT_World_Panel'
+	bl_label = 'Export'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'world'
+
+	def draw (self, context):
+		row = self.layout.row()
+		row.prop(context.world, 'exportScale')
+		row = self.layout.row()
+		row.prop(context.world, 'exportOffsetX')
+		row.prop(context.world, 'exportOffsetY')
+		self.layout.prop(context.world, 'exportHtml')
+		self.layout.prop(context.world, 'exportHtml')
+		self.layout.prop(context.world, 'unityProjPath')
+		self.layout.operator('world.html_export', icon = 'CONSOLE')
+		self.layout.operator('world.unity_export', icon = 'CONSOLE')
+
+@bpy.utils.register_class
+class JS13KB_Panel (bpy.types.Panel):
+	bl_idname = 'WORLD_PT_JS13KB_Panel'
+	bl_label = 'js13kgames.com'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'world'
+
+	def draw (self, context):
+		self.layout.prop(context.world, 'js13kb')
+		row = self.layout.row()
+		row.prop(context.world, 'minify')
+		row.prop(context.world, 'invalidHtml')
+		if context.world.js13kb:
+			self.layout.prop(context.world, 'exportZip')
+			if buildInfo['zip-size']:
+				self.layout.label(text = buildInfo['zip'])
+				if buildInfo['zip-size'] <= 1024*13:
+					self.layout.label(text = 'zip bytes=%s' %( buildInfo['zip-size'] ))
+				else:
+					self.layout.label(text = 'zip KB=%s' %( buildInfo['zip-size'] / 1024 ))
+				self.layout.label(text = 'html-size=%s' %buildInfo['html-size'])
+				self.layout.label(text = 'js-size=%s' %buildInfo['js-size'])
+				self.layout.label(text = 'js-gz-size=%s' %buildInfo['js-gz-size'])
+		if buildInfo['html-size']:
+			self.layout.label(text = buildInfo['html'])
+			if buildInfo['html-size'] < 1024*16:
+				self.layout.label(text = 'html bytes=%s' %( buildInfo['html-size'] ))
+			else:
+				self.layout.label(text = 'html KB=%s' %( buildInfo['html-size'] / 1024 ))
 
 @bpy.utils.register_class
 class ObjectPanel (bpy.types.Panel):
