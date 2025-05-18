@@ -1,6 +1,11 @@
 import os, sys, json, string, atexit, webbrowser, subprocess
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
+sys.path.append(os.path.join(_thisDir, 'Extensions'))
+from MathExtensions import *
+from SystemExtensions import *
+
+UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
 
 isLinux = False
 if sys.platform == 'win32':
@@ -66,14 +71,6 @@ def GetScripts (ob, isAPI : bool):
 			else:
 				scripts.append((txt.as_string(), getattr(ob, 'initScript' + str(i))))
 	return scripts
-
-def Clamp (n : float, min : float, max : float):
-	if n < min:
-		return min
-	elif n > max:
-		return max
-	else:
-		return n
 
 def Multiply (v : list, multiply : list):
 	output = []
@@ -405,16 +402,29 @@ buildInfo = {
 }
 
 @bpy.utils.register_class
-class Export (bpy.types.Operator):
-	bl_idname = 'world.export'
-	bl_label = 'Export'
+class HTMLExport (bpy.types.Operator):
+	bl_idname = 'world.html_export'
+	bl_label = 'Export to HTML'
 
 	@classmethod
 	def poll (cls, context):
 		return True
 
 	def execute (self, context):
-		Build (context.world)
+		BuildHtml (context.world)
+		return { 'FINISHED' }
+
+@bpy.utils.register_class
+class UnityExport (bpy.types.Operator):
+	bl_idname = 'world.unity_export'
+	bl_label = 'Export to Unity'
+
+	@classmethod
+	def poll (cls, context):
+		return True
+
+	def execute (self, context):
+		BuildUnity (context.world)
 		return { 'FINISHED' }
 
 @bpy.utils.register_class
@@ -432,7 +442,8 @@ class WorldPanel (bpy.types.Panel):
 		row.prop(context.world, 'exportOffsetX')
 		row.prop(context.world, 'exportOffsetY')
 		self.layout.prop(context.world, 'exportHtml')
-		self.layout.operator('world.export', icon = 'CONSOLE')
+		self.layout.operator('world.html_export', icon = 'CONSOLE')
+		self.layout.operator('world.unity_export', icon = 'CONSOLE')
 
 @bpy.utils.register_class
 class JS13KB_Panel (bpy.types.Panel):
@@ -900,15 +911,23 @@ def GenHtml (world, datas, background = ''):
 
 SERVER_PROC = None
 
-def Build (world):
-	global SERVER_PROC
-	if SERVER_PROC:
-		SERVER_PROC.kill()
+def PreBuild ():
 	for ob in bpy.data.objects:
 		if '_Clone' in ob.name:
 			for child in ob.children:
 				bpy.data.objects.remove(child, do_unlink = True)
 			bpy.data.objects.remove(ob, do_unlink = True)
+
+def PostBuild ():
+	if os.path.isfile('SlimeJump.py') and bpy.data.filepath.endswith('Slime Jump.blend'):
+		import SlimeJump as slimeJump
+		slimeJump.GenLevel ()
+
+def BuildHtml (world):
+	global SERVER_PROC
+	if SERVER_PROC:
+		SERVER_PROC.kill()
+	PreBuild ()
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
 	html = GenHtml(world, datas)
@@ -945,11 +964,21 @@ def Build (world):
 
 		atexit.register(lambda: SERVER_PROC.kill())
 		webbrowser.open('http://localhost:6969')
-
-	if os.path.isfile('SlimeJump.py'):
-		import SlimeJump as slimeJump
-		slimeJump.GenLevel ()
+	PostBuild ()
 	return html
+
+def BuildUnity (world):
+	PreBuild ()
+	dataPath = '/tmp/js13kjam Data'
+	MakeFolderForFile (dataPath)
+	open(dataPath, 'w').write()
+	MakeFolderForFile (os.path.join(unityProjPath, 'Assets', 'Editor', ''))
+	CopyFile (os.path.join(UNITY_SCRIPTS_PATH, 'GetUnityProjectInfo.cs'), os.path.join(unityProjPath, 'Assets', 'Editor', 'GetUnityProjectInfo.cs'))
+	CopyFile (os.path.join(EXTENSIONS_PATH, 'SystemExtensions.cs'), os.path.join(scriptsPath, 'SystemExtensions.cs'))
+	CopyFile (os.path.join(EXTENSIONS_PATH, 'StringExtensions.cs'), os.path.join(scriptsPath, 'StringExtensions.cs'))
+	cmd = unityVersionPath + ' -quit -createProject ' + unityProjPath + ' -executeMethod GetUnityProjectInfo.Do ' + unityProjPath
+	subprocess.check_call(cmd.split())
+	PostBuild ()
 
 def Update ():
 	for ob in bpy.data.objects:
@@ -994,6 +1023,7 @@ bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
 bpy.types.World.exportOffsetY = bpy.props.IntProperty(name = 'Offset Y')
 bpy.types.World.exportHtml = bpy.props.StringProperty(name = 'Export .html')
 bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export .zip')
+bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
 bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
