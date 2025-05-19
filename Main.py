@@ -1,8 +1,14 @@
 import os, sys, json, string, atexit, webbrowser, subprocess
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
-sys.path.append(os.path.join(_thisDir, 'Extensions'))
+EXTENSIONS_PATH = os.path.join(_thisDir, 'Unity Scripts')
+sys.path.append(EXTENSIONS_PATH)
 from MathExtensions import *
+from SystemExtensions import *
+sys.path.append(os.path.join(_thisDir, 'unity-yaml-parser', 'unityparser'))
+from utils import UnityDocument
+
+UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
 
 isLinux = False
 if sys.platform == 'win32':
@@ -275,8 +281,7 @@ def ExportObject (ob):
 		if ob.roundPosAndSize:
 			x = int(round(x))
 			y = int(round(y))
-			size = Round(size)
-			size = Vector(size)
+			size = Vector(Round(size))
 		data.append(x)
 		data.append(y)
 		data.append(size.x)
@@ -891,11 +896,23 @@ def BuildHtml (world):
 
 def BuildUnity (world):
 	PreBuild ()
+	assetsPath = os.path.join(world.unityProjPath, 'Assets')
+	svgsExportPath = os.path.join(assetsPath, 'Art', 'Svgs')
+	MakeFolderForFile (os.path.join(svgsExportPath, ''))
 	for ob in bpy.data.objects:
-		bpy.ops.object.select_all(action = 'DESELECT')
-		ob.select_set(True)
-		bpy.context.scene.export_svg_output = os.path.join(world.unityProjPath, 'Assets', 'Art', 'Svgs', ob.name + '.svg')
-		bpy.ops.curve.export_svg()
+		if ob.type == 'CURVE':
+			bpy.ops.object.select_all(action = 'DESELECT')
+			ob.select_set(True)
+			bpy.context.scene.export_svg_output = os.path.join(svgsExportPath, ob.name + '.svg')
+			bpy.ops.curve.export_svg()
+	bpy.context.scene.export_svg_output = '/tmp/Output.svg'
+	scenesPath = os.path.join(assetsPath, 'Scenes')
+	scenePath = os.path.join(scenesPath, 'Test.unity')
+	MakeFolderForFile (scenePath)
+	scriptsPath = os.path.join(assetsPath, 'Scripts', 'Editor')
+	makeSceneScriptPath = os.path.join(scriptsPath, 'MakeScene.cs')
+	MakeFolderForFile (makeSceneScriptPath)
+	CopyFile (os.path.join(UNITY_SCRIPTS_PATH, 'MakeScene.cs'), makeSceneScriptPath)
 	if sys.platform == 'win32':
 		unityVersionsPath = os.path.join('/', 'Program Files', 'Unity', 'Hub', 'Editor')
 	else:
@@ -910,9 +927,19 @@ def BuildUnity (world):
 	if unityVersionPath == '':
 		print('No Unity version installed')
 		return
+	cmd = unityVersionPath + ' -quit -createProject ' + world.unityProjPath + ' -executeMethod MakeScene.Do'
+	subprocess.check_call(cmd.split())
 	cmd = unityVersionPath + ' -createProject ' + world.unityProjPath
 	subprocess.check_call(cmd.split())
-	bpy.context.scene.export_svg_output = 'export_svg_output'
+	# scene = UnityDocument.load_yaml(scenePath)
+	# print(scene.entries)
+	# print(scene.entry)
+	# entries = scene.filter(class_names = ('MonoBehaviour'), attributes = ('m_Enabled'))
+	# for entry in entries:
+	# 	entry.m_Enabled = 1
+	# scene.dump_yaml()
+	# print(scene.entry.__class__.__name__)
+	# print(scene.entry.anchor)
 	PostBuild ()
 
 def Update ():
@@ -958,7 +985,7 @@ bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
 bpy.types.World.exportOffsetY = bpy.props.IntProperty(name = 'Offset Y')
 bpy.types.World.exportHtml = bpy.props.StringProperty(name = 'Export .html')
 bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export .zip')
-bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path')
+bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = '/tmp/TestUnityProject')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
 bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
@@ -1075,7 +1102,6 @@ class WorldPanel (bpy.types.Panel):
 		row = self.layout.row()
 		row.prop(context.world, 'exportOffsetX')
 		row.prop(context.world, 'exportOffsetY')
-		self.layout.prop(context.world, 'exportHtml')
 		self.layout.prop(context.world, 'exportHtml')
 		self.layout.prop(context.world, 'unityProjPath')
 		self.layout.operator('world.html_export', icon = 'CONSOLE')
