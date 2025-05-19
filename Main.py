@@ -1,8 +1,8 @@
 import os, sys, json, string, atexit, webbrowser, subprocess
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
-EXTENSIONS_PATH = os.path.join(_thisDir, 'Unity Scripts')
-sys.path.append(EXTENSIONS_PATH)
+EXTENSIONS_SCRIPTS_PATH = os.path.join(_thisDir, 'Extensions')
+sys.path.append(EXTENSIONS_SCRIPTS_PATH)
 from MathExtensions import *
 from SystemExtensions import *
 sys.path.append(os.path.join(_thisDir, 'unity-yaml-parser', 'unityparser'))
@@ -912,7 +912,10 @@ def BuildUnity (world):
 	scriptsPath = os.path.join(assetsPath, 'Scripts', 'Editor')
 	makeSceneScriptPath = os.path.join(scriptsPath, 'MakeScene.cs')
 	MakeFolderForFile (makeSceneScriptPath)
+	MakeFolderForFile (os.path.join(scriptsPath, ''))
 	CopyFile (os.path.join(UNITY_SCRIPTS_PATH, 'MakeScene.cs'), makeSceneScriptPath)
+	for extensionsScript in GetAllFilePathsOfType(EXTENSIONS_SCRIPTS_PATH, '.cs'):
+		CopyFile (extensionsScript, os.path.join(scriptsPath, extensionsScript[extensionsScript.rfind('/') + 1:]))
 	if sys.platform == 'win32':
 		unityVersionsPath = os.path.join('/', 'Program Files', 'Unity', 'Hub', 'Editor')
 	else:

@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEditor;
 using UnityEditor.PackageManager;
 using UnityEngine.SceneManagement;
 using UnityEditor.SceneManagement;
@@ -8,17 +9,17 @@ public class MakeScene : MonoBehaviour
 {
 	static string projectPath;
 
-	[MenuItem("Tools/Make scene")]
+	[MenuItem("Tools/Make scene %m")]
 	public static void Do ()
 	{
 		AddPackage ("com.unity.vectorgraphics");
 		Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene);
 		EditorSceneManager.SaveScene(scene, "Assets/Scenes/Test.unity");
 		EditorSceneManager.OpenScene(scene.path);
-		string[] svgsPaths = GetAllFilePathsInFolder("Assets/Art/Svgs", ".svg");
+		string[] svgsPaths = SystemExtensions.GetAllFilePathsInFolder(Application.dataPath + "/Art/Svgs", ".svg");
 		foreach (string svgPath in svgsPaths)
 		{
-			Object[] obs = AssetDatabase.LoadAllAssetsAtPath(svgPath);
+			Object[] obs = AssetDatabase.LoadAllAssetsAtPath(svgPath.StartAt("Assets/"));
 			foreach (Object ob in obs)
 			{
 				print(ob);

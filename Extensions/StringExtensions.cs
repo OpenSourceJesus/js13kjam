@@ -4,6 +4,16 @@ using System.Text.RegularExpressions;
 
 public static class StringExtensions
 {
+	public static string StartAt (this string str, string startAt)
+	{
+		return str.Substring(str.IndexOf(startAt));
+	}
+
+	public static string StartAfter (this string str, string startAfter)
+	{
+		return str.StartAt(startAfter).Substring(startAfter.Length);
+	}
+
 	public static (int index, string whatWasFound) IndexOfAny (this string str, string[] findAny, int startIndex = 0)
 	{
 		(int index, string whatWasFound) output = (str.Length, null);
