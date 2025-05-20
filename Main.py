@@ -5,10 +5,10 @@ EXTENSIONS_SCRIPTS_PATH = os.path.join(_thisDir, 'Extensions')
 sys.path.append(EXTENSIONS_SCRIPTS_PATH)
 from MathExtensions import *
 from SystemExtensions import *
-sys.path.append(os.path.join(_thisDir, 'unity-yaml-parser', 'unityparser'))
-from utils import UnityDocument
 
 UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
+DONT_MANGLE_INDCTR = '-r'
+dontMangleArg = ''
 
 isLinux = False
 if sys.platform == 'win32':
@@ -17,10 +17,12 @@ elif sys.platform == 'darwin':
 	BLENDER = '/Applications/Blender.app/Contents/MacOS/Blender'
 else:
 	BLENDER = 'blender'
-	for arg in sys.argv:
-		if 'blender' in arg:
-			BLENDER = arg
 	isLinux = True
+for arg in sys.argv:
+	if 'blender' in arg:
+		BLENDER = arg
+	elif arg.startswith(DONT_MANGLE_INDCTR):
+		dontMangleArg = arg
 
 try:
 	import bpy
@@ -36,11 +38,10 @@ if __name__ == '__main__':
 		for arg in sys.argv:
 			if arg.endswith('.blend'):
 				cmd.append(arg)
-				break
 		cmd += ['--python-exit-code', '1', '--python', __file__, '--python', os.path.join(_thisDir, 'blender-curve-to-svg', 'curve_to_svg.py')]
 		exArgs = []
 		for arg in sys.argv:
-			if arg.startswith('--'):
+			if arg.startswith('--') or arg.startswith(DONT_MANGLE_INDCTR):
 				exArgs.append(arg)
 		if exArgs:
 			cmd.append('--')
@@ -806,7 +807,8 @@ def GenJsAPI (world):
 		jsTmp = '/tmp/js13kjam API.js'
 		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
-		subprocess.run(['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d', '-r="close_shop,buy_item"'])
+		print('YAY', dontMangleArg)
+		subprocess.run(['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d', dontMangleArg])
 		js = open(jsTmp, 'r').read()
 	else:
 		js += '\nD=`' + datas + '`;\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX.replace('\t', '')
@@ -859,7 +861,7 @@ def BuildHtml (world):
 	datas = blenderInfo[0]
 	html = GenHtml(world, datas)
 	open('/tmp/index.html', 'w').write(html)
-	if world.js13kb:
+	if world.js13kbjam:
 		if os.path.isfile('/usr/bin/zip'):
 			cmd = ['zip', '-9', 'index.html.zip', 'index.html']
 			print(cmd)
@@ -990,7 +992,7 @@ bpy.types.World.exportHtml = bpy.props.StringProperty(name = 'Export .html')
 bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = '/tmp/TestUnityProject')
 bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
-bpy.types.World.js13kb = bpy.props.BoolProperty(name = 'js13k: Error on export if output is over 13kb')
+bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True)
 bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50])
@@ -1119,11 +1121,11 @@ class JS13KB_Panel (bpy.types.Panel):
 	bl_context = 'world'
 
 	def draw (self, context):
-		self.layout.prop(context.world, 'js13kb')
+		self.layout.prop(context.world, 'js13kbjam')
 		row = self.layout.row()
 		row.prop(context.world, 'minify')
 		row.prop(context.world, 'invalidHtml')
-		if context.world.js13kb:
+		if context.world.js13kbjam:
 			self.layout.prop(context.world, 'exportZip')
 			if buildInfo['zip-size']:
 				self.layout.label(text = buildInfo['zip'])
@@ -1240,22 +1242,13 @@ class LightPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'subtractive')
 
 if __name__ == '__main__':
-	q = o = test = None
 	for arg in sys.argv:
-		if arg.endswith('bits'):
-			q = arg.split('--')[-1]
-		elif arg.startswith('--stroke-opt='):
-			o = arg.split('=')[-1]
-		elif arg.startswith('--test='):
-			test = arg.split('=')[-1]
-		elif arg.startswith('--output='):
+		if arg.startswith('-o='):
 			bpy.data.worlds[0].exportHtml = arg.split('=')[-1]
-		elif arg == '--minifiy':
+		elif arg == '-minifiy':
 			bpy.data.worlds[0].minify = True
-		elif arg == '--js13k':
+		elif arg == '-js13kjam':
 			bpy.data.worlds[0].minify = True
-			bpy.data.worlds[0].js13kb = True
+			bpy.data.worlds[0].js13kbjam = True
 			bpy.data.worlds[0].invalidHtml = True
 	bpy.app.timers.register(Update)
-	if '--build' in sys.argv:
-		Build (bpy.data.worlds[0])
