@@ -30,27 +30,23 @@ try:
 except:
 	bpy = None
 
-if __name__ == '__main__':
-	if bpy:
-		pass
-	else:
-		cmd = [BLENDER]
-		for arg in sys.argv:
-			if arg.endswith('.blend'):
-				cmd.append(arg)
-		cmd += ['--python-exit-code', '1', '--python', __file__, '--python', os.path.join(_thisDir, 'blender-curve-to-svg', 'curve_to_svg.py')]
-		exArgs = []
-		for arg in sys.argv:
-			if arg.startswith('--') or arg.startswith(DONT_MANGLE_INDCTR):
-				exArgs.append(arg)
-		if exArgs:
-			cmd.append('--')
-			cmd += exArgs
-		print(cmd)
-		subprocess.check_call(cmd)
-		sys.exit()
+if not bpy:
+	cmd = [BLENDER]
+	for arg in sys.argv:
+		if arg.endswith('.blend'):
+			cmd.append(arg)
+	cmd += ['--python-exit-code', '1', '--python', __file__, '--python', os.path.join(_thisDir, 'blender-curve-to-svg', 'curve_to_svg.py')]
+	exArgs = []
+	for arg in sys.argv:
+		if arg.startswith('--') or arg.startswith(DONT_MANGLE_INDCTR) or arg == '-minify':
+			exArgs.append(arg)
+	if exArgs:
+		cmd.append('--')
+		cmd += exArgs
+	print(cmd)
+	subprocess.check_call(cmd)
+	sys.exit()
 
-MAX_SCRIPTS_PER_OBJECT = 16
 if not bpy:
 	if isLinux:
 		if not os.path.isfile('/usr/bin/blender'):
@@ -59,6 +55,8 @@ if not bpy:
 	else:
 		print('Download blender from: https://blender.org')
 	sys.exit()
+
+MAX_SCRIPTS_PER_OBJECT = 16
 
 def GetScripts (ob, isAPI : bool):
 	scripts = []
@@ -807,7 +805,6 @@ def GenJsAPI (world):
 		jsTmp = '/tmp/js13kjam API.js'
 		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
-		print('YAY', dontMangleArg)
 		subprocess.run(['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d', dontMangleArg])
 		js = open(jsTmp, 'r').read()
 	else:
@@ -1241,14 +1238,13 @@ class LightPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'colorPositions')
 		self.layout.prop(ob, 'subtractive')
 
-if __name__ == '__main__':
-	for arg in sys.argv:
-		if arg.startswith('-o='):
-			bpy.data.worlds[0].exportHtml = arg.split('=')[-1]
-		elif arg == '-minifiy':
-			bpy.data.worlds[0].minify = True
-		elif arg == '-js13kjam':
-			bpy.data.worlds[0].minify = True
-			bpy.data.worlds[0].js13kbjam = True
-			bpy.data.worlds[0].invalidHtml = True
-	bpy.app.timers.register(Update)
+for arg in sys.argv:
+	if arg.startswith('-o='):
+		bpy.data.worlds[0].exportHtml = arg.split('=')[-1]
+	elif arg == '-minify':
+		bpy.data.worlds[0].minify = True
+	elif arg == '-js13kjam':
+		bpy.data.worlds[0].minify = True
+		bpy.data.worlds[0].js13kbjam = True
+		bpy.data.worlds[0].invalidHtml = True
+bpy.app.timers.register(Update)
