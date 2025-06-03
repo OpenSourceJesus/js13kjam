@@ -406,6 +406,7 @@ JS_SUFFIX = '''
 i=0
 d=JSON.parse(D)
 c=JSON.parse(C)
+g=[]
 for(v of d)
 {
 	l=v.length
@@ -421,14 +422,16 @@ for(v of d)
 		$.add_radial_gradient(v[0],[v[1],v[2]],v[3],v[4],c[v[5]],c[v[6]],c[v[7]],v[8],v[9])
 	else if(l>2)
 	{
-		if(typeof(v[1]) === 'string')
+		if(typeof(v[1])==='string')
 			$.copy_node(v[0],v[1],[v[2],v[3]])
 		else
 			$.make_object_move(v[0],[v[1],v[2]],v[3])
 	}
 	else
-		$.add_group(v[0],v[1])
+		g.push(v)
 }
+for (var e of g)
+	$.add_group(e[0], e[1]);
 $.main()
 '''
 JS = '''
@@ -593,8 +596,8 @@ class api
 		svg.setAttribute('y', pos[1]);
 		svg.setAttribute('width', size[0]);
 		svg.setAttribute('height', size[1]);
-		var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
-		svg.setAttribute('transform', trs);
+		var trs = 'translate(' + pos[0] + 'px,' + pos[1] + 'px)';
+		svg.style.transform = trs;
 		var path_ = document.createElement('path');
 		path_.id = id + ' ';
 		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
@@ -608,7 +611,7 @@ class api
 		path_ = document.getElementById(id + ' ');
 		var svgRect = svg.getBoundingClientRect();
 		var pathRect = path_.getBoundingClientRect();
-		path_.setAttribute('transform', 'translate(' + (svgRect.x - pathRect.x + off) + ' ' + (svgRect.y - pathRect.y + off) + ')');
+		path_.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
 		var pathAnims = [];
 		if (jiggleFrames > 0)
 		{
@@ -709,10 +712,10 @@ class api
 		document.getElementById(id + ' ').remove();
 		svg.appendChild(path_);
 		var capTypes = ['butt', 'round', 'square'];
-		svg.setAttribute('stroke-linecap', capTypes[capType]);
+		svg.style.strokeLinecap = capTypes[capType];
 		var joinTypes = ['arcs', 'bevel', 'miter', 'miter-clip', 'round'];
-		svg.setAttribute('stroke-linejoin', joinTypes[joinType]);
-		svg.setAttribute('stroke-dasharray', dashArr);
+		svg.style.strokeLinejoin = joinTypes[joinType];
+		svg.style.strokeDasharray = dashArr;
 		if (magnitude(fillHatchDensity) > 0)
 		{
 			var args = [fillColor, true, svg, path_]; 
@@ -735,13 +738,13 @@ class api
 		if (mirrorX)
 		{
 			svg = $.copy_node(id, '~' + id, pos);
-			svg.setAttribute('transform', trs + ',scale(-1 1)');
+			svg.style.transform = trs + 'scale(-1,1)';
 			svg.setAttribute('transform-origin', 50 - (origin[0] - 50) + '% ' + origin[1] + '%');
 		}
 		if (mirrorY)
 		{
 			svg = $.copy_node(id, '`' + id, pos);
-			svg.setAttribute('transform', trs + ',scale(1 -1)');
+			svg.style.transform = trs + 'scale(1,-1)';
 			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
 		}
 	}
