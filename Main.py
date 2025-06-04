@@ -738,13 +738,13 @@ class api
 		if (mirrorX)
 		{
 			svg = $.copy_node(id, '~' + id, pos);
-			svg.style.transform = trs + 'scale(-1,1)';
+			svg.setAttribute('transform', trs + 'scale(-1,1)');
 			svg.setAttribute('transform-origin', 50 - (origin[0] - 50) + '% ' + origin[1] + '%');
 		}
 		if (mirrorY)
 		{
 			svg = $.copy_node(id, '`' + id, pos);
-			svg.style.transform = trs + 'scale(1,-1)';
+			svg.setAttribute('transform', trs + 'scale(1,-1)');
 			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
 		}
 	}
