@@ -596,8 +596,8 @@ class api
 		svg.setAttribute('y', pos[1]);
 		svg.setAttribute('width', size[0]);
 		svg.setAttribute('height', size[1]);
-		var trs = 'translate(' + pos[0] + 'px,' + pos[1] + 'px)';
-		svg.style.transform = trs;
+		var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
+		svg.setAttribute('transform', trs);
 		var path_ = document.createElement('path');
 		path_.id = id + ' ';
 		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
