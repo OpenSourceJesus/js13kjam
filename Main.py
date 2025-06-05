@@ -74,6 +74,9 @@ def GetScripts (ob, isAPI : bool):
 				scripts.append((txt.as_string(), getattr(ob, 'initScript' + str(i))))
 	return scripts
 
+def To2D (v : Vector):
+	return Vector((v.x, v.y))
+
 def Multiply (v : list, multiply : list):
 	output = []
 	for i, elmt in enumerate(v):
@@ -258,7 +261,18 @@ def ExportObject (ob):
 			components = vector.split(',')
 			x = int(round(float(components[0])))
 			y = int(round(float(components[1])))
-			vector = Vector((x, y))
+			vector = Vector((x, y, 0))
+			prevRotMode = ob.rotation_mode
+			ob.rotation_mode = 'XYZ'
+			vector.rotate(ob.rotation_euler)
+			ob.rotation_mode = prevRotMode
+			vector = To2D(vector)
+			toLoc = To2D(ob.location) - vector
+			prevToLoc = toLoc
+			toLoc = Vector(Multiply(toLoc, ob.scale))
+			vector += prevToLoc - toLoc
+			x = vector.x
+			y = vector.y
 			minPathVector = GetMinComponents(minPathVector, vector, True)
 			maxPathVector = GetMaxComponents(maxPathVector, vector, True)
 			pathData.append(x)
