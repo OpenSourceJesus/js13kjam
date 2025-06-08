@@ -818,11 +818,21 @@ def GenJsAPI (world):
 	js = js.replace('// Update', '\n'.join(updateCode))
 	datas = json.dumps(datas).replace(' ', '')
 	colors = json.dumps(colors).replace(' ', '')
-	if world.minify:
+	if world.minifyMethod == 'terser':
 		jsTmp = '/tmp/js13kjam API.js'
 		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
-		subprocess.run(['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d', dontMangleArg])
+		cmd = ['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d', dontMangleArg]
+		print(cmd)
+		subprocess.run(cmd)
+		js = open(jsTmp, 'r').read()
+	elif world.minifyMethod == 'roadroller':
+		jsTmp = '/tmp/js13kjam API.js'
+		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
+		open(jsTmp, 'w').write(js)
+		cmd = ['npx', 'roadroller', jsTmp, '-o', jsTmp]
+		print(' '.join(cmd))
+		subprocess.check_call(cmd)
 		js = open(jsTmp, 'r').read()
 	else:
 		js += '\nD=`' + datas + '`;\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX.replace('\t', '')
@@ -998,6 +1008,7 @@ CAP_TYPES = ['butt', 'round', 'square']
 CAP_TYPE_ITEMS = [('butt', 'butt', ''), ('round', 'round', ''), ('square', 'square', '')]
 JOIN_TYPES = ['arcs', 'bevl', 'miter', 'miter-clip', 'round']
 JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')]
+MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
@@ -1005,7 +1016,7 @@ bpy.types.World.exportOffsetY = bpy.props.IntProperty(name = 'Offset Y')
 bpy.types.World.exportHtml = bpy.props.StringProperty(name = 'Export .html')
 bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = '/tmp/TestUnityProject')
-bpy.types.World.minify = bpy.props.BoolProperty(name = 'Minifiy')
+bpy.types.World.minifyMethod = bpy.props.EnumProperty(name = 'Minify using library', items = MINIFY_METHOD_ITEMS)
 bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True)
@@ -1137,7 +1148,7 @@ class JS13KB_Panel (bpy.types.Panel):
 	def draw (self, context):
 		self.layout.prop(context.world, 'js13kbjam')
 		row = self.layout.row()
-		row.prop(context.world, 'minify')
+		row.prop(context.world, 'minifyMethod')
 		row.prop(context.world, 'invalidHtml')
 		if context.world.js13kbjam:
 			self.layout.prop(context.world, 'exportZip')
@@ -1259,9 +1270,9 @@ for arg in sys.argv:
 	if arg.startswith('-o='):
 		bpy.data.worlds[0].exportHtml = arg.split('=')[-1]
 	elif arg == '-minify':
-		bpy.data.worlds[0].minify = True
+		bpy.data.worlds[0].minifyMethod = 'roadroller'
 	elif arg == '-js13kjam':
-		bpy.data.worlds[0].minify = True
+		bpy.data.worlds[0].minifyMethod = 'roadroller'
 		bpy.data.worlds[0].js13kbjam = True
 		bpy.data.worlds[0].invalidHtml = True
 bpy.app.timers.register(Update)
