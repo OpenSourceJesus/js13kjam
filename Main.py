@@ -1270,9 +1270,9 @@ for arg in sys.argv:
 	if arg.startswith('-o='):
 		bpy.data.worlds[0].exportHtml = arg.split('=')[-1]
 	elif arg == '-minify':
-		bpy.data.worlds[0].minifyMethod = 'roadroller'
+		bpy.data.worlds[0].minifyMethod = 'terser'
 	elif arg == '-js13kjam':
-		bpy.data.worlds[0].minifyMethod = 'roadroller'
+		bpy.data.worlds[0].minifyMethod = 'terser'
 		bpy.data.worlds[0].js13kbjam = True
 		bpy.data.worlds[0].invalidHtml = True
 bpy.app.timers.register(Update)
