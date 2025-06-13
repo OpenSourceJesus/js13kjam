@@ -512,7 +512,10 @@ function random_vector (maxDist)
 }
 function magnitude (v)
 {
-	return Math.sqrt(v[0] * v[0] + v[1] * v[1]);
+	var output = 0;
+	for (elt of v)
+		output += elt * elt;
+	return Math.sqrt(output);
 }
 function normalize (v)
 {
