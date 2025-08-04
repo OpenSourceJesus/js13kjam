@@ -6,13 +6,17 @@ sys.path.append(EXTENSIONS_SCRIPTS_PATH)
 from MathExtensions import *
 from SystemExtensions import *
 
+if sys.platform == 'win32':
+	TMP_DIR = os.path.expanduser('~/AppData/Local/Temp')
+else:
+	TMP_DIR = '/tmp'
 UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
 DONT_MANGLE_INDCTR = '-r'
 dontMangleArg = ''
 
 isLinux = False
 if sys.platform == 'win32':
-	BLENDER = 'C:/Program Files/Blender Foundation/Blender 4.2/blender.exe'
+	BLENDER = 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe'
 elif sys.platform == 'darwin':
 	BLENDER = '/Applications/Blender.app/Contents/MacOS/Blender'
 else:
@@ -226,7 +230,7 @@ def ExportObject (ob):
 		bpy.ops.object.select_all(action = 'DESELECT')
 		ob.select_set(True)
 		bpy.ops.curve.export_svg()
-		svgTxt = open('/tmp/Output.svg', 'r').read()
+		svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
 		indexOfName = svgTxt.find(ob.name)
 		indexOfGroupStart = svgTxt.rfind('\n', 0, indexOfName)
 		groupEndIndicator = '</g>'
@@ -822,7 +826,7 @@ def GenJsAPI (world):
 	datas = json.dumps(datas).replace(' ', '')
 	colors = json.dumps(colors).replace(' ', '')
 	if world.minifyMethod == 'terser':
-		jsTmp = '/tmp/js13kjam API.js'
+		jsTmp = TMP_DIR + '/js13kjam API.js'
 		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d', dontMangleArg]
@@ -830,7 +834,7 @@ def GenJsAPI (world):
 		subprocess.run(cmd)
 		js = open(jsTmp, 'r').read()
 	elif world.minifyMethod == 'roadroller':
-		jsTmp = '/tmp/js13kjam API.js'
+		jsTmp = TMP_DIR + '/js13kjam API.js'
 		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['npx', 'roadroller', jsTmp, '-o', jsTmp]
@@ -884,17 +888,18 @@ def BuildHtml (world):
 	if SERVER_PROC:
 		SERVER_PROC.kill()
 	PreBuild ()
+	bpy.context.scene.export_svg_output = TMP_DIR + '/Output.svg'
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
 	html = GenHtml(world, datas)
-	open('/tmp/index.html', 'w').write(html)
+	open(TMP_DIR + '/index.html', 'w').write(html)
 	if world.js13kbjam:
 		if os.path.isfile('/usr/bin/zip'):
 			cmd = ['zip', '-9', 'index.html.zip', 'index.html']
 			print(cmd)
-			subprocess.check_call(cmd, cwd='/tmp')
+			subprocess.check_call(cmd, cwd = TMP_DIR)
 
-			zip = open('/tmp/index.html.zip','rb').read()
+			zip = open(TMP_DIR + '/index.html.zip','rb').read()
 			buildInfo['zip-size'] = len(zip)
 			if world.exportZip:
 				out = os.path.expanduser(world.exportZip)
@@ -904,7 +909,7 @@ def BuildHtml (world):
 				print('Saving:', out)
 				open(out, 'wb').write(zip)
 			else:
-				buildInfo['zip'] = '/tmp/index.html.zip'
+				buildInfo['zip'] = TMP_DIR + '/index.html.zip'
 		else:
 			if len(html.encode('utf-8')) > 1024 * 13:
 				raise SyntaxError('HTML is over 13kb')
@@ -916,7 +921,7 @@ def BuildHtml (world):
 
 	else:
 		cmd = ['python', '-m', 'http.setAttributerver', '6969']
-		SERVER_PROC = subprocess.Popen(cmd, cwd = '/tmp')
+		SERVER_PROC = subprocess.Popen(cmd, cwd = TMP_DIR)
 
 		atexit.register(lambda: SERVER_PROC.kill())
 		webbrowser.open('http://localhost:6969')
@@ -934,7 +939,6 @@ def BuildUnity (world):
 			ob.select_set(True)
 			bpy.context.scene.export_svg_output = os.path.join(svgsExportPath, ob.name + '.svg')
 			bpy.ops.curve.export_svg()
-	bpy.context.scene.export_svg_output = '/tmp/Output.svg'
 	scenesPath = os.path.join(assetsPath, 'Scenes')
 	scenePath = os.path.join(scenesPath, 'Test.unity')
 	MakeFolderForFile (scenePath)
@@ -1018,7 +1022,7 @@ bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
 bpy.types.World.exportOffsetY = bpy.props.IntProperty(name = 'Offset Y')
 bpy.types.World.exportHtml = bpy.props.StringProperty(name = 'Export .html')
 bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export .zip')
-bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = '/tmp/TestUnityProject')
+bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = TMP_DIR + '/TestUnityProject')
 bpy.types.World.minifyMethod = bpy.props.EnumProperty(name = 'Minify using library', items = MINIFY_METHOD_ITEMS)
 bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
