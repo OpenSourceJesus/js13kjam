@@ -7,7 +7,7 @@ from MathExtensions import *
 from SystemExtensions import *
 
 if sys.platform == 'win32':
-	TMP_DIR = os.path.expanduser('~/AppData/Local/Temp')
+	TMP_DIR = os.path.expanduser('~\AppData\Local\Temp')
 else:
 	TMP_DIR = '/tmp'
 UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
@@ -16,7 +16,7 @@ dontMangleArg = ''
 
 isLinux = False
 if sys.platform == 'win32':
-	BLENDER = 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe'
+	BLENDER = 'C:\Program Files\Blender Foundation\Blender 4.5\\blender.exe'
 elif sys.platform == 'darwin':
 	BLENDER = '/Applications/Blender.app/Contents/MacOS/Blender'
 else:
@@ -77,6 +77,12 @@ def GetScripts (ob, isAPI : bool):
 			else:
 				scripts.append((txt.as_string(), getattr(ob, 'initScript' + str(i))))
 	return scripts
+
+def TryChangeToInt (f : float):
+	if int(f) == f:
+		return int(f)
+	else:
+		return f
 
 def To2D (v : Vector):
 	return Vector((v.x, v.y))
@@ -299,10 +305,10 @@ def ExportObject (ob):
 			x = int(round(x))
 			y = int(round(y))
 			size = Vector(Round(size))
-		data.append(x)
-		data.append(y)
-		data.append(size.x)
-		data.append(size.y)
+		data.append(TryChangeToInt(x))
+		data.append(TryChangeToInt(y))
+		data.append(TryChangeToInt(size.x))
+		data.append(TryChangeToInt(size.y))
 		materialColor = DEFAULT_COLOR
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
@@ -314,39 +320,39 @@ def ExportObject (ob):
 		data.append(ob.data.splines[0].use_cyclic_u)
 		data.append(round(ob.location.z))
 		data.append(ob.collide)
-		data.append(ob.jiggleDist * int(ob.useJiggle))
-		data.append(ob.jiggleDur)
+		data.append(TryChangeToInt(ob.jiggleDist * int(ob.useJiggle)))
+		data.append(TryChangeToInt(ob.jiggleDur))
 		data.append(ob.jiggleFrames * int(ob.useJiggle))
-		data.append(ob.rotAngRange[0])
-		data.append(ob.rotAngRange[1])
-		data.append(ob.rotDur * int(ob.useRotate))
+		data.append(TryChangeToInt(ob.rotAngRange[0]))
+		data.append(TryChangeToInt(ob.rotAngRange[1]))
+		data.append(TryChangeToInt(ob.rotDur * int(ob.useRotate)))
 		data.append(ob.rotPingPong)
-		data.append(ob.scaleXRange[0])
-		data.append(ob.scaleXRange[1])
-		data.append(ob.scaleYRange[0])
-		data.append(ob.scaleYRange[1])
-		data.append(ob.scaleDur * int(ob.useScale))
-		data.append(ob.scaleHaltDurAtMin * int(ob.useScale))
-		data.append(ob.scaleHaltDurAtMax * int(ob.useScale))
+		data.append(TryChangeToInt(ob.scaleXRange[0]))
+		data.append(TryChangeToInt(ob.scaleXRange[1]))
+		data.append(TryChangeToInt(ob.scaleYRange[0]))
+		data.append(TryChangeToInt(ob.scaleYRange[1]))
+		data.append(TryChangeToInt(ob.scaleDur * int(ob.useScale)))
+		data.append(TryChangeToInt(ob.scaleHaltDurAtMin * int(ob.useScale)))
+		data.append(TryChangeToInt(ob.scaleHaltDurAtMax * int(ob.useScale)))
 		data.append(ob.scalePingPong)
-		data.append(ob.origin[0])
-		data.append(ob.origin[1])
-		data.append(ob.fillHatchDensity[0] * int(ob.useFillHatch[0]))
-		data.append(ob.fillHatchDensity[1] * int(ob.useFillHatch[1]))
-		data.append(ob.fillHatchRandDensity[0] / 100 * int(ob.useFillHatch[0]))
-		data.append(ob.fillHatchRandDensity[1] / 100 * int(ob.useFillHatch[1]))
-		data.append(ob.fillHatchAng[0] * int(ob.useFillHatch[0]))
-		data.append(ob.fillHatchAng[1] * int(ob.useFillHatch[1]))
-		data.append(ob.fillHatchWidth[0] * int(ob.useFillHatch[0]))
-		data.append(ob.fillHatchWidth[1] * int(ob.useFillHatch[1]))
-		data.append(ob.strokeHatchDensity[0] * int(ob.useStrokeHatch[0]))
-		data.append(ob.strokeHatchDensity[1] * int(ob.useStrokeHatch[1]))
-		data.append(ob.strokeHatchRandDensity[0] / 100 * int(ob.useStrokeHatch[0]))
-		data.append(ob.strokeHatchRandDensity[1] / 100 * int(ob.useStrokeHatch[1]))
-		data.append(ob.strokeHatchAng[0] * int(ob.useStrokeHatch[0]))
-		data.append(ob.strokeHatchAng[1] * int(ob.useStrokeHatch[1]))
-		data.append(ob.strokeHatchWidth[0] * int(ob.useStrokeHatch[0]))
-		data.append(ob.strokeHatchWidth[1] * int(ob.useStrokeHatch[1]))
+		data.append(TryChangeToInt(ob.origin[0]))
+		data.append(TryChangeToInt(ob.origin[1]))
+		data.append(TryChangeToInt(ob.fillHatchDensity[0] * int(ob.useFillHatch[0])))
+		data.append(TryChangeToInt(ob.fillHatchDensity[1] * int(ob.useFillHatch[1])))
+		data.append(TryChangeToInt(ob.fillHatchRandDensity[0] / 100 * int(ob.useFillHatch[0])))
+		data.append(TryChangeToInt(ob.fillHatchRandDensity[1] / 100 * int(ob.useFillHatch[1])))
+		data.append(TryChangeToInt(ob.fillHatchAng[0] * int(ob.useFillHatch[0])))
+		data.append(TryChangeToInt(ob.fillHatchAng[1] * int(ob.useFillHatch[1])))
+		data.append(TryChangeToInt(ob.fillHatchWidth[0] * int(ob.useFillHatch[0])))
+		data.append(TryChangeToInt(ob.fillHatchWidth[1] * int(ob.useFillHatch[1])))
+		data.append(TryChangeToInt(ob.strokeHatchDensity[0] * int(ob.useStrokeHatch[0])))
+		data.append(TryChangeToInt(ob.strokeHatchDensity[1] * int(ob.useStrokeHatch[1])))
+		data.append(TryChangeToInt(ob.strokeHatchRandDensity[0] / 100 * int(ob.useStrokeHatch[0])))
+		data.append(TryChangeToInt(ob.strokeHatchRandDensity[1] / 100 * int(ob.useStrokeHatch[1])))
+		data.append(TryChangeToInt(ob.strokeHatchAng[0] * int(ob.useStrokeHatch[0])))
+		data.append(TryChangeToInt(ob.strokeHatchAng[1] * int(ob.useStrokeHatch[1])))
+		data.append(TryChangeToInt(ob.strokeHatchWidth[0] * int(ob.useStrokeHatch[0])))
+		data.append(TryChangeToInt(ob.strokeHatchWidth[1] * int(ob.useStrokeHatch[1])))
 		data.append(ob.mirrorX)
 		data.append(ob.mirrorY)
 		data.append(CAP_TYPES.index(ob.capType))
@@ -357,7 +363,7 @@ def ExportObject (ob):
 				break
 			dashArr.append(value)
 		data.append(dashArr)
-		data.append(ob.cycleDur)
+		data.append(TryChangeToInt(ob.cycleDur))
 		datas.append(data)
 	exportedObs.append(ob)
 
@@ -826,7 +832,7 @@ def GenJsAPI (world):
 	datas = json.dumps(datas).replace(' ', '')
 	colors = json.dumps(colors).replace(' ', '')
 	if world.minifyMethod == 'terser':
-		jsTmp = TMP_DIR + '/js13kjam API.js'
+		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
 		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d', dontMangleArg]
@@ -834,7 +840,7 @@ def GenJsAPI (world):
 		subprocess.run(cmd)
 		js = open(jsTmp, 'r').read()
 	elif world.minifyMethod == 'roadroller':
-		jsTmp = TMP_DIR + '/js13kjam API.js'
+		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
 		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['npx', 'roadroller', jsTmp, '-o', jsTmp]
