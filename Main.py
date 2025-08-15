@@ -250,8 +250,6 @@ def ExportObject (ob):
 		scale = Vector((sx, sy))
 		min *= scale
 		min += off
-		if HandleCopyObject(ob, min):
-			return
 		max *= scale
 		max += off
 		data = []
@@ -305,6 +303,8 @@ def ExportObject (ob):
 			x = int(round(x))
 			y = int(round(y))
 			size = Vector(Round(size))
+		if HandleCopyObject(ob, [x, y]):
+			return
 		data.append(TryChangeToInt(x))
 		data.append(TryChangeToInt(y))
 		data.append(TryChangeToInt(size.x))
@@ -387,7 +387,7 @@ def HandleCopyObject (ob, pos):
 		else:
 			exportedObNameWithoutPeriod = exportedOb.name[: indexOfPeriod]
 		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
-			datas.append([obNameWithoutPeriod, ob.name, int(pos[0]), int(pos[1])])
+			datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1])])
 			exportedObs.append(ob)
 			HandleMakeObjectMove (ob)
 			return True
@@ -586,6 +586,7 @@ class api
 		copy.id = newId;
 		copy.setAttribute('x', pos[0]);
 		copy.setAttribute('y', pos[1]);
+		copy.setAttribute('transform', 'translate(' + pos[0] + ',' + pos[1] + ')');
 		document.body.appendChild(copy);
 		return copy;
 	}
