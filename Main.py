@@ -7,7 +7,7 @@ from MathExtensions import *
 from SystemExtensions import *
 
 if sys.platform == 'win32':
-	TMP_DIR = os.path.expanduser('~\AppData\Local\Temp')
+	TMP_DIR = os.path.expanduser('~\\AppData\\Local\\Temp')
 else:
 	TMP_DIR = '/tmp'
 UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
@@ -16,7 +16,7 @@ dontMangleArg = ''
 
 isLinux = False
 if sys.platform == 'win32':
-	BLENDER = 'C:\Program Files\Blender Foundation\Blender 4.5\\blender.exe'
+	BLENDER = 'C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe'
 elif sys.platform == 'darwin':
 	BLENDER = '/Applications/Blender.app/Contents/MacOS/Blender'
 else:
@@ -47,7 +47,7 @@ if not bpy:
 	if exArgs:
 		cmd.append('--')
 		cmd += exArgs
-	print(cmd)
+	print(' '.join(cmd))
 	subprocess.check_call(cmd)
 	sys.exit()
 
@@ -837,7 +837,7 @@ def GenJsAPI (world):
 		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d', dontMangleArg]
-		print(cmd)
+		print(' '.join(cmd))
 		subprocess.run(cmd)
 		js = open(jsTmp, 'r').read()
 	elif world.minifyMethod == 'roadroller':
@@ -903,7 +903,7 @@ def BuildHtml (world):
 	if world.js13kbjam:
 		if os.path.isfile('/usr/bin/zip'):
 			cmd = ['zip', '-9', 'index.html.zip', 'index.html']
-			print(cmd)
+			print(' '.join(cmd))
 			subprocess.check_call(cmd, cwd = TMP_DIR)
 
 			zip = open(TMP_DIR + '/index.html.zip','rb').read()
