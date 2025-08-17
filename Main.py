@@ -161,13 +161,13 @@ def ToByteString (n, delimeters = '\\`', escapeQuotes : bool = True):
 
 def GetColor (color : list):
 	color_ = ClampComponents(Round(Multiply(color, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-	indexOfColor = IndexOfValue(color_, colors)
+	idxOfColor = IndexOfValue(color_, colors)
 	keyOfColor = ''
-	if indexOfColor == -1:
+	if idxOfColor == -1:
 		keyOfColor = string.ascii_letters[len(colors)]
 		colors[keyOfColor] = color_
 	else:
-		keyOfColor = string.ascii_letters[indexOfColor]
+		keyOfColor = string.ascii_letters[idxOfColor]
 	return keyOfColor
 
 def GetObjectPosition (ob):
@@ -237,15 +237,15 @@ def ExportObject (ob):
 		ob.select_set(True)
 		bpy.ops.curve.export_svg()
 		svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
-		indexOfName = svgTxt.find(ob.name)
-		indexOfGroupStart = svgTxt.rfind('\n', 0, indexOfName)
+		idxOfName = svgTxt.find('"' + ob.name + '"') + 1
+		idxOfGroupStart = svgTxt.rfind('\n', 0, idxOfName)
 		groupEndIndicator = '</g>'
-		indexOfGroupEnd = svgTxt.find(groupEndIndicator, indexOfGroupStart) + len(groupEndIndicator)
-		group = svgTxt[indexOfGroupStart : indexOfGroupEnd]
+		idxOfGroupEnd = svgTxt.find(groupEndIndicator, idxOfGroupStart) + len(groupEndIndicator)
+		group = svgTxt[idxOfGroupStart : idxOfGroupEnd]
 		parentGroupIndicator = '\n  <g'
-		indexOfParentGroupStart = svgTxt.find(parentGroupIndicator)
-		indexOfParentGroupContents = svgTxt.find('\n', indexOfParentGroupStart + len(parentGroupIndicator))
-		indexOfParentGroupEnd = svgTxt.rfind('</g')
+		idxOfParentGroupStart = svgTxt.find(parentGroupIndicator)
+		idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndicator))
+		idxOfParentGroupEnd = svgTxt.rfind('</g')
 		min, max = GetCurveRectMinMax(ob)
 		scale = Vector((sx, sy))
 		min *= scale
@@ -253,11 +253,11 @@ def ExportObject (ob):
 		max *= scale
 		max += off
 		data = []
-		svgTxt = svgTxt[: indexOfParentGroupContents] + group + svgTxt[indexOfParentGroupEnd :]
+		svgTxt = svgTxt[: idxOfParentGroupContents] + group + svgTxt[idxOfParentGroupEnd :]
 		pathDataIndicator = ' d="'
-		indexOfPathDataStart = svgTxt.find(pathDataIndicator) + len(pathDataIndicator)
-		indexOfPathDataEnd = svgTxt.find('"', indexOfPathDataStart)
-		pathData = svgTxt[indexOfPathDataStart : indexOfPathDataEnd]
+		idxOfPathDataStart = svgTxt.find(pathDataIndicator) + len(pathDataIndicator)
+		idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
+		pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
 		pathData = pathData.replace('.0', '')
 		vectors = pathData.split(' ')
 		pathData = []
@@ -376,16 +376,16 @@ def HandleMakeObjectMove (ob):
 
 def HandleCopyObject (ob, pos):
 	for exportedOb in exportedObs:
-		indexOfPeriod = ob.name.find('.')
-		if indexOfPeriod == -1:
+		idxOfPeriod = ob.name.find('.')
+		if idxOfPeriod == -1:
 			obNameWithoutPeriod = ob.name
 		else:
-			obNameWithoutPeriod = ob.name[: indexOfPeriod]
-		indexOfPeriod = exportedOb.name.find('.')
-		if indexOfPeriod == -1:
+			obNameWithoutPeriod = ob.name[: idxOfPeriod]
+		idxOfPeriod = exportedOb.name.find('.')
+		if idxOfPeriod == -1:
 			exportedObNameWithoutPeriod = exportedOb.name
 		else:
-			exportedObNameWithoutPeriod = exportedOb.name[: indexOfPeriod]
+			exportedObNameWithoutPeriod = exportedOb.name[: idxOfPeriod]
 		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
 			datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1])])
 			exportedObs.append(ob)
@@ -594,9 +594,9 @@ class api
 	{
 		var children = firstAndLastChildIds.split(';');
 		var html = document.body.innerHTML;
-		var indexOfFirstChild = html.lastIndexOf('<svg', html.indexOf('id="' + children[0]));
-		var indexOfLastChild = html.indexOf('</svg>', html.indexOf('id="' + children[1])) + 6;
-		document.body.innerHTML = html.slice(0, indexOfFirstChild) + '<g id="' + id + '">' + html.slice(indexOfFirstChild, indexOfLastChild) + '</g>' + html.slice(indexOfLastChild);
+		var idxOfFirstChild = html.lastIndexOf('<svg', html.indexOf('id="' + children[0]));
+		var idxOfLastChild = html.indexOf('</svg>', html.indexOf('id="' + children[1])) + 6;
+		document.body.innerHTML = html.slice(0, idxOfFirstChild) + '<g id="' + id + '">' + html.slice(idxOfFirstChild, idxOfLastChild) + '</g>' + html.slice(idxOfLastChild);
 	}
 	add_radial_gradient (id, pos, zIdx, diameter, color, color2, color3, colorPositions, subtractive)
 	{
@@ -991,28 +991,28 @@ def Update ():
 			continue
 		mat = ob.material_slots[0].material
 		mat.use_nodes = False
-		indexOfPeriod = mat.name.find('.')
-		if indexOfPeriod != -1:
-			origName = mat.name[: indexOfPeriod]
+		idxOfPeriod = mat.name.find('.')
+		if idxOfPeriod != -1:
+			origName = mat.name[: idxOfPeriod]
 			for ob2 in bpy.data.objects:
 				if len(ob2.material_slots) > 0 and ob2.material_slots[0].material.name == origName:
 					ob.material_slots[0].material = ob2.material_slots[0].material
 			bpy.data.materials.remove(mat)
 	for txt in bpy.data.texts:
-		indexOfPeriod = txt.name.find('.')
-		if indexOfPeriod != -1:
+		idxOfPeriod = txt.name.find('.')
+		if idxOfPeriod != -1:
 			for ob in bpy.data.objects:
 				for i in range(MAX_SCRIPTS_PER_OBJECT):
 					attachedTxt = getattr(ob, 'apiScript' + str(i))
 					if attachedTxt == txt:
 						for origTxt in bpy.data.texts:
-							if origTxt.name == txt.name[: indexOfPeriod]:
+							if origTxt.name == txt.name[: idxOfPeriod]:
 								setattr(ob, 'apiScript' + str(i), origTxt)
 								break
 					attachedTxt = getattr(ob, 'runtimeScript' + str(i))
 					if attachedTxt == txt:
 						for origTxt in bpy.data.texts:
-							if origTxt.name == txt.name[: indexOfPeriod]:
+							if origTxt.name == txt.name[: idxOfPeriod]:
 								setattr(ob, 'runtimeScript' + str(i), origTxt)
 								break
 			bpy.data.texts.remove(txt)
