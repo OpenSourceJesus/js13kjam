@@ -502,12 +502,12 @@ function remap (inFrom, inTo, outFrom, outTo, n)
 {
 	return lerp(outFrom, outTo, inv_lerp(inFrom, inTo, n));
 }
-function overlaps (pos, size, pos2, size2)
+function overlaps (min, max, min2, max2)
 {
-	return !(pos[0] + size[0] < pos2[0]
-		|| pos[0] > pos2[0] + size2[0]
-		|| pos[1] + size[1] < pos2[1]
-		|| pos[1] > pos2[1] + size2[1])
+	return !(max[0] < min2[0]
+		|| min[0] > max2[0]
+		|| max[1] < min2[1]
+		|| min[1] > max2[1])
 }
 function ang_to_dir (ang)
 {
