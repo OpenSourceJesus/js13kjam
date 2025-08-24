@@ -233,138 +233,151 @@ def ExportObject (ob):
 		data.append(ob.subtractive)
 		datas.append(data)
 	elif ob.type == 'CURVE':
-		bpy.ops.object.select_all(action = 'DESELECT')
-		ob.select_set(True)
-		bpy.ops.curve.export_svg()
-		svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
-		idxOfName = svgTxt.find('"' + ob.name + '"') + 1
-		idxOfGroupStart = svgTxt.rfind('\n', 0, idxOfName)
-		groupEndIndicator = '</g>'
-		idxOfGroupEnd = svgTxt.find(groupEndIndicator, idxOfGroupStart) + len(groupEndIndicator)
-		group = svgTxt[idxOfGroupStart : idxOfGroupEnd]
-		parentGroupIndicator = '\n  <g'
-		idxOfParentGroupStart = svgTxt.find(parentGroupIndicator)
-		idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndicator))
-		idxOfParentGroupEnd = svgTxt.rfind('</g')
-		min, max = GetCurveRectMinMax(ob)
-		scale = Vector((sx, sy))
-		min *= scale
-		min += off
-		max *= scale
-		max += off
-		data = []
-		svgTxt = svgTxt[: idxOfParentGroupContents] + group + svgTxt[idxOfParentGroupEnd :]
-		pathDataIndicator = ' d="'
-		idxOfPathDataStart = svgTxt.find(pathDataIndicator) + len(pathDataIndicator)
-		idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
-		pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
-		pathData = pathData.replace('.0', '')
-		vectors = pathData.split(' ')
-		pathData = []
-		minPathVector = Vector((float('inf'), float('inf')))
-		maxPathVector = Vector((-float('inf'), -float('inf')))
-		for vector in vectors:
-			if len(vector) == 1:
-				continue
-			components = vector.split(',')
-			x = int(round(float(components[0])))
-			y = int(round(float(components[1])))
-			vector = Vector((x, y, 0))
-			prevRotMode = ob.rotation_mode
-			ob.rotation_mode = 'XYZ'
-			vector.rotate(ob.rotation_euler)
-			ob.rotation_mode = prevRotMode
-			vector = To2D(vector)
-			toLoc = To2D(ob.location) - vector
-			prevToLoc = toLoc
-			toLoc = Vector(Multiply(toLoc, ob.scale))
-			vector += prevToLoc - toLoc
-			x = vector.x
-			y = vector.y
-			minPathVector = GetMinComponents(minPathVector, vector, True)
-			maxPathVector = GetMaxComponents(maxPathVector, vector, True)
-			pathData.append(x)
-			pathData.append(y)
-		offset = -minPathVector + Vector((32, 32))
-		for i, pathValue in enumerate(pathData):
-			if i % 2 == 1:
-				pathData[i] = ToByteString((maxPathVector[1] - pathValue + minPathVector[1]) + offset[1])
-			else:
-				pathData[i] = ToByteString(pathValue + offset[0])
-		strokeWidth = 0
-		if ob.useSvgStroke:
-			strokeWidth = ob.svgStrokeWidth
-		jiggleDist = ob.jiggleDist * int(ob.useJiggle)
-		x = min.x - strokeWidth / 2 - jiggleDist
-		y = -max.y + strokeWidth / 2 + jiggleDist
-		size = max - min
-		size += Vector((1, 1)) * (strokeWidth + jiggleDist * 2)
-		if ob.roundPosAndSize:
-			x = int(round(x))
-			y = int(round(y))
-			size = Vector(Round(size))
-		if HandleCopyObject(ob, [x, y]):
-			return
-		data.append(TryChangeToInt(x))
-		data.append(TryChangeToInt(y))
-		data.append(TryChangeToInt(size.x))
-		data.append(TryChangeToInt(size.y))
-		materialColor = DEFAULT_COLOR
-		if len(ob.material_slots) > 0:
-			materialColor = ob.material_slots[0].material.diffuse_color
-		data.append(GetColor(materialColor))
-		data.append(round(strokeWidth))
-		data.append(GetColor(ob.svgStrokeColor))
-		data.append(ob.name)
-		pathsDatas.append(''.join(pathData))
-		data.append(ob.data.splines[0].use_cyclic_u)
-		data.append(round(ob.location.z))
-		data.append(ob.collide)
-		data.append(TryChangeToInt(ob.jiggleDist * int(ob.useJiggle)))
-		data.append(TryChangeToInt(ob.jiggleDur))
-		data.append(ob.jiggleFrames * int(ob.useJiggle))
-		data.append(TryChangeToInt(ob.rotAngRange[0]))
-		data.append(TryChangeToInt(ob.rotAngRange[1]))
-		data.append(TryChangeToInt(ob.rotDur * int(ob.useRotate)))
-		data.append(ob.rotPingPong)
-		data.append(TryChangeToInt(ob.scaleXRange[0]))
-		data.append(TryChangeToInt(ob.scaleXRange[1]))
-		data.append(TryChangeToInt(ob.scaleYRange[0]))
-		data.append(TryChangeToInt(ob.scaleYRange[1]))
-		data.append(TryChangeToInt(ob.scaleDur * int(ob.useScale)))
-		data.append(TryChangeToInt(ob.scaleHaltDurAtMin * int(ob.useScale)))
-		data.append(TryChangeToInt(ob.scaleHaltDurAtMax * int(ob.useScale)))
-		data.append(ob.scalePingPong)
-		data.append(TryChangeToInt(ob.origin[0]))
-		data.append(TryChangeToInt(ob.origin[1]))
-		data.append(TryChangeToInt(ob.fillHatchDensity[0] * int(ob.useFillHatch[0])))
-		data.append(TryChangeToInt(ob.fillHatchDensity[1] * int(ob.useFillHatch[1])))
-		data.append(TryChangeToInt(ob.fillHatchRandDensity[0] / 100 * int(ob.useFillHatch[0])))
-		data.append(TryChangeToInt(ob.fillHatchRandDensity[1] / 100 * int(ob.useFillHatch[1])))
-		data.append(TryChangeToInt(ob.fillHatchAng[0] * int(ob.useFillHatch[0])))
-		data.append(TryChangeToInt(ob.fillHatchAng[1] * int(ob.useFillHatch[1])))
-		data.append(TryChangeToInt(ob.fillHatchWidth[0] * int(ob.useFillHatch[0])))
-		data.append(TryChangeToInt(ob.fillHatchWidth[1] * int(ob.useFillHatch[1])))
-		data.append(TryChangeToInt(ob.strokeHatchDensity[0] * int(ob.useStrokeHatch[0])))
-		data.append(TryChangeToInt(ob.strokeHatchDensity[1] * int(ob.useStrokeHatch[1])))
-		data.append(TryChangeToInt(ob.strokeHatchRandDensity[0] / 100 * int(ob.useStrokeHatch[0])))
-		data.append(TryChangeToInt(ob.strokeHatchRandDensity[1] / 100 * int(ob.useStrokeHatch[1])))
-		data.append(TryChangeToInt(ob.strokeHatchAng[0] * int(ob.useStrokeHatch[0])))
-		data.append(TryChangeToInt(ob.strokeHatchAng[1] * int(ob.useStrokeHatch[1])))
-		data.append(TryChangeToInt(ob.strokeHatchWidth[0] * int(ob.useStrokeHatch[0])))
-		data.append(TryChangeToInt(ob.strokeHatchWidth[1] * int(ob.useStrokeHatch[1])))
-		data.append(ob.mirrorX)
-		data.append(ob.mirrorY)
-		data.append(CAP_TYPES.index(ob.capType))
-		data.append(JOIN_TYPES.index(ob.joinType))
-		dashArr = []
-		for value in ob.dashLengthsAndSpaces:
-			if value == 0:
-				break
-			dashArr.append(value)
-		data.append(dashArr)
-		data.append(TryChangeToInt(ob.cycleDur))
-		datas.append(data)
+		prevFrame = bpy.context.scene.frame_current
+		prevData = ob.data
+		for frame in range(ob.minFrame, ob.maxFrame + 1):
+			bpy.context.scene.frame_set(frame)
+			depsgraph = bpy.context.evaluated_depsgraph_get()
+			evaluatedOb = ob.evaluated_get(depsgraph)
+			curveData = evaluatedOb.to_curve(depsgraph, apply_modifiers = True).copy()
+			ob.data = curveData.copy()
+			bpy.ops.object.select_all(action = 'DESELECT')
+			ob.select_set(True)
+			bpy.ops.curve.export_svg()
+			svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
+			idxOfName = svgTxt.find('"' + ob.name + '"') + 1
+			idxOfGroupStart = svgTxt.rfind('\n', 0, idxOfName)
+			groupEndIndicator = '</g>'
+			idxOfGroupEnd = svgTxt.find(groupEndIndicator, idxOfGroupStart) + len(groupEndIndicator)
+			group = svgTxt[idxOfGroupStart : idxOfGroupEnd]
+			parentGroupIndicator = '\n  <g'
+			idxOfParentGroupStart = svgTxt.find(parentGroupIndicator)
+			idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndicator))
+			idxOfParentGroupEnd = svgTxt.rfind('</g')
+			min, max = GetCurveRectMinMax(ob)
+			scale = Vector((sx, sy))
+			min *= scale
+			min += off
+			max *= scale
+			max += off
+			data = []
+			svgTxt = svgTxt[: idxOfParentGroupContents] + group + svgTxt[idxOfParentGroupEnd :]
+			pathDataIndicator = ' d="'
+			idxOfPathDataStart = svgTxt.find(pathDataIndicator) + len(pathDataIndicator)
+			idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
+			pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
+			pathData = pathData.replace('.0', '')
+			vectors = pathData.split(' ')
+			pathData = []
+			minPathVector = Vector((float('inf'), float('inf')))
+			maxPathVector = Vector((-float('inf'), -float('inf')))
+			for vector in vectors:
+				if len(vector) == 1:
+					continue
+				components = vector.split(',')
+				x = int(round(float(components[0])))
+				y = int(round(float(components[1])))
+				vector = Vector((x, y, 0))
+				prevRotMode = ob.rotation_mode
+				ob.rotation_mode = 'XYZ'
+				vector.rotate(ob.rotation_euler)
+				ob.rotation_mode = prevRotMode
+				vector = To2D(vector)
+				toLoc = To2D(ob.location) - vector
+				prevToLoc = toLoc
+				toLoc = Vector(Multiply(toLoc, ob.scale))
+				vector += prevToLoc - toLoc
+				x = vector.x
+				y = vector.y
+				minPathVector = GetMinComponents(minPathVector, vector, True)
+				maxPathVector = GetMaxComponents(maxPathVector, vector, True)
+				pathData.append(x)
+				pathData.append(y)
+			offset = -minPathVector + Vector((32, 32))
+			for i, pathValue in enumerate(pathData):
+				if i % 2 == 1:
+					pathData[i] = ToByteString((maxPathVector[1] - pathValue + minPathVector[1]) + offset[1])
+				else:
+					pathData[i] = ToByteString(pathValue + offset[0])
+			strokeWidth = 0
+			if ob.useSvgStroke:
+				strokeWidth = ob.svgStrokeWidth
+			jiggleDist = ob.jiggleDist * int(ob.useJiggle)
+			x = min.x - strokeWidth / 2 - jiggleDist
+			y = -max.y + strokeWidth / 2 + jiggleDist
+			size = max - min
+			size += Vector((1, 1)) * (strokeWidth + jiggleDist * 2)
+			if ob.roundPosAndSize:
+				x = int(round(x))
+				y = int(round(y))
+				size = Vector(Round(size))
+			if HandleCopyObject(ob, [x, y]):
+				return
+			data.append(TryChangeToInt(x))
+			data.append(TryChangeToInt(y))
+			data.append(TryChangeToInt(size.x))
+			data.append(TryChangeToInt(size.y))
+			materialColor = DEFAULT_COLOR
+			if len(ob.material_slots) > 0:
+				materialColor = ob.material_slots[0].material.diffuse_color
+			data.append(GetColor(materialColor))
+			data.append(round(strokeWidth))
+			data.append(GetColor(ob.svgStrokeColor))
+			data.append(ob.name)
+			pathsDatas.append(''.join(pathData))
+			data.append(ob.data.splines[0].use_cyclic_u)
+			data.append(round(ob.location.z))
+			data.append(ob.collide)
+			data.append(TryChangeToInt(ob.jiggleDist * int(ob.useJiggle)))
+			data.append(TryChangeToInt(ob.jiggleDur))
+			data.append(ob.jiggleFrames * int(ob.useJiggle))
+			data.append(TryChangeToInt(ob.rotAngRange[0]))
+			data.append(TryChangeToInt(ob.rotAngRange[1]))
+			data.append(TryChangeToInt(ob.rotDur * int(ob.useRotate)))
+			data.append(ob.rotPingPong)
+			data.append(TryChangeToInt(ob.scaleXRange[0]))
+			data.append(TryChangeToInt(ob.scaleXRange[1]))
+			data.append(TryChangeToInt(ob.scaleYRange[0]))
+			data.append(TryChangeToInt(ob.scaleYRange[1]))
+			data.append(TryChangeToInt(ob.scaleDur * int(ob.useScale)))
+			data.append(TryChangeToInt(ob.scaleHaltDurAtMin * int(ob.useScale)))
+			data.append(TryChangeToInt(ob.scaleHaltDurAtMax * int(ob.useScale)))
+			data.append(ob.scalePingPong)
+			data.append(TryChangeToInt(ob.origin[0]))
+			data.append(TryChangeToInt(ob.origin[1]))
+			data.append(TryChangeToInt(ob.fillHatchDensity[0] * int(ob.useFillHatch[0])))
+			data.append(TryChangeToInt(ob.fillHatchDensity[1] * int(ob.useFillHatch[1])))
+			data.append(TryChangeToInt(ob.fillHatchRandDensity[0] / 100 * int(ob.useFillHatch[0])))
+			data.append(TryChangeToInt(ob.fillHatchRandDensity[1] / 100 * int(ob.useFillHatch[1])))
+			data.append(TryChangeToInt(ob.fillHatchAng[0] * int(ob.useFillHatch[0])))
+			data.append(TryChangeToInt(ob.fillHatchAng[1] * int(ob.useFillHatch[1])))
+			data.append(TryChangeToInt(ob.fillHatchWidth[0] * int(ob.useFillHatch[0])))
+			data.append(TryChangeToInt(ob.fillHatchWidth[1] * int(ob.useFillHatch[1])))
+			data.append(TryChangeToInt(ob.strokeHatchDensity[0] * int(ob.useStrokeHatch[0])))
+			data.append(TryChangeToInt(ob.strokeHatchDensity[1] * int(ob.useStrokeHatch[1])))
+			data.append(TryChangeToInt(ob.strokeHatchRandDensity[0] / 100 * int(ob.useStrokeHatch[0])))
+			data.append(TryChangeToInt(ob.strokeHatchRandDensity[1] / 100 * int(ob.useStrokeHatch[1])))
+			data.append(TryChangeToInt(ob.strokeHatchAng[0] * int(ob.useStrokeHatch[0])))
+			data.append(TryChangeToInt(ob.strokeHatchAng[1] * int(ob.useStrokeHatch[1])))
+			data.append(TryChangeToInt(ob.strokeHatchWidth[0] * int(ob.useStrokeHatch[0])))
+			data.append(TryChangeToInt(ob.strokeHatchWidth[1] * int(ob.useStrokeHatch[1])))
+			data.append(ob.mirrorX)
+			data.append(ob.mirrorY)
+			data.append(CAP_TYPES.index(ob.capType))
+			data.append(JOIN_TYPES.index(ob.joinType))
+			dashArr = []
+			for value in ob.dashLengthsAndSpaces:
+				if value == 0:
+					break
+				dashArr.append(value)
+			data.append(dashArr)
+			data.append(TryChangeToInt(ob.cycleDur))
+			datas.append(data)
+		bpy.context.scene.frame_set(prevFrame)
+		ob.data = prevData
+		for curve in bpy.data.curves:
+			if curve.users == 0:
+				bpy.data.curves.remove(curve)
 	exportedObs.append(ob)
 
 def HandleMakeObjectMove (ob):
@@ -1078,6 +1091,8 @@ bpy.types.Object.strokeHatchDensity = bpy.props.FloatVectorProperty(name = 'Stro
 bpy.types.Object.strokeHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch randomize density percent', size = 2, min = 0)
 bpy.types.Object.strokeHatchAng = bpy.props.FloatVectorProperty(name = 'Stroke hatch angle', size = 2, min = -360, max = 360)
 bpy.types.Object.strokeHatchWidth = bpy.props.FloatVectorProperty(name = 'Stroke hatch width', size = 2, min = 0)
+bpy.types.Object.minFrame = bpy.props.IntProperty(name = 'Min custom animation frame')
+bpy.types.Object.maxFrame = bpy.props.IntProperty(name = 'Max custom animation frame')
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1237,6 +1252,9 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'scaleHaltDurAtMax')
 			self.layout.label(text = 'Cycle')
 			self.layout.prop(ob, 'cycleDur')
+			self.layout.label(text = 'Custom')
+			self.layout.prop(ob, 'minFrame')
+			self.layout.prop(ob, 'maxFrame')
 		self.layout.label(text = 'Movement')
 		self.layout.prop(ob, 'moveSpeed')
 		self.layout.prop(ob, 'waypoint1')
