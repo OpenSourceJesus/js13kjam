@@ -247,23 +247,15 @@ def ExportObject (ob):
 			ob.select_set(True)
 			bpy.ops.curve.export_svg()
 			svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
-			print('YAY:' + ob.name)
-			print('YAY2:' + svgTxt)
 			idxOfName = svgTxt.find('"' + ob.name + '"') + 1
-			print('YAY3:' + str(idxOfName))
 			idxOfGroupStart = svgTxt.rfind('\n', 0, idxOfName)
-			print('YAY4:' + str(idxOfGroupStart))
 			groupEndIndicator = '</g>'
 			idxOfGroupEnd = svgTxt.find(groupEndIndicator, idxOfGroupStart) + len(groupEndIndicator)
-			print('YAY5:' + str(idxOfGroupEnd))
 			group = svgTxt[idxOfGroupStart : idxOfGroupEnd]
 			parentGroupIndicator = '\n  <g'
 			idxOfParentGroupStart = svgTxt.find(parentGroupIndicator)
-			print('YAY6:' + str(idxOfParentGroupStart))
 			idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndicator))
-			print('YAY7:' + str(idxOfParentGroupContents))
 			idxOfParentGroupEnd = svgTxt.rfind('</g')
-			print('YAY8:' + str(idxOfParentGroupEnd))
 			min, max = GetCurveRectMinMax(ob)
 			scale = Vector((sx, sy))
 			min *= scale
@@ -272,15 +264,11 @@ def ExportObject (ob):
 			max += off
 			data = []
 			svgTxt = svgTxt[: idxOfParentGroupContents] + group + svgTxt[idxOfParentGroupEnd :]
-			print('YAY9:' + svgTxt)
 			pathDataIndicator = ' d="'
 			idxOfPathDataStart = svgTxt.find(pathDataIndicator) + len(pathDataIndicator)
-			print('YAY10:' + str(idxOfPathDataStart))
 			idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
-			print('YAY11:' + str(idxOfPathDataEnd))
 			pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
 			pathData = pathData.replace('.0', '')
-			print('YAY12:' + pathData)
 			vectors = pathData.split(' ')
 			pathData = []
 			minPathVector = Vector((float('inf'), float('inf')))
@@ -391,7 +379,7 @@ def ExportObject (ob):
 				dashArr.append(value)
 			data.append(dashArr)
 			data.append(TryChangeToInt(ob.cycleDur))
-			datas.append(data)
+		datas.append(data)
 		bpy.context.scene.frame_set(prevFrame)
 		ob.data = prevObData
 		for curve in bpy.data.curves:
@@ -434,7 +422,6 @@ def GetPathDelta (fromPathData, toPathData):
 		toPathVal = ord(toPathData[i])
 		if fromPathVal != toPathVal:
 			output += ToByteString(i + 32) + ToByteString(toPathVal - fromPathVal + 32 + 128)
-	print('YAY13', output)
 	return output
 
 def GetBlenderData ():
@@ -470,33 +457,33 @@ buildInfo = {
 }
 
 JS_SUFFIX = '''
-i=0
-d=JSON.parse(D)
-c=JSON.parse(C)
-g=[]
-for(v of d)
+i = 0
+d = JSON.parse(D)
+c = JSON.parse(C)
+g = []
+for (e of d)
 {
-	l=v.length
-	if(l>10)
+	l = e.length
+	if (l > 10)
 	{
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],p.split('\\n')[i],v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],[v[28],v[29]],[v[30],v[31]],[v[32],v[33]],[v[34],v[35]],[v[36],v[37]],[v[38],v[39]],[v[40],v[41]],[v[42],v[43]],v[44],v[45],v[46],v[47],v[48],v[49])
-		i++
+		$.draw_svg ([e[0], e[1]], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i], e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49])
+		i ++
 	}
-	else if(l>5)
-		$.add_radial_gradient(v[0],[v[1],v[2]],v[3],v[4],c[v[5]],c[v[6]],c[v[7]],v[8],v[9])
-	else if(l>2)
+	else if (l > 5)
+		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9])
+	else if (l > 2)
 	{
-		if(typeof(v[1])=='string')
-			$.copy_node(v[0],v[1],[v[2],v[3]])
+		if (typeof(e[1]) == 'string')
+			$.copy_node( e[0], e[1], [e[2], e[3]])
 		else
-			$.make_object_move(v[0],[v[1],v[2]],v[3])
+			$.make_object_move (e[0], [e[1], e[2]], e[3])
 	}
 	else
-		g.push(v)
+		g.push(e)
 }
 for (var e of g)
-	$.add_group(e[0], e[1]);
-$.main()
+	$.add_group (e[0], e[1]);
+$.main ()
 '''
 JS = '''
 function dot (from, to)
@@ -603,22 +590,22 @@ class api
 	get_svg_paths (framesStrings, cyclic)
 	{
 		var output = [];
-		var prevPathStr = '';
-		var pathStr = '';
 		var i = 0;
 		for (var frameStr of framesStrings.split(String.fromCharCode(1)))
 		{
 			if (i == 0)
-				pathStr = $.get_svg_path(frameStr, cyclic);
+			{
+				var pathStr = $.get_svg_path(frameStr, cyclic);
+				var prevPathStr = frameStr;
+			}
 			else
 				for (var i2 = 0; i2 < frameStr.length; i2 += 2)
 				{
 					var idx = frameStr.charCodeAt(i2) - 32;
-					prevPathStr = prevPathStr.slice(0, idx - 1) + String.fromCharCode(prevPathStr.charCodeAt(idx) + frameStr.charCodeAt(i2 + 1) - 160) + prevPathStr.slice(idx);
+					prevPathStr = prevPathStr.slice(0, idx) + String.fromCharCode(prevPathStr.charCodeAt(idx) + frameStr.charCodeAt(i2 + 1) - 160) + prevPathStr.slice(idx + 1);
 					pathStr = $.get_svg_path(prevPathStr, cyclic);
 				}
 			output.push(pathStr);
-			prevPathStr = pathStr;
 			i ++;
 		}
 		return output
@@ -693,13 +680,13 @@ class api
 		var i = 0;
 		for (var pathVals of pathsVals)
 		{
-			var path_ = document.createElement('path');
-			path_.id = id + ' ';
+			var path = document.createElement('path');
+			path.id = id + ' ';
 			if (i > 0)
-				path_.setAttribute('opacity', 0);
-			path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
-			path_.setAttribute('d', pathVals);
-			svg.appendChild(path_);
+				path.setAttribute('opacity', 0);
+			path.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
+			path.setAttribute('d', pathVals);
+			svg.appendChild(path);
 			i ++;
 		}
 		document.body.innerHTML += svg.outerHTML;
@@ -707,10 +694,10 @@ class api
 		var min = 32 - off;
 		svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
 		svg = document.getElementById(id);
-		path_ = document.getElementById(id + ' ');
+		path = document.getElementById(id + ' ');
 		var svgRect = svg.getBoundingClientRect();
-		var pathRect = path_.getBoundingClientRect();
-		path_.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
+		var pathRect = path.getBoundingClientRect();
+		path.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
 		var pathAnims = [];
 		if (jiggleFrames > 0)
 		{
@@ -740,7 +727,7 @@ class api
 				frames += frame + ';';
 			}
 			anim.setAttribute('values', frames + firstFrame);
-			path_.appendChild(anim);
+			path.appendChild(anim);
 		}
 		if (rotDur > 0)
 		{
@@ -801,15 +788,15 @@ class api
 			var anim = document.createElement('animate');
 			anim.setAttribute('attributename', 'stroke-dashoffset');
 			anim.setAttribute('repeatcount', 'indefinite');
-			var pathLen = path_.getTotalLength();
+			var pathLen = path.getTotalLength();
 			anim.setAttribute('dur', cycleDur + 's');
 			anim.setAttribute('from', 0);
 			anim.setAttribute('to', pathLen);
 			anim.setAttribute('values', '0;' + pathLen);
-			path_.appendChild(anim);
+			path.appendChild(anim);
 		}
 		document.getElementById(id + ' ').remove();
-		svg.appendChild(path_);
+		svg.appendChild(path);
 		var capTypes = ['butt', 'round', 'square'];
 		svg.style.strokeLinecap = capTypes[capType];
 		var joinTypes = ['arcs', 'bevel', 'miter', 'miter-clip', 'round'];
@@ -817,7 +804,7 @@ class api
 		svg.style.strokeDasharray = dashArr;
 		if (magnitude(fillHatchDensity) > 0)
 		{
-			var args = [fillColor, true, svg, path_]; 
+			var args = [fillColor, true, svg, path]; 
 			if (fillHatchDensity[0] > 0)
 				$.hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
 			if (fillHatchDensity[1] > 0)
@@ -826,7 +813,7 @@ class api
 		}
 		if (magnitude(lineHatchDensity) > 0)
 		{
-			var args = [lineColor, false, svg, path_]; 
+			var args = [lineColor, false, svg, path]; 
 			if (lineHatchDensity[0] > 0)
 				$.hatch ('@' + id, ...args, lineHatchDensity[0], lineHatchRandDensity[0], lineHatchAng[0], lineHatchWidth[0]);
 			if (lineHatchDensity[1] > 0)
@@ -846,6 +833,13 @@ class api
 			svg.setAttribute('transform', trs + 'scale(1,-1)');
 			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
 		}
+		var pathRect = svg.children[svg.children.length - 1].getBoundingClientRect();
+		for (var i = 0; i < svg.children.length - 1; i ++)
+		{
+			var child = svg.children[i];
+			var childRect = child.getBoundingClientRect();
+			child.setAttribute('transform', 'translate(' + (pathRect.x - childRect.x) + ',' + (pathRect.y - childRect.y) + ')');
+		}
 	}
 	hatch (id, color, useFIll, svg, path, density, randDensity, ang, width)
 	{
@@ -856,7 +850,7 @@ class api
 		pattern.setAttribute('width', '100%');
 		pattern.setAttribute('height', '100%');
 		pattern.setAttribute('patternunits', 'userSpaceOnUse');
-		var path_ = path.cloneNode();
+		var path = path.cloneNode();
 		var pathTxt = '';
 		var x = 0;
 		var interval = 15 / density * luminance;
@@ -866,16 +860,16 @@ class api
 			pathTxt += 'M ' + (x + off) + ' 0 L ' + (x + off) + ' ' + 999 + ' ';
 			x += interval;
 		}
-		path_.setAttribute('d', pathTxt);
-		path_.style = 'stroke-width:' + (width * (1 - luminance)) + ';stroke:black';
-		pattern.appendChild(path_);
+		path.setAttribute('d', pathTxt);
+		path.style = 'stroke-width:' + (width * (1 - luminance)) + ';stroke:black';
+		pattern.appendChild(path);
 		svg.appendChild(pattern);
-		path_ = path.cloneNode(true);
+		path = path.cloneNode(true);
 		if (useFIll)
-			path_.style.fill = 'url(#' + id + ')';
+			path.style.fill = 'url(#' + id + ')';
 		else
-			path_.style.stroke = 'url(#' + id + ')';
-		svg.innerHTML += path_.outerHTML;
+			path.style.stroke = 'url(#' + id + ')';
+		svg.innerHTML += path.outerHTML;
 	}
 	main ()
 	{
