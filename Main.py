@@ -234,7 +234,9 @@ def ExportObject (ob):
 		datas.append(data)
 	elif ob.type == 'CURVE':
 		prevFrame = bpy.context.scene.frame_current
-		prevData = ob.data
+		prevObData = ob.data
+		framesDatas = []
+		prevPathData = ''
 		for frame in range(ob.minFrame, ob.maxFrame + 1):
 			bpy.context.scene.frame_set(frame)
 			depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -245,15 +247,23 @@ def ExportObject (ob):
 			ob.select_set(True)
 			bpy.ops.curve.export_svg()
 			svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
+			print('YAY:' + ob.name)
+			print('YAY2:' + svgTxt)
 			idxOfName = svgTxt.find('"' + ob.name + '"') + 1
+			print('YAY3:' + str(idxOfName))
 			idxOfGroupStart = svgTxt.rfind('\n', 0, idxOfName)
+			print('YAY4:' + str(idxOfGroupStart))
 			groupEndIndicator = '</g>'
 			idxOfGroupEnd = svgTxt.find(groupEndIndicator, idxOfGroupStart) + len(groupEndIndicator)
+			print('YAY5:' + str(idxOfGroupEnd))
 			group = svgTxt[idxOfGroupStart : idxOfGroupEnd]
 			parentGroupIndicator = '\n  <g'
 			idxOfParentGroupStart = svgTxt.find(parentGroupIndicator)
+			print('YAY6:' + str(idxOfParentGroupStart))
 			idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndicator))
+			print('YAY7:' + str(idxOfParentGroupContents))
 			idxOfParentGroupEnd = svgTxt.rfind('</g')
+			print('YAY8:' + str(idxOfParentGroupEnd))
 			min, max = GetCurveRectMinMax(ob)
 			scale = Vector((sx, sy))
 			min *= scale
@@ -262,11 +272,15 @@ def ExportObject (ob):
 			max += off
 			data = []
 			svgTxt = svgTxt[: idxOfParentGroupContents] + group + svgTxt[idxOfParentGroupEnd :]
+			print('YAY9:' + svgTxt)
 			pathDataIndicator = ' d="'
 			idxOfPathDataStart = svgTxt.find(pathDataIndicator) + len(pathDataIndicator)
+			print('YAY10:' + str(idxOfPathDataStart))
 			idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
+			print('YAY11:' + str(idxOfPathDataEnd))
 			pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
 			pathData = pathData.replace('.0', '')
+			print('YAY12:' + pathData)
 			vectors = pathData.split(' ')
 			pathData = []
 			minPathVector = Vector((float('inf'), float('inf')))
@@ -324,7 +338,12 @@ def ExportObject (ob):
 			data.append(round(strokeWidth))
 			data.append(GetColor(ob.svgStrokeColor))
 			data.append(ob.name)
-			pathsDatas.append(''.join(pathData))
+			pathDataStr = ''.join(pathData)
+			if frame == ob.minFrame:
+				framesDatas.append(pathDataStr)
+			else:
+				framesDatas.append(GetPathDelta(prevPathData, pathDataStr))
+			prevPathData = pathDataStr
 			data.append(ob.data.splines[0].use_cyclic_u)
 			data.append(round(ob.location.z))
 			data.append(ob.collide)
@@ -374,10 +393,11 @@ def ExportObject (ob):
 			data.append(TryChangeToInt(ob.cycleDur))
 			datas.append(data)
 		bpy.context.scene.frame_set(prevFrame)
-		ob.data = prevData
+		ob.data = prevObData
 		for curve in bpy.data.curves:
 			if curve.users == 0:
 				bpy.data.curves.remove(curve)
+		pathsDatas.append(chr(1).join(framesDatas))
 	exportedObs.append(ob)
 
 def HandleMakeObjectMove (ob):
@@ -406,6 +426,16 @@ def HandleCopyObject (ob, pos):
 			return True
 	HandleMakeObjectMove (ob)
 	return False
+
+def GetPathDelta (fromPathData, toPathData):
+	output = ''
+	for i in range(len(fromPathData)):
+		fromPathVal = ord(fromPathData[i])
+		toPathVal = ord(toPathData[i])
+		if fromPathVal != toPathVal:
+			output += ToByteString(i + 32) + ToByteString(toPathVal - fromPathVal + 32 + 128)
+	print('YAY13', output)
+	return output
 
 def GetBlenderData ():
 	global datas, colors, userJS, initCode, pathsDatas, updateCode, exportedObs
@@ -449,10 +479,7 @@ for(v of d)
 	l=v.length
 	if(l>10)
 	{
-		a=[]
-		for(e of p.split('\\n')[i])
-			a.push(e.charCodeAt(0))
-		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],a,v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],[v[28],v[29]],[v[30],v[31]],[v[32],v[33]],[v[34],v[35]],[v[36],v[37]],[v[38],v[39]],[v[40],v[41]],[v[42],v[43]],v[44],v[45],v[46],v[47],v[48],v[49])
+		$.draw_svg([v[0],v[1]],[v[2],v[3]],c[v[4]],v[5],c[v[6]],v[7],p.split('\\n')[i],v[8],v[9],v[10],v[11],v[12],v[13],[v[14],v[15]],v[16],v[17],[v[18],v[19]],[v[20],v[21]],v[22],v[23],v[24],v[25],[v[26],v[27]],[v[28],v[29]],[v[30],v[31]],[v[32],v[33]],[v[34],v[35]],[v[36],v[37]],[v[38],v[39]],[v[40],v[41]],[v[42],v[43]],v[44],v[45],v[46],v[47],v[48],v[49])
 		i++
 	}
 	else if(l>5)
@@ -573,18 +600,41 @@ function shuffle (list)
 JS_API = '''
 class api
 {
-	get_svg_path (pathValues, cyclic)
+	get_svg_paths (framesStrings, cyclic)
 	{
-		var path = 'M ' + pathValues[0] + ',' + pathValues[1] + ' ';
-		for (var i = 2; i < pathValues.length; i += 2)
+		var output = [];
+		var prevPathStr = '';
+		var pathStr = '';
+		var i = 0;
+		for (var frameStr of framesStrings.split(String.fromCharCode(1)))
+		{
+			if (i == 0)
+				pathStr = $.get_svg_path(frameStr, cyclic);
+			else
+				for (var i2 = 0; i2 < frameStr.length; i2 += 2)
+				{
+					var idx = frameStr.charCodeAt(i2) - 32;
+					prevPathStr = prevPathStr.slice(0, idx - 1) + String.fromCharCode(prevPathStr.charCodeAt(idx) + frameStr.charCodeAt(i2 + 1) - 160) + prevPathStr.slice(idx);
+					pathStr = $.get_svg_path(prevPathStr, cyclic);
+				}
+			output.push(pathStr);
+			prevPathStr = pathStr;
+			i ++;
+		}
+		return output
+	}
+	get_svg_path (pathStr, cyclic)
+	{
+		var output = 'M ' + pathStr.charCodeAt(0) + ',' + pathStr.charCodeAt(1) + ' ';
+		for (var i = 2; i < pathStr.length; i += 2)
 		{
 			if ((i - 2) % 6 == 0)
-				path += 'C ';
-			path += '' + pathValues[i] + ',' + pathValues[i + 1] + ' '
+				output += 'C ';
+			output += '' + pathStr.charCodeAt(i) + ',' + pathStr.charCodeAt(i + 1) + ' '
 		}
 		if (cyclic)
-			path += 'Z';
-		return path
+			output += 'Z';
+		return output
 	}
 	make_object_move (id, move, duration)
 	{
@@ -623,7 +673,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, pathValues, cyclic, zIdx, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
+	draw_svg (pos, size, fillColor, lineWidth, lineColor, id, framesStrings, cyclic, zIdx, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
 	{
 		var fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
 		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
@@ -639,11 +689,19 @@ class api
 		svg.setAttribute('height', size[1]);
 		var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
 		svg.setAttribute('transform', trs);
-		var path_ = document.createElement('path');
-		path_.id = id + ' ';
-		path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
-		path_.setAttribute('d', $.get_svg_path(pathValues, cyclic));
-		svg.appendChild(path_);
+		var pathsVals = $.get_svg_paths(framesStrings, cyclic);
+		var i = 0;
+		for (var pathVals of pathsVals)
+		{
+			var path_ = document.createElement('path');
+			path_.id = id + ' ';
+			if (i > 0)
+				path_.setAttribute('opacity', 0);
+			path_.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
+			path_.setAttribute('d', pathVals);
+			svg.appendChild(path_);
+			i ++;
+		}
 		document.body.innerHTML += svg.outerHTML;
 		var off = lineWidth / 2 + jiggleDist;
 		var min = 32 - off;
@@ -662,17 +720,17 @@ class api
 			anim.setAttribute('dur', jiggleDur + 's');
 			var frames = '';
 			var firstFrame = '';
-			for (var i = 0; i < jiggleFrames; i ++)
+			for (i = 0; i < jiggleFrames; i ++)
 			{
-				var pathValues_ = pathValues.slice();
-				for (var i2 = 0; i2 < pathValues.length; i2 += 2)
+				pathVals = framesStrings[0].slice();
+				for (var i2 = 0; i2 < framesStrings[0].length; i2 += 2)
 				{
 					off = normalize(random_vector(1));
 					off = [off[0] * jiggleDist, off[1] * jiggleDist];
-					pathValues_[i2] += off[0];
-					pathValues_[i2 + 1] += off[1];
+					pathVals[i2] += off[0];
+					pathVals[i2 + 1] += off[1];
 				}
-				var frame = $.get_svg_path(pathValues_, cyclic);
+				var frame = $.get_svg_paths(pathVals, cyclic);
 				if (i == 0)
 				{
 					firstFrame = frame;
