@@ -834,11 +834,14 @@ class api
 			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
 		}
 		var pathRect = svg.children[svg.children.length - 1].getBoundingClientRect();
-		for (var i = 0; i < svg.children.length - 1; i ++)
+		for (var i = svg.children.length - 2; i >= 0; i --)
 		{
 			var child = svg.children[i];
 			var childRect = child.getBoundingClientRect();
-			child.setAttribute('transform', 'translate(' + (pathRect.x - childRect.x) + ',' + (pathRect.y - childRect.y) + ')');
+			var pathAnchor = [lerp(pathRect.x, pathRect.right, origin[0] / 100), lerp(pathRect.y, pathRect.bottom, origin[1] / 100)];
+			var childAnchor = [lerp(childRect.x, childRect.right, origin[0] / 100), lerp(childRect.y, childRect.bottom, origin[1] / 100)];
+			child.setAttribute('transform', 'translate(' + (pathAnchor[0] - childAnchor[0]) + ',' + (pathAnchor[1] - childAnchor[1]) + ')');
+			pathRect = childRect;
 		}
 	}
 	hatch (id, color, useFIll, svg, path, density, randDensity, ang, width)
