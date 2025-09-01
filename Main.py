@@ -457,29 +457,29 @@ buildInfo = {
 }
 
 JS_SUFFIX = '''
-i = 0
-d = JSON.parse(D)
-c = JSON.parse(C)
-g = []
+i = 0;
+d = JSON.parse(D);
+c = JSON.parse(C);
+g = [];
 for (e of d)
 {
-	l = e.length
+	l = e.length;
 	if (l > 10)
 	{
-		$.draw_svg ([e[0], e[1]], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i], e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49])
-		i ++
+		$.draw_svg ([e[0], e[1]], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49]);
+		i ++;
 	}
 	else if (l > 5)
-		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9])
+		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
 	else if (l > 2)
 	{
 		if (typeof(e[1]) == 'string')
-			$.copy_node( e[0], e[1], [e[2], e[3]])
+			$.copy_node( e[0], e[1], [e[2], e[3]]);
 		else
-			$.make_object_move (e[0], [e[1], e[2]], e[3])
+			$.make_object_move (e[0], [e[1], e[2]], e[3]);
 	}
 	else
-		g.push(e)
+		g.push(e);
 }
 for (var e of g)
 	$.add_group (e[0], e[1]);
@@ -511,11 +511,11 @@ function rotate_to (from, to, maxAng)
 }
 function get_pos_and_size (elmt)
 {
-	return [[parseInt(elmt.getAttribute('x')), parseInt(elmt.getAttribute('y'))], [parseInt(elmt.getAttribute('width')), parseInt(elmt.getAttribute('height'))]]
+	return [[parseInt(elmt.getAttribute('x')), parseInt(elmt.getAttribute('y'))], [parseInt(elmt.getAttribute('width')), parseInt(elmt.getAttribute('height'))]];
 }
 function lerp (min, max, t)
 {
-	return min + t * (max - min)
+	return min + t * (max - min);
 }
 function clamp (n, min, max)
 {
@@ -534,7 +534,7 @@ function overlaps (min, max, min2, max2)
 	return !(max[0] < min2[0]
 		|| min[0] > max2[0]
 		|| max[1] < min2[1]
-		|| min[1] > max2[1])
+		|| min[1] > max2[1]);
 }
 function ang_to_dir (ang)
 {
@@ -587,11 +587,12 @@ function shuffle (list)
 JS_API = '''
 class api
 {
-	get_svg_paths (framesStrings, cyclic)
+	get_svg_paths_and_strings (framesStrings, cyclic)
 	{
-		var output = [];
+		var pathsVals = [];
+		var pathsStrings = [];
 		var i = 0;
-		for (var frameStr of framesStrings.split(String.fromCharCode(1)))
+		for (var frameStr of framesStrings)
 		{
 			if (i == 0)
 			{
@@ -605,10 +606,11 @@ class api
 					prevPathStr = prevPathStr.slice(0, idx) + String.fromCharCode(prevPathStr.charCodeAt(idx) + frameStr.charCodeAt(i2 + 1) - 160) + prevPathStr.slice(idx + 1);
 					pathStr = $.get_svg_path(prevPathStr, cyclic);
 				}
-			output.push(pathStr);
+			pathsVals.push(pathStr);
+			pathsStrings.push(prevPathStr);
 			i ++;
 		}
-		return output
+		return [pathsVals, pathsStrings];
 	}
 	get_svg_path (pathStr, cyclic)
 	{
@@ -621,7 +623,7 @@ class api
 		}
 		if (cyclic)
 			output += 'Z';
-		return output
+		return output;
 	}
 	make_object_move (id, move, duration)
 	{
@@ -676,9 +678,12 @@ class api
 		svg.setAttribute('height', size[1]);
 		var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
 		svg.setAttribute('transform', trs);
-		var pathsVals = $.get_svg_paths(framesStrings, cyclic);
+		var pathsValsAndStrings = $.get_svg_paths_and_strings(framesStrings, cyclic);
 		var i = 0;
-		for (var pathVals of pathsVals)
+		var anim;
+		var frames;
+		var firstFrame;
+		for (var pathVals of pathsValsAndStrings[0])
 		{
 			var path = document.createElement('path');
 			path.id = id + ' ';
@@ -686,6 +691,35 @@ class api
 				path.setAttribute('opacity', 0);
 			path.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
 			path.setAttribute('d', pathVals);
+			if (jiggleFrames > 0)
+			{
+				anim = document.createElement('animate');
+				anim.setAttribute('attributename', 'd');
+				anim.setAttribute('repeatcount', 'indefinite');
+				anim.setAttribute('dur', jiggleDur + 's');
+				frames = '';
+				firstFrame = '';
+				for (var i2 = 0; i2 < jiggleFrames; i2 ++)
+				{
+					pathVals = pathsValsAndStrings[1][i];
+					for (var i3 = 0; i3 < pathVals.length; i3 += 2)
+					{
+						off = normalize(random_vector(1));
+						off = [off[0] * jiggleDist, off[1] * jiggleDist];
+						pathVals = pathVals.slice(0, i3) + String.fromCharCode(pathVals.charCodeAt(i3) + off[0]) + String.fromCharCode(pathVals.charCodeAt(i3 + 1) + off[1]) + pathVals.slice(i3 + 2);
+					}
+					pathVals = $.get_svg_path(pathVals, cyclic);
+					if (i2 == 0)
+					{
+						firstFrame = pathVals;
+						anim.setAttribute('from', pathVals);
+						anim.setAttribute('to', pathVals);
+					}
+					frames += pathVals + ';';
+				}
+				anim.setAttribute('values', frames + firstFrame);
+				path.appendChild(anim);
+			}
 			svg.appendChild(path);
 			i ++;
 		}
@@ -698,47 +732,16 @@ class api
 		var svgRect = svg.getBoundingClientRect();
 		var pathRect = path.getBoundingClientRect();
 		path.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
-		var pathAnims = [];
-		if (jiggleFrames > 0)
-		{
-			var anim = document.createElement('animate');
-			anim.setAttribute('attributename', 'd');
-			anim.setAttribute('repeatcount', 'indefinite');
-			anim.setAttribute('dur', jiggleDur + 's');
-			var frames = '';
-			var firstFrame = '';
-			for (i = 0; i < jiggleFrames; i ++)
-			{
-				pathVals = framesStrings[0].slice();
-				for (var i2 = 0; i2 < framesStrings[0].length; i2 += 2)
-				{
-					off = normalize(random_vector(1));
-					off = [off[0] * jiggleDist, off[1] * jiggleDist];
-					pathVals[i2] += off[0];
-					pathVals[i2 + 1] += off[1];
-				}
-				var frame = $.get_svg_paths(pathVals, cyclic);
-				if (i == 0)
-				{
-					firstFrame = frame;
-					anim.setAttribute('from', frame);
-					anim.setAttribute('to', frame);
-				}
-				frames += frame + ';';
-			}
-			anim.setAttribute('values', frames + firstFrame);
-			path.appendChild(anim);
-		}
 		if (rotDur > 0)
 		{
-			var anim = document.createElement('animatetransform');
+			anim = document.createElement('animatetransform');
 			anim.setAttribute('attributename', 'transform');
 			anim.setAttribute('type', 'rotate');
 			anim.setAttribute('repeatcount', 'indefinite');
 			anim.setAttribute('dur', rotDur + 's');
-			var firstFrame = rotAngRange[0];
+			firstFrame = rotAngRange[0];
 			anim.setAttribute('from', firstFrame);
-			var frames = firstFrame + ';' + rotAngRange[1];
+			frames = firstFrame + ';' + rotAngRange[1];
 			if (rotPingPong)
 			{
 				anim.setAttribute('to', firstFrame);
@@ -753,17 +756,17 @@ class api
 		var totalScaleDur = scaleDur + scaleHaltDurAtMin + scaleHaltDurAtMax;
 		if (totalScaleDur > 0)
 		{
-			var anim = document.createElement('animatetransform');
+			anim = document.createElement('animatetransform');
 			anim.setAttribute('attributename', 'transform');
 			anim.setAttribute('type', 'scale');
 			anim.setAttribute('repeatcount', 'indefinite');
 			if (scalePingPong)
 				totalScaleDur += scaleDur;
 			anim.setAttribute('dur', totalScaleDur + 's');
-			var firstFrame = scaleXRange[0] + ' ' + scaleYRange[0];
+			firstFrame = scaleXRange[0] + ' ' + scaleYRange[0];
 			anim.setAttribute('from', firstFrame);
 			var thirdFrame = scaleXRange[1] + ' ' + scaleYRange[1];
-			var frames = firstFrame + ';' + firstFrame + ';' + thirdFrame + ';' + thirdFrame;
+			frames = firstFrame + ';' + firstFrame + ';' + thirdFrame + ';' + thirdFrame;
 			var time = scaleHaltDurAtMin / totalScaleDur;
 			var times = '0;' + time + ';';
 			time += scaleDur / totalScaleDur;
@@ -785,7 +788,7 @@ class api
 		}
 		if (cycleDur != 0)
 		{
-			var anim = document.createElement('animate');
+			anim = document.createElement('animate');
 			anim.setAttribute('attributename', 'stroke-dashoffset');
 			anim.setAttribute('repeatcount', 'indefinite');
 			var pathLen = path.getTotalLength();
@@ -889,7 +892,7 @@ class api
 		});
 	}
 }
-$ = new api
+$ = new api;
 '''
 
 def GenJsAPI (world):
