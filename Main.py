@@ -118,14 +118,15 @@ def GetMaxComponents (v : Vector, v2 : Vector, use2D : bool = False):
 		return Vector((max(v.x, v2.x), max(v.y, v2.y), max(v.z, v2.z)))
 
 def GetCurveRectMinMax (ob):
-    bounds = [(ob.matrix_world @ Vector(corner)) for corner in ob.bound_box]
-    minX = min(v.x for v in bounds)
-    minY = min(v.y for v in bounds)
-    maxX = max(v.x for v in bounds)
-    maxY = max(v.y for v in bounds)
-    _min = Vector((minX, minY))
-    _max = Vector((maxX, maxY))
-    return _min, _max
+	bounds = [(ob.matrix_world @ Vector(corner)) for corner in ob.bound_box]
+	minX = min(v.x for v in bounds)
+	minY = min(v.y for v in bounds)
+	maxX = max(v.x for v in bounds)
+	maxY = max(v.y for v in bounds)
+	_min = Vector((minX, minY))
+	_max = Vector((maxX, maxY))
+	print(ob.name + ' ' + str(_min) + ' ' + str(_max))
+	return _min, _max
 
 def IndexOfValue (o, d : dict):
 	for i, value in enumerate(d.values()):
@@ -583,18 +584,14 @@ class api
 		for (var frameStr of framesStrings)
 		{
 			if (i == 0)
-			{
-				var pathStr = $.get_svg_path(frameStr, cyclic);
 				var prevPathStr = frameStr;
-			}
 			else
 				for (var i2 = 0; i2 < frameStr.length; i2 += 2)
 				{
 					var idx = frameStr.charCodeAt(i2) - 32;
 					prevPathStr = prevPathStr.slice(0, idx) + String.fromCharCode(prevPathStr.charCodeAt(idx) + frameStr.charCodeAt(i2 + 1) - 160) + prevPathStr.slice(idx + 1);
-					pathStr = $.get_svg_path(prevPathStr, cyclic);
 				}
-			pathsVals.push(pathStr);
+			pathsVals.push($.get_svg_path(prevPathStr, cyclic));
 			pathsStrings.push(prevPathStr);
 			i ++;
 		}
