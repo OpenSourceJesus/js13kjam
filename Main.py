@@ -11,7 +11,9 @@ if sys.platform == 'win32':
 else:
 	TMP_DIR = '/tmp'
 UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
-DONT_MANGLE_INDCTR = '-r'
+DONT_MANGLE_INDCTR = '-dont_mangle'
+NO_PHYSICS_IDCTR = '-no_physics'
+usePhysics = True
 dontMangleArg = ''
 
 isLinux = False
@@ -27,6 +29,8 @@ for arg in sys.argv:
 		BLENDER = arg
 	elif arg.startswith(DONT_MANGLE_INDCTR):
 		dontMangleArg = arg
+	elif arg == NO_PHYSICS_IDCTR:
+		usePhysics = False
 
 try:
 	import bpy
@@ -125,7 +129,6 @@ def GetCurveRectMinMax (ob):
 	maxY = max(v.y for v in bounds)
 	_min = Vector((minX, minY))
 	_max = Vector((maxX, maxY))
-	print(ob.name + ' ' + str(_min) + ' ' + str(_max))
 	return _min, _max
 
 def IndexOfValue (o, d : dict):
@@ -451,13 +454,13 @@ buildInfo = {
 }
 
 JS_SUFFIX = '''
-i = 0;
-d = JSON.parse(D);
-c = JSON.parse(C);
-g = [];
-for (e of d)
+var i = 0;
+var d = JSON.parse(D);
+var c = JSON.parse(C);
+var g = [];
+for (var e of d)
 {
-	l = e.length;
+	var l = e.length;
 	if (l > 10)
 	{
 		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
@@ -539,7 +542,7 @@ function random_vector (maxDist)
 function magnitude (v)
 {
 	var output = 0;
-	for (elt of v)
+	for (var elt of v)
 		output += elt * elt;
 	return Math.sqrt(output);
 }
@@ -572,6 +575,13 @@ function shuffle (list)
 		[list[currentIdx], list[randIdx]] = [list[randIdx], list[currentIdx]];
 	}
 }
+'''
+PHYSICS = '''
+import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
+
+RAPIER.init().then(() => {
+    
+});
 '''
 JS_API = '''
 class api
@@ -870,12 +880,14 @@ class api
 		});
 	}
 }
-$ = new api;
+var $ = new api;
 '''
 
 def GenJsAPI (world):
 	global datas, userJS, colors
 	js = [JS, JS_API, userJS]
+	if usePhysics:
+		js += [PHYSICS]
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
 	js = js.replace('// Update', '\n'.join(updateCode))
@@ -883,7 +895,7 @@ def GenJsAPI (world):
 	colors = json.dumps(colors).replace(' ', '')
 	if world.minifyMethod == 'terser':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
-		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
+		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d', dontMangleArg]
 		print(' '.join(cmd))
@@ -891,14 +903,14 @@ def GenJsAPI (world):
 		js = open(jsTmp, 'r').read()
 	elif world.minifyMethod == 'roadroller':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
-		js += 'D=`' + datas + '`\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX
+		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['npx', 'roadroller', jsTmp, '-o', jsTmp]
 		print(' '.join(cmd))
 		subprocess.check_call(cmd)
 		js = open(jsTmp, 'r').read()
 	else:
-		js += '\nD=`' + datas + '`;\np=`' + '\n'.join(pathsDatas) + '`;\nC=`' + colors + '`\n' + JS_SUFFIX.replace('\t', '')
+		js += '\nvar D=`' + datas + '`;\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + colors + '`\n' + JS_SUFFIX.replace('\t', '')
 	return js
 
 def GenHtml (world, datas, background = ''):
@@ -910,9 +922,9 @@ def GenHtml (world, datas, background = ''):
 		'<!DOCTYPE html>',
 		'<html>',
 		'<body style="%swidth:600px;height:300px;overflow:hidden">' %background,
-		'<script>',
+		'<script type="module">',
 		js,
-		'</script>',
+		'</script>'
 	]
 	htmlSize = len('\n'.join(o))
 	buildInfo['js-size'] = len(js)
@@ -1072,6 +1084,7 @@ CAP_TYPE_ITEMS = [('butt', 'butt', ''), ('round', 'round', ''), ('square', 'squa
 JOIN_TYPES = ['arcs', 'bevl', 'miter', 'miter-clip', 'round']
 JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')]
 MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
+SHAPE_TYPES = [('circle', 'circle', ''), ('half-space', 'half-space', ''), ('rectangle', 'rectangle', ''), ('rounded-rectangle', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('rounded-triangle', 'rounded-triangle', ''), ('segment-series', 'segment-series', ''), ('triangle-mesh', 'triangle-mesh', ''), ('convex-polygon', 'convex-polygon', ''), ('rounded-convex-polygon', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
@@ -1124,11 +1137,12 @@ bpy.types.Object.strokeHatchDensity = bpy.props.FloatVectorProperty(name = 'Stro
 bpy.types.Object.strokeHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch randomize density percent', size = 2, min = 0)
 bpy.types.Object.strokeHatchAng = bpy.props.FloatVectorProperty(name = 'Stroke hatch angle', size = 2, min = -360, max = 360)
 bpy.types.Object.strokeHatchWidth = bpy.props.FloatVectorProperty(name = 'Stroke hatch width', size = 2, min = 0)
-bpy.types.Object.minPathFrame = bpy.props.IntProperty(name = 'Min custom animation frame for shape')
-bpy.types.Object.maxPathFrame = bpy.props.IntProperty(name = 'Max custom animation frame for shape')
-bpy.types.Object.minPosFrame = bpy.props.IntProperty(name = 'Min custom animation frame for position')
-bpy.types.Object.maxPosFrame = bpy.props.IntProperty(name = 'Max custom animation frame for position')
-bpy.types.Object.posPingPong = bpy.props.BoolProperty(name = 'Ping pong position')
+bpy.types.Object.minPathFrame = bpy.props.IntProperty(name = 'Min frame for shape animation')
+bpy.types.Object.maxPathFrame = bpy.props.IntProperty(name = 'Max frame for shape animation')
+bpy.types.Object.minPosFrame = bpy.props.IntProperty(name = 'Min frame for position animation')
+bpy.types.Object.maxPosFrame = bpy.props.IntProperty(name = 'Max frame for position animation')
+bpy.types.Object.posPingPong = bpy.props.BoolProperty(name = 'Ping pong position animation')
+bpy.types.Object.shapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPES)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1332,6 +1346,20 @@ class LightPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'color1Alpha')
 		self.layout.prop(ob, 'colorPositions')
 		self.layout.prop(ob, 'subtractive')
+
+@bpy.utils.register_class
+class PhysicsPanel (bpy.types.Panel):
+	bl_idname = 'PHYSICS_PT_Physics_Panel'
+	bl_label = 'Physics'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'physics'
+
+	def draw (self, context):
+		ob = context.active_object
+		if not ob:
+			return
+		self.layout.prop(ob, 'shapeType')
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
