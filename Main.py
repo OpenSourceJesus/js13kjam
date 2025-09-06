@@ -194,6 +194,7 @@ DEFAULT_COLOR = [0, 0, 0, 0]
 exportedObs = []
 datas = []
 colors = {}
+rigidBodies = []
 pathsDatas = []
 initCode = []
 updateCode = []
@@ -307,7 +308,7 @@ def ExportObject (ob):
 				else:
 					pathData[i] = ToByteString(pathValue + offset[0])
 			strokeWidth = 0
-			if ob.useSvgStroke:
+			if ob.useStroke:
 				strokeWidth = ob.svgStrokeWidth
 			jiggleDist = ob.jiggleDist * int(ob.useJiggle)
 			x = min.x - strokeWidth / 2 - jiggleDist
@@ -336,7 +337,7 @@ def ExportObject (ob):
 				data.append(ob.name)
 				data.append(ob.data.splines[0].use_cyclic_u)
 				data.append(round(ob.location.z))
-				data.append(ob.collide)
+				data.append(False)
 				data.append(TryChangeToInt(ob.jiggleDist * int(ob.useJiggle)))
 				data.append(TryChangeToInt(ob.jiggleDur))
 				data.append(ob.jiggleFrames * int(ob.useJiggle))
@@ -580,7 +581,10 @@ PHYSICS = '''
 import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
 
 RAPIER.init().then(() => {
-    
+    // Gravity
+	var world = new RAPIER.World(gravity);
+	// Bodies
+	// Colliders
 });
 '''
 JS_API = '''
@@ -650,7 +654,7 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (positions, posPingPong, size, fillColor, lineWidth, lineColor, id, pathFramesStrings, cyclic, zIdx, collide, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
+	draw_svg (positions, posPingPong, size, fillColor, lineWidth, lineColor, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
 	{
 		var fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
 		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
@@ -660,7 +664,6 @@ class api
 		svg.id = id;
 		svg.style = 'z-index:' + zIdx + ';position:absolute';
 		svg.setAttribute('transform-origin', origin[0] + '% ' + origin[1] + '%');
-		svg.setAttribute('collide', collide);
 		svg.setAttribute('x', pos[0]);
 		svg.setAttribute('y', pos[1]);
 		svg.setAttribute('width', size[0]);
@@ -887,7 +890,9 @@ def GenJsAPI (world):
 	global datas, userJS, colors
 	js = [JS, JS_API, userJS]
 	if usePhysics:
-		js += [PHYSICS]
+		physics = PHYSICS
+		physics = physics.replace('// Gravity', 'var gravity = {x : ' + str(bpy.context.scene.gravity[0]) + ', y : ' + str(bpy.context.scene.gravity[1]) + '};')
+		js += [physics]
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
 	js = js.replace('// Update', '\n'.join(updateCode))
@@ -1084,7 +1089,7 @@ CAP_TYPE_ITEMS = [('butt', 'butt', ''), ('round', 'round', ''), ('square', 'squa
 JOIN_TYPES = ['arcs', 'bevl', 'miter', 'miter-clip', 'round']
 JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')]
 MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
-SHAPE_TYPES = [('circle', 'circle', ''), ('half-space', 'half-space', ''), ('rectangle', 'rectangle', ''), ('rounded-rectangle', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('rounded-triangle', 'rounded-triangle', ''), ('segment-series', 'segment-series', ''), ('triangle-mesh', 'triangle-mesh', ''), ('convex-polygon', 'convex-polygon', ''), ('rounded-convex-polygon', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
+SHAPE_TYPE_ITEMS = [('circle', 'circle', ''), ('half-space', 'half-space', ''), ('rectangle', 'rectangle', ''), ('rounded-rectangle', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('rounded-triangle', 'rounded-triangle', ''), ('segment-series', 'segment-series', ''), ('triangle-mesh', 'triangle-mesh', ''), ('convex-polygon', 'convex-polygon', ''), ('rounded-convex-polygon', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
@@ -1098,9 +1103,9 @@ bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with inv
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True)
 bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50])
 bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
-bpy.types.Object.useSvgStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
-bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Svg stroke width')
-bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name = 'Svg stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
+bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use svg stroke')
+bpy.types.Object.svgStrokeWidth = bpy.props.FloatProperty(name = 'Stroke width')
+bpy.types.Object.svgStrokeColor = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.capType = bpy.props.EnumProperty(name = 'Stroke cap type', items = CAP_TYPE_ITEMS)
 bpy.types.Object.joinType = bpy.props.EnumProperty(name = 'Stroke corner type', items = JOIN_TYPE_ITEMS)
 bpy.types.Object.dashLengthsAndSpaces = bpy.props.FloatVectorProperty(name = 'Stroke dash lengths and spaces', size = 5, min = 0)
@@ -1142,7 +1147,15 @@ bpy.types.Object.maxPathFrame = bpy.props.IntProperty(name = 'Max frame for shap
 bpy.types.Object.minPosFrame = bpy.props.IntProperty(name = 'Min frame for position animation')
 bpy.types.Object.maxPosFrame = bpy.props.IntProperty(name = 'Max frame for position animation')
 bpy.types.Object.posPingPong = bpy.props.BoolProperty(name = 'Ping pong position animation')
-bpy.types.Object.shapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPES)
+bpy.types.Object.colliderExists = bpy.props.BoolProperty(name = 'Exists')
+bpy.types.Object.colliderEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
+bpy.types.Object.shapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPE_ITEMS)
+bpy.types.Object.radius = bpy.props.FloatProperty(name = 'Radius', min = 0)
+bpy.types.Object.normal = bpy.props.FloatVectorProperty(name = 'Normal', size = 2)
+bpy.types.Object.size = bpy.props.FloatVectorProperty(name = 'Size', size = 2, min = 0)
+bpy.types.Object.density = bpy.props.FloatProperty(name = 'Density', min = 0)
+bpy.types.Object.rigidBodyExists = bpy.props.BoolProperty(name = 'Exists')
+bpy.types.Object.rigidBodyEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1262,46 +1275,52 @@ class ObjectPanel (bpy.types.Panel):
 		if ob.type == 'CURVE':
 			self.layout.prop(ob, 'roundPosAndSize')
 			self.layout.prop(ob, 'origin')
-			self.layout.prop(ob, 'collide')
-			self.layout.prop(ob, 'useSvgStroke')
-			self.layout.prop(ob, 'svgStrokeWidth')
-			self.layout.prop(ob, 'svgStrokeColor')
-			self.layout.prop(ob, 'capType')
-			self.layout.prop(ob, 'joinType')
-			self.layout.prop(ob, 'dashLengthsAndSpaces')
+			self.layout.prop(ob, 'useStroke')
+			if ob.useStroke:
+				self.layout.prop(ob, 'svgStrokeWidth')
+				self.layout.prop(ob, 'svgStrokeColor')
+				self.layout.prop(ob, 'capType')
+				self.layout.prop(ob, 'joinType')
+				self.layout.prop(ob, 'dashLengthsAndSpaces')
 			self.layout.prop(ob, 'useFillHatch')
-			self.layout.prop(ob, 'fillHatchDensity')
-			self.layout.prop(ob, 'fillHatchRandDensity')
-			self.layout.prop(ob, 'fillHatchAng')
-			self.layout.prop(ob, 'fillHatchWidth')
+			if ob.useFillHatch:
+				self.layout.prop(ob, 'fillHatchDensity')
+				self.layout.prop(ob, 'fillHatchRandDensity')
+				self.layout.prop(ob, 'fillHatchAng')
+				self.layout.prop(ob, 'fillHatchWidth')
 			self.layout.prop(ob, 'useStrokeHatch')
-			self.layout.prop(ob, 'strokeHatchDensity')
-			self.layout.prop(ob, 'strokeHatchRandDensity')
-			self.layout.prop(ob, 'strokeHatchAng')
-			self.layout.prop(ob, 'strokeHatchWidth')
+			if ob.useStrokeHatch:
+				self.layout.prop(ob, 'strokeHatchDensity')
+				self.layout.prop(ob, 'strokeHatchRandDensity')
+				self.layout.prop(ob, 'strokeHatchAng')
+				self.layout.prop(ob, 'strokeHatchWidth')
 			self.layout.prop(ob, 'mirrorX')
 			self.layout.prop(ob, 'mirrorY')
 			self.layout.label(text = 'Animation')
 			self.layout.label(text = 'Jiggle')
 			self.layout.prop(ob, 'useJiggle')
-			self.layout.prop(ob, 'jiggleDist')
-			self.layout.prop(ob, 'jiggleDur')
-			self.layout.prop(ob, 'jiggleFrames')
+			if ob.useJiggle:
+				self.layout.prop(ob, 'jiggleDist')
+				self.layout.prop(ob, 'jiggleDur')
+				self.layout.prop(ob, 'jiggleFrames')
 			self.layout.label(text = 'Rotate')
 			self.layout.prop(ob, 'useRotate')
-			self.layout.prop(ob, 'rotPingPong')
-			self.layout.prop(ob, 'rotAngRange')
-			self.layout.prop(ob, 'rotDur')
+			if ob.useRotate:
+				self.layout.prop(ob, 'rotPingPong')
+				self.layout.prop(ob, 'rotAngRange')
+				self.layout.prop(ob, 'rotDur')
 			self.layout.label(text = 'Scale')
 			self.layout.prop(ob, 'useScale')
-			self.layout.prop(ob, 'scalePingPong')
-			self.layout.prop(ob, 'scaleXRange')
-			self.layout.prop(ob, 'scaleYRange')
-			self.layout.prop(ob, 'scaleDur')
-			self.layout.prop(ob, 'scaleHaltDurAtMin')
-			self.layout.prop(ob, 'scaleHaltDurAtMax')
-			self.layout.label(text = 'Cycle')
-			self.layout.prop(ob, 'cycleDur')
+			if ob.useScale:
+				self.layout.prop(ob, 'scalePingPong')
+				self.layout.prop(ob, 'scaleXRange')
+				self.layout.prop(ob, 'scaleYRange')
+				self.layout.prop(ob, 'scaleDur')
+				self.layout.prop(ob, 'scaleHaltDurAtMin')
+				self.layout.prop(ob, 'scaleHaltDurAtMax')
+			if ob.useStroke:
+				self.layout.label(text = 'Cycle')
+				self.layout.prop(ob, 'cycleDur')
 			self.layout.label(text = 'Custom')
 			self.layout.prop(ob, 'minPathFrame')
 			self.layout.prop(ob, 'maxPathFrame')
@@ -1348,9 +1367,9 @@ class LightPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'subtractive')
 
 @bpy.utils.register_class
-class PhysicsPanel (bpy.types.Panel):
-	bl_idname = 'PHYSICS_PT_Physics_Panel'
-	bl_label = 'Physics'
+class ColliderPanel (bpy.types.Panel):
+	bl_idname = 'PHYSICS_PT_Collider_Panel'
+	bl_label = 'Collider'
 	bl_space_type = 'PROPERTIES'
 	bl_region_type = 'WINDOW'
 	bl_context = 'physics'
@@ -1359,7 +1378,35 @@ class PhysicsPanel (bpy.types.Panel):
 		ob = context.active_object
 		if not ob:
 			return
+		self.layout.prop(ob, 'colliderExists')
+		if not ob.colliderExists:
+			return
+		self.layout.prop(ob, 'colliderEnable')
 		self.layout.prop(ob, 'shapeType')
+		if ob.shapeType == 'circle':
+			self.layout.prop(ob, 'radius')
+		elif ob.shapeType == 'half-space':
+			self.layout.prop(ob, 'normal')
+		elif ob.shapeType == 'rectangle':
+			self.layout.prop(ob, 'size')
+		self.layout.prop(ob, 'density')
+
+@bpy.utils.register_class
+class RigidBodyPanel (bpy.types.Panel):
+	bl_idname = 'PHYSICS_PT_Rigid_Body_Panel'
+	bl_label = 'Rigid Body'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'physics'
+
+	def draw (self, context):
+		ob = context.active_object
+		if not ob:
+			return
+		self.layout.prop(ob, 'rigidBodyExists')
+		if not ob.rigidBodyExists:
+			return
+		self.layout.prop(ob, 'rigidBodyEnable')
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
