@@ -408,12 +408,12 @@ def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
-		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '();\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\nvar ' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');'
-		rigidBodies[ob.name] = rigidBody
+		rigidBody = rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '();\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');'
+		rigidBodies[ob] = rigidBody
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
 		colliderDescName = colliderName + 'Desc'
-		collider = 'var ' + colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
+		collider = colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
 		if ob.shapeType == 'ball':
 			collider += str(ob.radius)
 		elif ob.shapeType == 'halfspace':
@@ -424,7 +424,7 @@ def RegisterPhysics (ob):
 		if ob.rigidBodyExists:
 			collider += ', ' + rigidBodyName
 		collider += ');'
-		colliders[ob.name] = collider
+		colliders[ob] = collider
 
 def HandleCopyObject (ob, pos):
 	for exportedOb in exportedObs:
@@ -613,12 +613,13 @@ function shuffle (list)
 PHYSICS = '''
 import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
 
+// Vars
 var world;
 RAPIER.init().then(() => {
     // Gravity
 	world = new RAPIER.World(gravity);
-	// Colliders
 	// RigidBodies
+	// Colliders
 });
 '''
 JS_API = '''
@@ -926,6 +927,16 @@ def GenJsAPI (world):
 	js = [JS, JS_API, userJS]
 	if usePhysics:
 		physics = PHYSICS
+		vars = ''
+		for key in colliders.keys():
+			colliderName = GetVarNameFromObject(key) + 'Collider'
+			colliderDescName = colliderName + 'Desc'
+			vars += 'var ' + colliderName + ';\nvar ' + colliderDescName + ';\n'
+		for key in rigidBodies.keys():
+			rigidBodyName = GetVarNameFromObject(key) + 'RigidBody'
+			rigidBodyDescName = rigidBodyName + 'Desc'
+			vars += 'var ' + rigidBodyName + ';\nvar ' + rigidBodyDescName + ';\n'
+		physics = physics.replace('// Vars', vars)
 		physics = physics.replace('// Gravity', 'var gravity = {x : ' + str(bpy.context.scene.gravity[0]) + ', y : ' + str(bpy.context.scene.gravity[1]) + '};')
 		physics = physics.replace('// Colliders', '\n'.join(colliders.values()))
 		physics = physics.replace('// RigidBodies', '\n'.join(rigidBodies.values()))
