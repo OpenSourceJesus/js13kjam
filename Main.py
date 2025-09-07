@@ -408,7 +408,7 @@ def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
-		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '();\nvar ' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');'
+		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '();\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\nvar ' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');'
 		rigidBodies[ob.name] = rigidBody
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
@@ -416,7 +416,11 @@ def RegisterPhysics (ob):
 		collider = 'var ' + colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
 		if ob.shapeType == 'ball':
 			collider += str(ob.radius)
-		collider += ');\nworld.createCollider(' + colliderDescName
+		elif ob.shapeType == 'halfspace':
+			collider += '{x : ' + str(ob.normal[0]) + ', y : ' + str(ob.normal[1]) + '}'
+		elif ob.shapeType == 'cuboid':
+			collider += str(ob.size[0] / 2) + ', ' + str(ob.size[1] / 2)
+		collider += ');\n' + colliderDescName + '.setDensity(' + str(ob.density) + ');\n' + colliderDescName + '.enabled = ' + str(ob.colliderEnable).lower() + ';\nworld.createCollider(' + colliderDescName
 		if ob.rigidBodyExists:
 			collider += ', ' + rigidBodyName
 		collider += ');'
