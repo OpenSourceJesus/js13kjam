@@ -435,6 +435,23 @@ def RegisterPhysics (ob):
 			joint += str(ob.anchorRot1) + ', '
 			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}, '
 			joint += str(ob.anchorRot2)
+		elif ob.jointType == 'spring':
+			joint += str(ob.restLen) + ', '
+			joint += str(ob.stiffness) + ', '
+			joint += str(ob.damping) + ', '
+			joint += '{x : ' + str(ob.anchorPos1[0]) + ', y : ' + str(-ob.anchorPos1[1]) + '}, '
+			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}'
+		elif ob.jointType == 'revolute':
+			joint += '{x : ' + str(ob.anchorPos1[0]) + ', y : ' + str(-ob.anchorPos1[1]) + '}, '
+			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}'
+		elif ob.jointType == 'prismatic':
+			joint += '{x : ' + str(ob.anchorPos1[0]) + ', y : ' + str(-ob.anchorPos1[1]) + '}, '
+			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}, '
+			joint += '{x : ' + str(ob.jointAxis[0]) + ', y : ' + str(-ob.jointAxis[1]) + '}'
+		elif ob.jointType == 'rope':
+			joint += str(ob.jointLen) + ', '
+			joint += '{x : ' + str(ob.anchorPos1[0]) + ', y : ' + str(-ob.anchorPos1[1]) + '}, '
+			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}'
 		joint += ');\n' + jointName + ' = world.createImpulseJoint(' + jointDataName + ', ' + GetVarNameFromObject(ob.anchorRigidBody1) + 'RigidBody, ' + GetVarNameFromObject(ob.anchorRigidBody2) + 'RigidBody, true);'
 		joints[ob] = joint
 
@@ -1246,6 +1263,11 @@ bpy.types.Object.anchorRot1 = bpy.props.FloatProperty(name = 'Anchor rotation 1'
 bpy.types.Object.anchorRot2 = bpy.props.FloatProperty(name = 'Anchor rotation 2', min = 0, max = 360)
 bpy.types.Object.anchorRigidBody1 = bpy.props.PointerProperty(name = 'Anchor Rigid Body 1', type = bpy.types.Object)
 bpy.types.Object.anchorRigidBody2 = bpy.props.PointerProperty(name = 'Anchor Rigid Body 2', type = bpy.types.Object)
+bpy.types.Object.restLen = bpy.props.FloatProperty(name = 'Rest length', min = 0)
+bpy.types.Object.stiffness = bpy.props.FloatProperty(name = 'Stiffness', min = 0)
+bpy.types.Object.damping = bpy.props.FloatProperty(name = 'Damping', min = 0)
+bpy.types.Object.jointAxis = bpy.props.FloatVectorProperty(name = 'Axis', size = 2)
+bpy.types.Object.jointLen = bpy.props.FloatProperty(name = 'Length', min = 0)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1522,6 +1544,14 @@ class JointPanel (bpy.types.Panel):
 		if ob.jointType == 'fixed':
 			self.layout.prop(ob, 'anchorRot1')
 			self.layout.prop(ob, 'anchorRot2')
+		elif ob.jointType == 'spring':
+			self.layout.prop(ob, 'restLen')
+			self.layout.prop(ob, 'stiffness')
+			self.layout.prop(ob, 'damping')
+		elif ob.jointType == 'prismatic':
+			self.layout.prop(ob, 'jointAxis')
+		elif ob.jointType == 'rope':
+			self.layout.prop(ob, 'jointLen')
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
