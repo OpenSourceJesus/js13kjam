@@ -408,7 +408,7 @@ def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
-		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '().setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ');\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');'
+		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '().setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ');\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\nrigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
 		rigidBodies[ob] = rigidBody
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
@@ -615,6 +615,7 @@ import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
 
 // Vars
 var world;
+var rigidBodiesIds = {};
 RAPIER.init().then(() => {
     // Gravity
 	world = new RAPIER.World(gravity);
@@ -906,7 +907,7 @@ class api
 	main ()
 	{
 		// Init
-		const f = ts => {
+		var f = ts => {
 			$.dt = (ts - $.prev) / 1000;
 			$.prev = ts;
 			window.requestAnimationFrame(f);
@@ -917,8 +918,7 @@ class api
 				var trs = node.style.transform;
 				var idxOfPosStart = trs.indexOf('translate(');
 				var idxOfPosEnd = trs.indexOf(')', idxOfPosStart);
-				console.log(value, eval(`${value}`));
-				var pos = eval(`${value}`).translation();
+				var pos = value.translation();
 				var posStr = 'translate(' + pos.x + 'px,' + pos.y + 'px)';
 				if (idxOfPosStart == -1)
 					node.style.transform = posStr + trs;
@@ -945,14 +945,11 @@ def GenJsAPI (world):
 		for key in colliders.keys():
 			colliderName = GetVarNameFromObject(key) + 'Collider'
 			vars += 'var ' + colliderName + ';\n'
-		rigidBodiesIds = {}
 		for key in rigidBodies.keys():
 			rigidBodyName = GetVarNameFromObject(key) + 'RigidBody'
 			rigidBodyDescName = rigidBodyName + 'Desc'
 			vars += 'var ' + rigidBodyName + ';\n'
-			rigidBodiesIds[key.name] = rigidBodyName
 			dontMangleArg = dontMangleArg[: -1] + ',' + rigidBodyName + ']'
-		vars += 'var rigidBodiesIds = ' + str(rigidBodiesIds) + ';\n'
 		physics = physics.replace('// Vars', vars)
 		physics = physics.replace('// Gravity', 'var gravity = {x : ' + str(bpy.context.scene.gravity[0]) + ', y : ' + str(-bpy.context.scene.gravity[1]) + '};')
 		physics = physics.replace('// Colliders', '\n'.join(colliders.values()))
