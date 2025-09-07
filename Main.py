@@ -14,7 +14,7 @@ UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
 DONT_MANGLE_INDCTR = '-no_mangle=['
 NO_PHYSICS_IDCTR = '-no_physics'
 usePhysics = True
-dontMangleArg = DONT_MANGLE_INDCTR + ']'
+dontMangleArg = ''
 
 isLinux = False
 if sys.platform == 'win32':
@@ -74,12 +74,12 @@ def GetScripts (ob, isAPI : bool):
 	for i in range(MAX_SCRIPTS_PER_OBJECT):
 		if getattr(ob, type + 'Script%sDisable' %i):
 			continue
-		txt = getattr(ob, type + 'Script' + str(i))
+		txt = getattr(ob, type + 'Script%s' %i)
 		if txt != None:
 			if isAPI:
 				scripts.append(txt.as_string())
 			else:
-				scripts.append((txt.as_string(), getattr(ob, 'initScript' + str(i))))
+				scripts.append((txt.as_string(), getattr(ob, 'initScript%s' %i)))
 	return scripts
 
 def TryChangeToInt (f : float):
@@ -196,6 +196,9 @@ def GetVarNameFromObject (ob):
 	for disallowedChar in disallowedChars:
 		output = output.replace(disallowedChar, '')
 	return output
+
+def ToVector2String (prop : bpy.props.FloatVectorProperty):
+	return '{x : ' + str(prop[0]) + ', y : ' + str(-prop[1]) + '}'
 
 DEFAULT_COLOR = [0, 0, 0, 0]
 exportedObs = []
@@ -418,9 +421,28 @@ def RegisterPhysics (ob):
 		if ob.shapeType == 'ball':
 			collider += str(ob.radius)
 		elif ob.shapeType == 'halfspace':
-			collider += '{x : ' + str(ob.normal[0]) + ', y : ' + str(ob.normal[1]) + '}'
+			collider += ToVector2String(ob.normal)
 		elif ob.shapeType == 'cuboid':
 			collider += str(ob.size[0] / 2) + ', ' + str(ob.size[1] / 2)
+		elif ob.shapeType == 'roundCuboid':
+			collider += str(ob.size[0] / 2) + ', ' + str(ob.size[1] / 2) + ', ' + str(ob.cuboidBorderRadius)
+		elif ob.shapeType == 'capsule':
+			collider += str(ob.capsuleHeight / 2) + ', ' + str(ob.capsuleRadius)
+		elif ob.shapeType == 'segment':
+			collider += ToVector2String(ob.segmentPos1) + ', ' + ToVector2String(ob.segmentPos2)
+		elif ob.shapeType == 'triangle':
+			collider += ToVector2String(ob.trianglePos1) + ', ' + ToVector2String(ob.trianglePos2) + ', ' + ToVector2String(ob.trianglePos3)
+		elif ob.shapeType == 'roundTriangle':
+			collider += ToVector2String(ob.trianglePos1) + ', ' + ToVector2String(ob.trianglePos2) + ', ' + ToVector2String(ob.trianglePos3) + ', ' + str(ob.triangleBorderRadius)
+		elif ob.shapeType == 'polyline':
+			collider += '['
+			prevPoint = None
+			for i in range(MAX_SHAPE_POINTS):
+				point = getattr(ob, 'polylinePoint%s' %i)
+				if not prevPoint or point[0] != prevPoint[0] or point[1] != prevPoint[1]:
+					collider += str(point[0]) + ', ' + str(point[1]) + ', '
+					prevPoint = point
+			collider += ']'
 		collider += ');\n' + colliderDescName + '.density = ' + str(ob.density) + ';\n' + colliderDescName + '.enabled = ' + str(ob.colliderEnable).lower() + ';\n' + colliderName + ' = world.createCollider(' + colliderDescName
 		if ob.rigidBodyExists:
 			collider += ', ' + rigidBodyName
@@ -431,27 +453,27 @@ def RegisterPhysics (ob):
 		jointDataName = jointName + 'Data'
 		joint = 'var ' + jointDataName + ' = RAPIER.JointData.' + ob.jointType + '('
 		if ob.jointType == 'fixed':
-			joint += '{x : ' + str(ob.anchorPos1[0]) + ', y : ' + str(-ob.anchorPos1[1]) + '}, '
+			joint += ToVector2String(ob.anchorPos1)
 			joint += str(ob.anchorRot1) + ', '
-			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}, '
+			joint += ToVector2String(ob.anchorPos2) + ', '
 			joint += str(ob.anchorRot2)
 		elif ob.jointType == 'spring':
 			joint += str(ob.restLen) + ', '
 			joint += str(ob.stiffness) + ', '
 			joint += str(ob.damping) + ', '
-			joint += '{x : ' + str(ob.anchorPos1[0]) + ', y : ' + str(-ob.anchorPos1[1]) + '}, '
-			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}'
+			joint += ToVector2String(ob.anchorPos1) + ', '
+			joint += ToVector2String(ob.anchorPos2)
 		elif ob.jointType == 'revolute':
-			joint += '{x : ' + str(ob.anchorPos1[0]) + ', y : ' + str(-ob.anchorPos1[1]) + '}, '
-			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}'
+			joint += ToVector2String(ob.anchorPos1) + ', '
+			joint += ToVector2String(ob.anchorPos2)
 		elif ob.jointType == 'prismatic':
-			joint += '{x : ' + str(ob.anchorPos1[0]) + ', y : ' + str(-ob.anchorPos1[1]) + '}, '
-			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}, '
-			joint += '{x : ' + str(ob.jointAxis[0]) + ', y : ' + str(-ob.jointAxis[1]) + '}'
+			joint += ToVector2String(ob.anchorPos1) + ', '
+			joint += ToVector2String(ob.anchorPos2) + ', '
+			joint += ToVector2String(ob.jointAxis)
 		elif ob.jointType == 'rope':
 			joint += str(ob.jointLen) + ', '
-			joint += '{x : ' + str(ob.anchorPos1[0]) + ', y : ' + str(-ob.anchorPos1[1]) + '}, '
-			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}'
+			joint += ToVector2String(ob.anchorPos1) + ', '
+			joint += ToVector2String(ob.anchorPos2)
 		joint += ');\n' + jointName + ' = world.createImpulseJoint(' + jointDataName + ', ' + GetVarNameFromObject(ob.anchorRigidBody1) + 'RigidBody, ' + GetVarNameFromObject(ob.anchorRigidBody2) + 'RigidBody, true);'
 		joints[ob] = joint
 
@@ -968,7 +990,7 @@ var $ = new api;
 '''
 
 def GenJsAPI (world):
-	global datas, userJS, colors, dontMangleArg
+	global datas, userJS, colors
 	js = [JS, JS_API, userJS]
 	if usePhysics:
 		physics = PHYSICS
@@ -976,7 +998,6 @@ def GenJsAPI (world):
 		for key in rigidBodies.keys():
 			rigidBodyName = GetVarNameFromObject(key) + 'RigidBody'
 			vars += 'var ' + rigidBodyName + ';\n'
-			dontMangleArg = dontMangleArg[: -1] + ',' + rigidBodyName + ']'
 		for key in colliders.keys():
 			colliderName = GetVarNameFromObject(key) + 'Collider'
 			vars += 'var ' + colliderName + ';\n'
@@ -984,7 +1005,7 @@ def GenJsAPI (world):
 			jointName = GetVarNameFromObject(key) + 'Joint'
 			vars += 'var ' + jointName + ';\n'
 		physics = physics.replace('// Vars', vars)
-		physics = physics.replace('// Gravity', 'var gravity = {x : ' + str(bpy.context.scene.gravity[0]) + ', y : ' + str(-bpy.context.scene.gravity[1]) + '};')
+		physics = physics.replace('// Gravity', 'var gravity = ' + ToVector2String(bpy.context.scene.gravity) + ';')
 		physics = physics.replace('// Colliders', '\n'.join(colliders.values()))
 		physics = physics.replace('// RigidBodies', '\n'.join(rigidBodies.values()))
 		physics = physics.replace('// Joints', '\n'.join(joints.values()))
@@ -1165,17 +1186,17 @@ def Update ():
 		if idxOfPeriod != -1:
 			for ob in bpy.data.objects:
 				for i in range(MAX_SCRIPTS_PER_OBJECT):
-					attachedTxt = getattr(ob, 'apiScript' + str(i))
+					attachedTxt = getattr(ob, 'apiScript%s' %i)
 					if attachedTxt == txt:
 						for origTxt in bpy.data.texts:
 							if origTxt.name == txt.name[: idxOfPeriod]:
-								setattr(ob, 'apiScript' + str(i), origTxt)
+								setattr(ob, 'apiScript%s' %i, origTxt)
 								break
-					attachedTxt = getattr(ob, 'runtimeScript' + str(i))
+					attachedTxt = getattr(ob, 'runtimeScript%s' %i)
 					if attachedTxt == txt:
 						for origTxt in bpy.data.texts:
 							if origTxt.name == txt.name[: idxOfPeriod]:
-								setattr(ob, 'runtimeScript' + str(i), origTxt)
+								setattr(ob, 'runtimeScript%s' %i, origTxt)
 								break
 			bpy.data.texts.remove(txt)
 	return 0.1
@@ -1251,6 +1272,16 @@ bpy.types.Object.shapeType = bpy.props.EnumProperty(name = 'Shape type', items =
 bpy.types.Object.radius = bpy.props.FloatProperty(name = 'Radius', min = 0)
 bpy.types.Object.normal = bpy.props.FloatVectorProperty(name = 'Normal', size = 2)
 bpy.types.Object.size = bpy.props.FloatVectorProperty(name = 'Size', size = 2, min = 0)
+bpy.types.Object.cuboidBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0)
+bpy.types.Object.capsuleHeight = bpy.props.FloatProperty(name = 'Height', min = 0)
+bpy.types.Object.capsuleRadius = bpy.props.FloatProperty(name = 'Radius', min = 0)
+bpy.types.Object.segmentPos1 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2)
+bpy.types.Object.segmentPos2 = bpy.props.FloatVectorProperty(name = 'Position 2', size = 2)
+bpy.types.Object.segmentPos1 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2)
+bpy.types.Object.trianglePos1 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2)
+bpy.types.Object.trianglePos2 = bpy.props.FloatVectorProperty(name = 'Position 2', size = 2)
+bpy.types.Object.trianglePos3 = bpy.props.FloatVectorProperty(name = 'Position 3', size = 2)
+bpy.types.Object.triangleBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0)
 bpy.types.Object.density = bpy.props.FloatProperty(name = 'Density', min = 0)
 bpy.types.Object.rigidBodyExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.rigidBodyEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
@@ -1272,28 +1303,35 @@ bpy.types.Object.jointLen = bpy.props.FloatProperty(name = 'Length', min = 0)
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
 		bpy.types.Object,
-		'apiScript' + str(i),
-		bpy.props.PointerProperty(name = 'API script%s' % i, type = bpy.types.Text),
+		'apiScript%s' %i,
+		bpy.props.PointerProperty(name = 'API script%s' %i, type = bpy.types.Text)
 	)
 	setattr(
 		bpy.types.Object,
 		'apiScript%sDisable' %i,
-		bpy.props.BoolProperty(name = 'Disable'),
+		bpy.props.BoolProperty(name = 'Disable')
 	)
 	setattr(
 		bpy.types.Object,
-		'runtimeScript' + str(i),
-		bpy.props.PointerProperty(name = 'Runtime script%s' % i, type = bpy.types.Text),
+		'runtimeScript%s' %i,
+		bpy.props.PointerProperty(name = 'Runtime script%s' %i, type = bpy.types.Text)
 	)
 	setattr(
 		bpy.types.Object,
 		'runtimeScript%sDisable' %i,
-		bpy.props.BoolProperty(name = 'Disable'),
+		bpy.props.BoolProperty(name = 'Disable')
 	)
 	setattr(
 		bpy.types.Object,
-		'initScript' + str(i),
-		bpy.props.BoolProperty(name = 'Is init'),
+		'initScript%s' %i,
+		bpy.props.BoolProperty(name = 'Is init')
+	)
+MAX_SHAPE_POINTS = 32
+for i in range(MAX_SHAPE_POINTS):
+	setattr(
+		bpy.types.Object,
+		'polylinePoint%s' %i,
+		bpy.props.FloatVectorProperty(name = 'polylinePoint%s' %i, size = 2)
 	)
 
 @bpy.utils.register_class
@@ -1442,23 +1480,23 @@ class ObjectPanel (bpy.types.Panel):
 		self.layout.label(text = 'Scripts')
 		foundUnassignedScript = False
 		for i in range(MAX_SCRIPTS_PER_OBJECT):
-			hasProperty = getattr(ob, 'apiScript' + str(i)) != None
-			if hasProperty or not foundUnassignedScript:
+			hasProp = getattr(ob, 'apiScript%s' %i) != None
+			if hasProp or not foundUnassignedScript:
 				row = self.layout.row()
-				row.prop(ob, 'apiScript' + str(i))
+				row.prop(ob, 'apiScript%s' %i)
 				row.prop(ob, 'apiScript%sDisable' %i)
 			if not foundUnassignedScript:
-				foundUnassignedScript = not hasProperty
+				foundUnassignedScript = not hasProp
 		foundUnassignedScript = False
 		for i in range(MAX_SCRIPTS_PER_OBJECT):
-			hasProperty = getattr(ob, 'runtimeScript' + str(i)) != None
-			if hasProperty or not foundUnassignedScript:
+			hasProp = getattr(ob, 'runtimeScript%s' %i) != None
+			if hasProp or not foundUnassignedScript:
 				row = self.layout.row()
-				row.prop(ob, 'runtimeScript' + str(i))
-				row.prop(ob, 'initScript' + str(i))
+				row.prop(ob, 'runtimeScript%s' %i)
+				row.prop(ob, 'initScript%s' %i)
 				row.prop(ob, 'runtimeScript%sDisable' %i)
 			if not foundUnassignedScript:
-				foundUnassignedScript = not hasProperty
+				foundUnassignedScript = not hasProp
 
 @bpy.utils.register_class
 class LightPanel (bpy.types.Panel):
@@ -1477,6 +1515,24 @@ class LightPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'color1Alpha')
 		self.layout.prop(ob, 'colorPositions')
 		self.layout.prop(ob, 'subtractive')
+
+@bpy.utils.register_class
+class RigidBodyPanel (bpy.types.Panel):
+	bl_idname = 'PHYSICS_PT_Rigid_Body_Panel'
+	bl_label = 'Rigid Body'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'physics'
+
+	def draw (self, context):
+		ob = context.active_object
+		if not ob:
+			return
+		self.layout.prop(ob, 'rigidBodyExists')
+		if not ob.rigidBodyExists:
+			return
+		self.layout.prop(ob, 'rigidBodyEnable')
+		self.layout.prop(ob, 'rigidBodyType')
 
 @bpy.utils.register_class
 class ColliderPanel (bpy.types.Panel):
@@ -1501,25 +1557,32 @@ class ColliderPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'normal')
 		elif ob.shapeType == 'cuboid':
 			self.layout.prop(ob, 'size')
+		elif ob.shapeType == 'roundCuboid':
+			self.layout.prop(ob, 'size')
+			self.layout.prop(ob, 'cuboidBorderRadius')
+		elif ob.shapeType == 'capsule':
+			self.layout.prop(ob, 'capsuleHeight')
+			self.layout.prop(ob, 'capsuleRadius')
+		elif ob.shapeType == 'segment':
+			self.layout.prop(ob, 'segmentPos1')
+			self.layout.prop(ob, 'segmentPos2')
+		elif ob.shapeType == 'triangle':
+			self.layout.prop(ob, 'trianglePos1')
+			self.layout.prop(ob, 'trianglePos2')
+			self.layout.prop(ob, 'trianglePos3')
+		elif ob.shapeType == 'roundTriangle':
+			self.layout.prop(ob, 'trianglePos1')
+			self.layout.prop(ob, 'trianglePos2')
+			self.layout.prop(ob, 'trianglePos3')
+			self.layout.prop(ob, 'triangleBorderRadius')
+		elif ob.shapeType == 'polyline':
+			prevPoint = None
+			for i in range(MAX_SHAPE_POINTS):
+				point = getattr(ob, 'polylinePoint%s' %i)
+				if not prevPoint or point[0] != prevPoint[0] or point[1] != prevPoint[1]:
+					self.layout.prop(ob, 'polylinePoint%s' %i)
+					prevPoint = point
 		self.layout.prop(ob, 'density')
-
-@bpy.utils.register_class
-class RigidBodyPanel (bpy.types.Panel):
-	bl_idname = 'PHYSICS_PT_Rigid_Body_Panel'
-	bl_label = 'Rigid Body'
-	bl_space_type = 'PROPERTIES'
-	bl_region_type = 'WINDOW'
-	bl_context = 'physics'
-
-	def draw (self, context):
-		ob = context.active_object
-		if not ob:
-			return
-		self.layout.prop(ob, 'rigidBodyExists')
-		if not ob.rigidBodyExists:
-			return
-		self.layout.prop(ob, 'rigidBodyEnable')
-		self.layout.prop(ob, 'rigidBodyType')
 
 @bpy.utils.register_class
 class JointPanel (bpy.types.Panel):
