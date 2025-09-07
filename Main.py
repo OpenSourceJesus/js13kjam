@@ -11,10 +11,10 @@ if sys.platform == 'win32':
 else:
 	TMP_DIR = '/tmp'
 UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
-DONT_MANGLE_INDCTR = '-dont_mangle'
+DONT_MANGLE_INDCTR = '-no_mangle=['
 NO_PHYSICS_IDCTR = '-no_physics'
 usePhysics = True
-dontMangleArg = ''
+dontMangleArg = DONT_MANGLE_INDCTR + ']'
 
 isLinux = False
 if sys.platform == 'win32':
@@ -408,7 +408,7 @@ def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
-		rigidBody = rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '();\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');'
+		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '();\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');'
 		rigidBodies[ob] = rigidBody
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
@@ -917,6 +917,7 @@ class api
 				var trs = node.style.transform;
 				var idxOfPosStart = trs.indexOf('translate(');
 				var idxOfPosEnd = trs.indexOf(')', idxOfPosStart);
+				console.log(value, eval(`${value}`));
 				var pos = eval(`${value}`).translation();
 				var posStr = 'translate(' + pos.x + 'px,' + pos.y + 'px)';
 				if (idxOfPosStart == -1)
@@ -936,7 +937,7 @@ var $ = new api;
 '''
 
 def GenJsAPI (world):
-	global datas, userJS, colors
+	global datas, userJS, colors, dontMangleArg
 	js = [JS, JS_API, userJS]
 	if usePhysics:
 		physics = PHYSICS
@@ -948,8 +949,9 @@ def GenJsAPI (world):
 		for key in rigidBodies.keys():
 			rigidBodyName = GetVarNameFromObject(key) + 'RigidBody'
 			rigidBodyDescName = rigidBodyName + 'Desc'
-			vars += 'var ' + rigidBodyName + ';\nvar ' + rigidBodyDescName + ';\n'
+			vars += 'var ' + rigidBodyName + ';\n'
 			rigidBodiesIds[key.name] = rigidBodyName
+			dontMangleArg = dontMangleArg[: -1] + ',' + rigidBodyName + ']'
 		vars += 'var rigidBodiesIds = ' + str(rigidBodiesIds) + ';\n'
 		physics = physics.replace('// Vars', vars)
 		physics = physics.replace('// Gravity', 'var gravity = {x : ' + str(bpy.context.scene.gravity[0]) + ', y : ' + str(bpy.context.scene.gravity[1]) + '};')
@@ -965,7 +967,7 @@ def GenJsAPI (world):
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
 		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + colors + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
-		cmd = ['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-d', dontMangleArg]
+		cmd = ['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-no_compress', dontMangleArg]
 		print(' '.join(cmd))
 		subprocess.run(cmd)
 		js = open(jsTmp, 'r').read()
