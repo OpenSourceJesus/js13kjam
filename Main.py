@@ -408,8 +408,8 @@ def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
-		rigidBody = 'var ' + rigidBodyDescName + ' RAPIER.RigidBodyDesc.dynamic()\nvar ' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');'
-		rigidBodies[ob.name] = rigidBodies
+		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '();\nvar ' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');'
+		rigidBodies[ob.name] = rigidBody
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
 		colliderDescName = colliderName + 'Desc'
@@ -612,8 +612,8 @@ import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
 RAPIER.init().then(() => {
     // Gravity
 	var world = new RAPIER.World(gravity);
-	// Bodies
 	// Colliders
+	// RigidBodies
 });
 '''
 JS_API = '''
@@ -921,6 +921,8 @@ def GenJsAPI (world):
 	if usePhysics:
 		physics = PHYSICS
 		physics = physics.replace('// Gravity', 'var gravity = {x : ' + str(bpy.context.scene.gravity[0]) + ', y : ' + str(bpy.context.scene.gravity[1]) + '};')
+		physics = physics.replace('// Colliders', '\n'.join(colliders.values()))
+		physics = physics.replace('// RigidBodies', '\n'.join(rigidBodies.values()))
 		js += [physics]
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
@@ -1119,6 +1121,7 @@ JOIN_TYPES = ['arcs', 'bevl', 'miter', 'miter-clip', 'round']
 JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')]
 MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
 SHAPE_TYPE_ITEMS = [('ball', 'circle', ''), ('halfspace', 'half-space', ''), ('cuboid', 'rectangle', ''), ('roundCuboid', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('roundTriangle', 'rounded-triangle', ''), ('polyline', 'segment-series', ''), ('trimesh', 'triangle-mesh', ''), ('convexHull', 'convex-polygon', ''), ('roundConvexHull', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
+RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinemaitcPositionBased', 'kinemaitc-position-based', ''), ('kinemaitcVelocityBased', 'kinemaitc-velocity-based', '')]
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
@@ -1185,6 +1188,7 @@ bpy.types.Object.size = bpy.props.FloatVectorProperty(name = 'Size', size = 2, m
 bpy.types.Object.density = bpy.props.FloatProperty(name = 'Density', min = 0)
 bpy.types.Object.rigidBodyExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.rigidBodyEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
+bpy.types.Object.rigidBodyType = bpy.props.EnumProperty(name = 'Type', items = RIGID_BODY_TYPE_ITEMS)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1436,6 +1440,7 @@ class RigidBodyPanel (bpy.types.Panel):
 		if not ob.rigidBodyExists:
 			return
 		self.layout.prop(ob, 'rigidBodyEnable')
+		self.layout.prop(ob, 'rigidBodyType')
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
