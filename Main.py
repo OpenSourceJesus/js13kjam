@@ -613,9 +613,10 @@ function shuffle (list)
 PHYSICS = '''
 import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
 
+var world;
 RAPIER.init().then(() => {
     // Gravity
-	var world = new RAPIER.World(gravity);
+	world = new RAPIER.World(gravity);
 	// Colliders
 	// RigidBodies
 });
@@ -908,11 +909,12 @@ class api
 			$.dt = (ts - $.prev) / 1000;
 			$.prev = ts;
 			window.requestAnimationFrame(f);
+			world.step();
 			// Update
 		};
 		window.requestAnimationFrame(ts => {
 			$.prev = ts;
-			window.requestAnimationFrame(f)
+			window.requestAnimationFrame(f);
 		});
 	}
 }
