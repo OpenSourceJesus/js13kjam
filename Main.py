@@ -201,8 +201,9 @@ DEFAULT_COLOR = [0, 0, 0, 0]
 exportedObs = []
 datas = []
 colors = {}
-colliders = {}
 rigidBodies = {}
+colliders = {}
+joints = {}
 pathsDatas = []
 initCode = []
 updateCode = []
@@ -425,6 +426,17 @@ def RegisterPhysics (ob):
 			collider += ', ' + rigidBodyName
 		collider += ');'
 		colliders[ob] = collider
+	if ob.jointExists:
+		jointName = GetVarNameFromObject(ob) + 'Joint'
+		jointDataName = jointName + 'Data'
+		joint = 'var ' + jointDataName + ' = RAPIER.JointData.' + ob.jointType + '('
+		if ob.jointType == 'fixed':
+			joint += '{x : ' + str(ob.anchorPos1[0]) + ', y : ' + str(-ob.anchorPos1[1]) + '}, '
+			joint += str(ob.anchorRot1) + ', '
+			joint += '{x : ' + str(ob.anchorPos2[0]) + ', y : ' + str(-ob.anchorPos2[1]) + '}, '
+			joint += str(ob.anchorRot2)
+		joint += ');\n' + jointName + ' = world.createImpulseJoint(' + jointDataName + ', ' + GetVarNameFromObject(ob.anchorRigidBody1) + 'RigidBody, ' + GetVarNameFromObject(ob.anchorRigidBody2) + 'RigidBody, true);'
+		joints[ob] = joint
 
 def HandleCopyObject (ob, pos):
 	for exportedOb in exportedObs:
@@ -460,8 +472,9 @@ def GetBlenderData ():
 	datas = []
 	colors = {}
 	pathsDatas = []
-	colliders = {}
 	rigidBodies = {}
+	colliders = {}
+	joints = {}
 	initCode = []
 	updateCode = []
 	for ob in bpy.data.objects:
@@ -621,6 +634,7 @@ RAPIER.init().then(() => {
 	world = new RAPIER.World(gravity);
 	// RigidBodies
 	// Colliders
+	// Joints
 });
 '''
 JS_API = '''
@@ -942,18 +956,21 @@ def GenJsAPI (world):
 	if usePhysics:
 		physics = PHYSICS
 		vars = ''
+		for key in rigidBodies.keys():
+			rigidBodyName = GetVarNameFromObject(key) + 'RigidBody'
+			vars += 'var ' + rigidBodyName + ';\n'
+			dontMangleArg = dontMangleArg[: -1] + ',' + rigidBodyName + ']'
 		for key in colliders.keys():
 			colliderName = GetVarNameFromObject(key) + 'Collider'
 			vars += 'var ' + colliderName + ';\n'
-		for key in rigidBodies.keys():
-			rigidBodyName = GetVarNameFromObject(key) + 'RigidBody'
-			rigidBodyDescName = rigidBodyName + 'Desc'
-			vars += 'var ' + rigidBodyName + ';\n'
-			dontMangleArg = dontMangleArg[: -1] + ',' + rigidBodyName + ']'
+		for key in joints.keys():
+			jointName = GetVarNameFromObject(key) + 'Joint'
+			vars += 'var ' + jointName + ';\n'
 		physics = physics.replace('// Vars', vars)
 		physics = physics.replace('// Gravity', 'var gravity = {x : ' + str(bpy.context.scene.gravity[0]) + ', y : ' + str(-bpy.context.scene.gravity[1]) + '};')
 		physics = physics.replace('// Colliders', '\n'.join(colliders.values()))
 		physics = physics.replace('// RigidBodies', '\n'.join(rigidBodies.values()))
+		physics = physics.replace('// Joints', '\n'.join(joints.values()))
 		js += [physics]
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
@@ -1153,6 +1170,7 @@ JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'mite
 MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
 SHAPE_TYPE_ITEMS = [('ball', 'circle', ''), ('halfspace', 'half-space', ''), ('cuboid', 'rectangle', ''), ('roundCuboid', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('roundTriangle', 'rounded-triangle', ''), ('polyline', 'segment-series', ''), ('trimesh', 'triangle-mesh', ''), ('convexHull', 'convex-polygon', ''), ('roundConvexHull', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
 RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinemaitcPositionBased', 'kinemaitc-position-based', ''), ('kinemaitcVelocityBased', 'kinemaitc-velocity-based', '')]
+JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('', '', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
@@ -1220,6 +1238,14 @@ bpy.types.Object.density = bpy.props.FloatProperty(name = 'Density', min = 0)
 bpy.types.Object.rigidBodyExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.rigidBodyEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
 bpy.types.Object.rigidBodyType = bpy.props.EnumProperty(name = 'Type', items = RIGID_BODY_TYPE_ITEMS)
+bpy.types.Object.jointExists = bpy.props.BoolProperty(name = 'Exists')
+bpy.types.Object.jointType = bpy.props.EnumProperty(name = 'Type', items = JOINT_TYPE_ITEMS)
+bpy.types.Object.anchorPos1 = bpy.props.FloatVectorProperty(name = 'Anchor position 1', size = 2)
+bpy.types.Object.anchorPos2 = bpy.props.FloatVectorProperty(name = 'Anchor position 2', size = 2)
+bpy.types.Object.anchorRot1 = bpy.props.FloatProperty(name = 'Anchor rotation 1', min = 0, max = 360)
+bpy.types.Object.anchorRot2 = bpy.props.FloatProperty(name = 'Anchor rotation 2', min = 0, max = 360)
+bpy.types.Object.anchorRigidBody1 = bpy.props.PointerProperty(name = 'Anchor Rigid Body 1', type = bpy.types.Object)
+bpy.types.Object.anchorRigidBody2 = bpy.props.PointerProperty(name = 'Anchor Rigid Body 2', type = bpy.types.Object)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1472,6 +1498,30 @@ class RigidBodyPanel (bpy.types.Panel):
 			return
 		self.layout.prop(ob, 'rigidBodyEnable')
 		self.layout.prop(ob, 'rigidBodyType')
+
+@bpy.utils.register_class
+class JointPanel (bpy.types.Panel):
+	bl_idname = 'PHYSICS_PT_Joint_Panel'
+	bl_label = 'Joint'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'physics'
+
+	def draw (self, context):
+		ob = context.active_object
+		if not ob:
+			return
+		self.layout.prop(ob, 'jointExists')
+		if not ob.jointExists:
+			return
+		self.layout.prop(ob, 'jointType')
+		self.layout.prop(ob, 'anchorRigidBody1')
+		self.layout.prop(ob, 'anchorPos1')
+		self.layout.prop(ob, 'anchorRigidBody2')
+		self.layout.prop(ob, 'anchorPos2')
+		if ob.jointType == 'fixed':
+			self.layout.prop(ob, 'anchorRot1')
+			self.layout.prop(ob, 'anchorRot2')
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
