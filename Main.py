@@ -190,11 +190,19 @@ def GetObjectPosition (ob):
 	y += offY
 	return Round(Vector((x, y)))
 
+def GetVarNameFromObject (ob):
+	output = '_' + ob.name
+	disallowedChars = '/\\`~?|!@#$%^&*()[]{}<>=+-;:",.' + "'"
+	for disallowedChar in disallowedChars:
+		output = output.replace(disallowedChar, '')
+	return output
+
 DEFAULT_COLOR = [0, 0, 0, 0]
 exportedObs = []
 datas = []
 colors = {}
-rigidBodies = []
+colliders = {}
+rigidBodies = {}
 pathsDatas = []
 initCode = []
 updateCode = []
@@ -209,6 +217,7 @@ def ExportObject (ob):
 	offY = world.exportOffsetY
 	off = Vector((offX, offY))
 	sx, sy, sz = ob.scale * SCALE
+	RegisterPhysics (ob)
 	if ob.type == 'EMPTY' and len(ob.children) > 0:
 		if HandleCopyObject(ob, GetObjectPosition(ob)):
 			return
@@ -395,6 +404,24 @@ def ExportObject (ob):
 		pathsDatas.append(chr(1).join(pathDataFrames))
 	exportedObs.append(ob)
 
+def RegisterPhysics (ob):
+	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
+	rigidBodyDescName = rigidBodyName + 'Desc'
+	if ob.rigidBodyExists:
+		rigidBody = 'var ' + rigidBodyDescName + ' RAPIER.RigidBodyDesc.dynamic()\nvar ' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');'
+		rigidBodies[ob.name] = rigidBodies
+	if ob.colliderExists:
+		colliderName = GetVarNameFromObject(ob) + 'Collider'
+		colliderDescName = colliderName + 'Desc'
+		collider = 'var ' + colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
+		if ob.shapeType == 'ball':
+			collider += str(ob.radius)
+		collider += ');\nworld.createCollider(' + colliderDescName
+		if ob.rigidBodyExists:
+			collider += ', ' + rigidBodyName
+		collider += ');'
+		colliders[ob.name] = collider
+
 def HandleCopyObject (ob, pos):
 	for exportedOb in exportedObs:
 		idxOfPeriod = ob.name.find('.')
@@ -429,6 +456,8 @@ def GetBlenderData ():
 	datas = []
 	colors = {}
 	pathsDatas = []
+	colliders = {}
+	rigidBodies = {}
 	initCode = []
 	updateCode = []
 	for ob in bpy.data.objects:
@@ -1089,7 +1118,7 @@ CAP_TYPE_ITEMS = [('butt', 'butt', ''), ('round', 'round', ''), ('square', 'squa
 JOIN_TYPES = ['arcs', 'bevl', 'miter', 'miter-clip', 'round']
 JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')]
 MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
-SHAPE_TYPE_ITEMS = [('circle', 'circle', ''), ('half-space', 'half-space', ''), ('rectangle', 'rectangle', ''), ('rounded-rectangle', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('rounded-triangle', 'rounded-triangle', ''), ('segment-series', 'segment-series', ''), ('triangle-mesh', 'triangle-mesh', ''), ('convex-polygon', 'convex-polygon', ''), ('rounded-convex-polygon', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
+SHAPE_TYPE_ITEMS = [('ball', 'circle', ''), ('halfspace', 'half-space', ''), ('cuboid', 'rectangle', ''), ('roundCuboid', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('roundTriangle', 'rounded-triangle', ''), ('polyline', 'segment-series', ''), ('trimesh', 'triangle-mesh', ''), ('convexHull', 'convex-polygon', ''), ('roundConvexHull', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
@@ -1383,11 +1412,11 @@ class ColliderPanel (bpy.types.Panel):
 			return
 		self.layout.prop(ob, 'colliderEnable')
 		self.layout.prop(ob, 'shapeType')
-		if ob.shapeType == 'circle':
+		if ob.shapeType == 'ball':
 			self.layout.prop(ob, 'radius')
-		elif ob.shapeType == 'half-space':
+		elif ob.shapeType == 'halfspace':
 			self.layout.prop(ob, 'normal')
-		elif ob.shapeType == 'rectangle':
+		elif ob.shapeType == 'cuboid':
 			self.layout.prop(ob, 'size')
 		self.layout.prop(ob, 'density')
 
