@@ -413,14 +413,14 @@ def RegisterPhysics (ob):
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
 		colliderDescName = colliderName + 'Desc'
-		collider = colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
+		collider = 'var ' + colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
 		if ob.shapeType == 'ball':
 			collider += str(ob.radius)
 		elif ob.shapeType == 'halfspace':
 			collider += '{x : ' + str(ob.normal[0]) + ', y : ' + str(ob.normal[1]) + '}'
 		elif ob.shapeType == 'cuboid':
 			collider += str(ob.size[0] / 2) + ', ' + str(ob.size[1] / 2)
-		collider += ');\n' + colliderDescName + '.setDensity(' + str(ob.density) + ');\n' + colliderDescName + '.enabled = ' + str(ob.colliderEnable).lower() + ';\nworld.createCollider(' + colliderDescName
+		collider += ');\n' + colliderDescName + '.density = ' + str(ob.density) + ';\n' + colliderDescName + '.enabled = ' + str(ob.colliderEnable).lower() + ';\n' + colliderName + ' = world.createCollider(' + colliderDescName
 		if ob.rigidBodyExists:
 			collider += ', ' + rigidBodyName
 		collider += ');'
@@ -911,6 +911,19 @@ class api
 			$.prev = ts;
 			window.requestAnimationFrame(f);
 			world.step();
+			for (var [key, value] of Object.entries(rigidBodiesIds))
+			{
+				var node = document.getElementById(key);
+				var trs = node.style.transform;
+				var idxOfPosStart = trs.indexOf('translate(');
+				var idxOfPosEnd = trs.indexOf(')', idxOfPosStart);
+				var pos = eval(`${value}`).translation();
+				var posStr = 'translate(' + pos.x + 'px,' + pos.y + 'px)';
+				if (idxOfPosStart == -1)
+					node.style.transform = posStr + trs;
+				else
+					node.style.transform = trs.slice(0, idxOfPosStart) + posStr + trs.slice(idxOfPosEnd + 1);
+			}
 			// Update
 		};
 		window.requestAnimationFrame(ts => {
@@ -930,12 +943,14 @@ def GenJsAPI (world):
 		vars = ''
 		for key in colliders.keys():
 			colliderName = GetVarNameFromObject(key) + 'Collider'
-			colliderDescName = colliderName + 'Desc'
-			vars += 'var ' + colliderName + ';\nvar ' + colliderDescName + ';\n'
+			vars += 'var ' + colliderName + ';\n'
+		rigidBodiesIds = {}
 		for key in rigidBodies.keys():
 			rigidBodyName = GetVarNameFromObject(key) + 'RigidBody'
 			rigidBodyDescName = rigidBodyName + 'Desc'
 			vars += 'var ' + rigidBodyName + ';\nvar ' + rigidBodyDescName + ';\n'
+			rigidBodiesIds[key.name] = rigidBodyName
+		vars += 'var rigidBodiesIds = ' + str(rigidBodiesIds) + ';\n'
 		physics = physics.replace('// Vars', vars)
 		physics = physics.replace('// Gravity', 'var gravity = {x : ' + str(bpy.context.scene.gravity[0]) + ', y : ' + str(bpy.context.scene.gravity[1]) + '};')
 		physics = physics.replace('// Colliders', '\n'.join(colliders.values()))
