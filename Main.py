@@ -436,13 +436,54 @@ def RegisterPhysics (ob):
 			collider += ToVector2String(ob.trianglePos1) + ', ' + ToVector2String(ob.trianglePos2) + ', ' + ToVector2String(ob.trianglePos3) + ', ' + str(ob.triangleBorderRadius)
 		elif ob.shapeType == 'polyline':
 			collider += '['
-			prevPoint = None
 			for i in range(MAX_SHAPE_POINTS):
+				if not getattr(ob, 'usePolylinePoint%s' %i):
+					break
 				point = getattr(ob, 'polylinePoint%s' %i)
-				if not prevPoint or point[0] != prevPoint[0] or point[1] != prevPoint[1]:
-					collider += str(point[0]) + ', ' + str(point[1]) + ', '
-					prevPoint = point
+				collider += str(point[0]) + ', ' + str(point[1]) + ', '
+			if ob.polylineIdx0 != -1:
+				collider += '], ['
+				for i in range(MAX_SHAPE_POINTS):
+					idx = getattr(ob, 'polylineIdx%s' %i)
+					if idx != -1:
+						collider += str(idx) + ', '
 			collider += ']'
+		elif ob.shapeType == 'trimesh':
+			collider += '['
+			for i in range(MAX_SHAPE_POINTS):
+				if not getattr(ob, 'useTrimeshPoint%s' %i):
+					break
+				point = getattr(ob, 'trimeshPoint%s' %i)
+				collider += str(point[0]) + ', ' + str(point[1]) + ', '
+			collider += '], ['
+			for i in range(MAX_SHAPE_POINTS):
+				idx = getattr(ob, 'trimeshIdx%s' %i)
+				if idx != -1:
+					collider += str(idx) + ', '
+			collider += ']'
+		elif ob.shapeType == 'convexHull':
+			collider += '['
+			for i in range(MAX_SHAPE_POINTS):
+				if not getattr(ob, 'useConvexHullPoint%s' %i):
+					break
+				point = getattr(ob, 'convexHullPoint%s' %i)
+				collider += str(point[0]) + ', ' + str(point[1]) + ', '
+			collider += ']'
+		elif ob.shapeType == 'roundConvexHull':
+			collider += '['
+			for i in range(MAX_SHAPE_POINTS):
+				if not getattr(ob, 'useRoundConvexHullPoint%s' %i):
+					break
+				point = getattr(ob, 'roundConvexHullPoint%s' %i)
+				collider += str(point[0]) + ', ' + str(point[1]) + ', '
+			collider += '], ' + str(ob.roundConvexHullBorderRadius)
+		elif ob.shapeType == 'heightfield':
+			collider += '['
+			for i in range(MAX_SHAPE_POINTS):
+				if not getattr(ob, 'useHeight%s' %i):
+					break
+				collider += str(getattr(ob, 'height%s' %i))
+			collider += '], ' + ToVector2String(ob.heightfieldScale)
 		collider += ');\n' + colliderDescName + '.density = ' + str(ob.density) + ';\n' + colliderDescName + '.enabled = ' + str(ob.colliderEnable).lower() + ';\n' + colliderName + ' = world.createCollider(' + colliderDescName
 		if ob.rigidBodyExists:
 			collider += ', ' + rigidBodyName
@@ -1282,6 +1323,8 @@ bpy.types.Object.trianglePos1 = bpy.props.FloatVectorProperty(name = 'Position 1
 bpy.types.Object.trianglePos2 = bpy.props.FloatVectorProperty(name = 'Position 2', size = 2)
 bpy.types.Object.trianglePos3 = bpy.props.FloatVectorProperty(name = 'Position 3', size = 2)
 bpy.types.Object.triangleBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0)
+bpy.types.Object.roundConvexHullBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0)
+bpy.types.Object.heightfieldScale = bpy.props.FloatVectorProperty(name = 'Scale', size = 2)
 bpy.types.Object.density = bpy.props.FloatProperty(name = 'Density', min = 0)
 bpy.types.Object.rigidBodyExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.rigidBodyEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
@@ -1331,7 +1374,62 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'polylinePoint%s' %i,
-		bpy.props.FloatVectorProperty(name = 'polylinePoint%s' %i, size = 2)
+		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2)
+	)
+	setattr(
+		bpy.types.Object,
+		'usePolylinePoint%s' %i,
+		bpy.props.BoolProperty(name = 'Use%s' %i)
+	)
+	setattr(
+		bpy.types.Object,
+		'polylineIdx%s' %i,
+		bpy.props.IntProperty(name = 'Index%s' %i, min = -1, default = -1)
+	)
+	setattr(
+		bpy.types.Object,
+		'trimeshPoint%s' %i,
+		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2)
+	)
+	setattr(
+		bpy.types.Object,
+		'useTrimeshPoint%s' %i,
+		bpy.props.BoolProperty(name = 'Use%s' %i)
+	)
+	setattr(
+		bpy.types.Object,
+		'trimeshIdx%s' %i,
+		bpy.props.IntProperty(name = 'Index%s' %i, min = -1, default = -1)
+	)
+	setattr(
+		bpy.types.Object,
+		'convexHullPoint%s' %i,
+		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2)
+	)
+	setattr(
+		bpy.types.Object,
+		'useConvexHullhPoint%s' %i,
+		bpy.props.BoolProperty(name = 'Use%s' %i)
+	)
+	setattr(
+		bpy.types.Object,
+		'roundConvexHullPoint%s' %i,
+		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2)
+	)
+	setattr(
+		bpy.types.Object,
+		'useRoundConvexHullhPoint%s' %i,
+		bpy.props.BoolProperty(name = 'Use%s' %i)
+	)
+	setattr(
+		bpy.types.Object,
+		'height%s' %i,
+		bpy.props.FloatProperty(name = 'Point%s' %i)
+	)
+	setattr(
+		bpy.types.Object,
+		'useHeight%s' %i,
+		bpy.props.BoolProperty(name = 'Use%s' %i)
 	)
 
 @bpy.utils.register_class
@@ -1576,12 +1674,58 @@ class ColliderPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'trianglePos3')
 			self.layout.prop(ob, 'triangleBorderRadius')
 		elif ob.shapeType == 'polyline':
-			prevPoint = None
 			for i in range(MAX_SHAPE_POINTS):
-				point = getattr(ob, 'polylinePoint%s' %i)
-				if not prevPoint or point[0] != prevPoint[0] or point[1] != prevPoint[1]:
-					self.layout.prop(ob, 'polylinePoint%s' %i)
-					prevPoint = point
+				row = self.layout.row()
+				row.prop(ob, 'polylinePoint%s' %i)
+				row.prop(ob, 'usePolylinePoint%s' %i)
+				if not getattr(ob, 'usePolylinePoint%s' %i):
+					break
+			foundInvalidIdx = False
+			for i in range(MAX_SHAPE_POINTS):
+				idx = getattr(ob, 'polylineIdx%s' %i)
+				validIdx = idx != -1
+				if validIdx or not foundInvalidIdx:
+					self.layout.prop(ob, 'polylineIdx%s' %i)
+				if not foundInvalidIdx:
+					foundInvalidIdx = not validIdx
+		elif ob.shapeType == 'trimesh':
+			for i in range(MAX_SHAPE_POINTS):
+				row = self.layout.row()
+				row.prop(ob, 'trimeshPoint%s' %i)
+				row.prop(ob, 'useTrimeshPoint%s' %i)
+				if not getattr(ob, 'useTrimeshPoint%s' %i):
+					break
+			foundInvalidIdx = False
+			for i in range(MAX_SHAPE_POINTS):
+				idx = getattr(ob, 'trimeshIdx%s' %i)
+				validIdx = idx != -1
+				if validIdx or not foundInvalidIdx:
+					self.layout.prop(ob, 'trimeshIdx%s' %i)
+				if not foundInvalidIdx:
+					foundInvalidIdx = not validIdx
+		elif ob.shapeType == 'convexHull':
+			for i in range(MAX_SHAPE_POINTS):
+				row = self.layout.row()
+				row.prop(ob, 'convexHullPoint%s' %i)
+				row.prop(ob, 'useConvexHullPoint%s' %i)
+				if not getattr(ob, 'useConvexHullPoint%s' %i):
+					break
+		elif ob.shapeType == 'roundConvexHull':
+			for i in range(MAX_SHAPE_POINTS):
+				row = self.layout.row()
+				row.prop(ob, 'roundConvexHullPoint%s' %i)
+				row.prop(ob, 'useRoundConvexHullPoint%s' %i)
+				if not getattr(ob, 'useRoundConvexHullPoint%s' %i):
+					break
+			self.layout.prop(ob, 'roundConvexHullBorderRadius')
+		elif ob.shapeType == 'heightfield':
+			for i in range(MAX_SHAPE_POINTS):
+				row = self.layout.row()
+				row.prop(ob, 'height%s' %i)
+				row.prop(ob, 'useHeight%s' %i)
+				if not getattr(ob, 'useHeight%s' %i):
+					break
+			self.layout.prop(ob, 'heightfieldScale')
 		self.layout.prop(ob, 'density')
 
 @bpy.utils.register_class
