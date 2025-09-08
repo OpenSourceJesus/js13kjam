@@ -413,7 +413,26 @@ def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
-		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '().setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ');\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyDescName + '.setDominanceGroup(' + str(ob.dominance) + ');\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n' + rigidBodyName + '.setLinearDamping(' + str(ob.linearDrag) + ');\n' + rigidBodyName + '.setAngularDamping(' + str(ob.angDrag) + ');\nrigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
+		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '()'
+		if ob.location[0] != 0 or ob.location[1] != 0:
+			rigidBody += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
+		rigidBody += '\n'
+		if not ob.rigidBodyEnable:
+			rigidBodyDescName + '.enabled = false;\n'
+		if ob.dominance != 0:
+			rigidBodyDescName + '.setDominanceGroup(' + str(ob.dominance) + ');\n'
+		if ob.gravityScale != 1:
+			rigidBody += rigidBodyDescName + '.setGravityScale(' + str(ob.gravityScale) + ');\n'
+		if not ob.canSleep:
+			rigidBody += rigidBodyDescName + '.setCanSleep(false);\n'
+		if ob.linearDrag != 0:
+			rigidBody += rigidBodyDescName + '.setLinearDamping(' + str(ob.linearDrag) + ');\n'
+		if ob.angDrag != 0:
+			rigidBody += rigidBodyDescName + '.setAngularDamping(' + str(ob.angDrag) + ');\n'
+		rigidBody += rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n'
+		if ob.continuousCollideDetect:
+			rigidBody += rigidBodyName + '.enableCcd(true);\n'
+		rigidBody += 'rigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
 		rigidBodies[ob] = rigidBody
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
@@ -485,7 +504,11 @@ def RegisterPhysics (ob):
 					break
 				collider += str(getattr(ob, 'height%s' %i))
 			collider += '], ' + ToVector2String(ob.heightfieldScale)
-		collider += ');\n' + colliderDescName + '.density = ' + str(ob.density) + ';\n' + colliderDescName + '.enabled = ' + str(ob.colliderEnable).lower() + ';\n'
+		collider += ');\n'
+		if ob.density != 0:
+			collider += colliderDescName + '.density = ' + str(ob.density) + ';\n'
+		if not ob.colliderEnable:
+			collider += colliderDescName + '.enabled = false;\n'
 		attachTo = []
 		for i in range(MAX_ATTACH_COLLIDER_CNT):
 			_attachTo = getattr(ob, 'attachTo%s' %i)
@@ -1361,6 +1384,9 @@ bpy.types.Object.rigidBodyType = bpy.props.EnumProperty(name = 'Type', items = R
 bpy.types.Object.linearDrag = bpy.props.FloatProperty(name = 'Linear drag', min = 0)
 bpy.types.Object.angDrag = bpy.props.FloatProperty(name = 'Angular drag', min = 0)
 bpy.types.Object.dominance = bpy.props.IntProperty(name = 'Dominance', min = -127, max = 127)
+bpy.types.Object.continuousCollideDetect = bpy.props.BoolProperty(name = 'Continuous collision detection')
+bpy.types.Object.gravityScale = bpy.props.FloatProperty(name = 'Gravity scale', default = 1)
+bpy.types.Object.canSleep = bpy.props.BoolProperty(name = 'Can sleep', default = True)
 bpy.types.Object.jointExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.jointType = bpy.props.EnumProperty(name = 'Type', items = JOINT_TYPE_ITEMS)
 bpy.types.Object.anchorPos1 = bpy.props.FloatVectorProperty(name = 'Anchor position 1', size = 2)
@@ -1680,6 +1706,9 @@ class RigidBodyPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'linearDrag')
 		self.layout.prop(ob, 'angDrag')
 		self.layout.prop(ob, 'dominance')
+		self.layout.prop(ob, 'continuousCollideDetect')
+		self.layout.prop(ob, 'gravityScale')
+		self.layout.prop(ob, 'canSleep')
 
 @bpy.utils.register_class
 class ColliderPanel (bpy.types.Panel):
