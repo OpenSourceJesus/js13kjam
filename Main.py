@@ -207,6 +207,7 @@ colors = {}
 rigidBodies = {}
 colliders = {}
 joints = {}
+charControllers = {}
 pathsDatas = []
 initCode = []
 updateCode = []
@@ -412,7 +413,7 @@ def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
-		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '().setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ');\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\nrigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
+		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '().setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ');\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n' + rigidBodyName + '.setLinearDamping(' + str(ob.linearDrag) + ');\n' + rigidBodyName + '.setAngularDamping(' + str(ob.angDrag) + ');\nrigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
 		rigidBodies[ob] = rigidBody
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
@@ -517,6 +518,10 @@ def RegisterPhysics (ob):
 			joint += ToVector2String(ob.anchorPos2)
 		joint += ');\n' + jointName + ' = world.createImpulseJoint(' + jointDataName + ', ' + GetVarNameFromObject(ob.anchorRigidBody1) + 'RigidBody, ' + GetVarNameFromObject(ob.anchorRigidBody2) + 'RigidBody, true);'
 		joints[ob] = joint
+	if ob.charControllerExists:
+		charControllerName = GetVarNameFromObject(ob) + 'CharController'
+		charController = 'var ' + charControllerName + ' = new RAPIER.KinematicCharacterController(' + str(ob.contactOff) + ', new RAPIER.IntegrationParameters(), '
+		charControllers[ob] = charController
 
 def HandleCopyObject (ob, pos):
 	for exportedOb in exportedObs:
@@ -555,6 +560,7 @@ def GetBlenderData ():
 	rigidBodies = {}
 	colliders = {}
 	joints = {}
+	charControllers = {}
 	initCode = []
 	updateCode = []
 	for ob in bpy.data.objects:
@@ -712,9 +718,10 @@ var rigidBodiesIds = {};
 RAPIER.init().then(() => {
     // Gravity
 	world = new RAPIER.World(gravity);
-	// RigidBodies
+	// Rigid Bodies
 	// Colliders
 	// Joints
+	// Char Controllers
 });
 '''
 JS_API = '''
@@ -1045,11 +1052,15 @@ def GenJsAPI (world):
 		for key in joints.keys():
 			jointName = GetVarNameFromObject(key) + 'Joint'
 			vars += 'var ' + jointName + ';\n'
+		for key in charControllers.keys():
+			charControllerName = GetVarNameFromObject(key) + 'CharController'
+			vars += 'var ' + charControllerName + ';\n'
 		physics = physics.replace('// Vars', vars)
 		physics = physics.replace('// Gravity', 'var gravity = ' + ToVector2String(bpy.context.scene.gravity) + ';')
 		physics = physics.replace('// Colliders', '\n'.join(colliders.values()))
-		physics = physics.replace('// RigidBodies', '\n'.join(rigidBodies.values()))
+		physics = physics.replace('// Rigid Bodies', '\n'.join(rigidBodies.values()))
 		physics = physics.replace('// Joints', '\n'.join(joints.values()))
+		physics = physics.replace('// Char Controllers', '\n'.join(charControllers.values()))
 		js += [physics]
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
@@ -1329,19 +1340,24 @@ bpy.types.Object.density = bpy.props.FloatProperty(name = 'Density', min = 0)
 bpy.types.Object.rigidBodyExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.rigidBodyEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
 bpy.types.Object.rigidBodyType = bpy.props.EnumProperty(name = 'Type', items = RIGID_BODY_TYPE_ITEMS)
+bpy.types.Object.linearDrag = bpy.props.FloatProperty(name = 'Linear drag', min = 0)
+bpy.types.Object.angDrag = bpy.props.FloatProperty(name = 'Angular drag', min = 0)
+bpy.types.Object.dominance = bpy.props.IntProperty(name = 'Dominance', min = -127, max = 127)
 bpy.types.Object.jointExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.jointType = bpy.props.EnumProperty(name = 'Type', items = JOINT_TYPE_ITEMS)
 bpy.types.Object.anchorPos1 = bpy.props.FloatVectorProperty(name = 'Anchor position 1', size = 2)
 bpy.types.Object.anchorPos2 = bpy.props.FloatVectorProperty(name = 'Anchor position 2', size = 2)
 bpy.types.Object.anchorRot1 = bpy.props.FloatProperty(name = 'Anchor rotation 1', min = 0, max = 360)
 bpy.types.Object.anchorRot2 = bpy.props.FloatProperty(name = 'Anchor rotation 2', min = 0, max = 360)
-bpy.types.Object.anchorRigidBody1 = bpy.props.PointerProperty(name = 'Anchor Rigid Body 1', type = bpy.types.Object)
-bpy.types.Object.anchorRigidBody2 = bpy.props.PointerProperty(name = 'Anchor Rigid Body 2', type = bpy.types.Object)
+bpy.types.Object.anchorRigidBody1 = bpy.props.PointerProperty(name = 'Anchor rigid body 1', type = bpy.types.Object)
+bpy.types.Object.anchorRigidBody2 = bpy.props.PointerProperty(name = 'Anchor rigid body 2', type = bpy.types.Object)
 bpy.types.Object.restLen = bpy.props.FloatProperty(name = 'Rest length', min = 0)
 bpy.types.Object.stiffness = bpy.props.FloatProperty(name = 'Stiffness', min = 0)
 bpy.types.Object.damping = bpy.props.FloatProperty(name = 'Damping', min = 0)
 bpy.types.Object.jointAxis = bpy.props.FloatVectorProperty(name = 'Axis', size = 2)
 bpy.types.Object.jointLen = bpy.props.FloatProperty(name = 'Length', min = 0)
+bpy.types.Object.charControllerExists = bpy.props.BoolProperty(name = 'Exists')
+bpy.types.Object.contactOff = bpy.props.FloatProperty(name = 'Contact offset', min = 0)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1631,6 +1647,9 @@ class RigidBodyPanel (bpy.types.Panel):
 			return
 		self.layout.prop(ob, 'rigidBodyEnable')
 		self.layout.prop(ob, 'rigidBodyType')
+		self.layout.prop(ob, 'linearDrag')
+		self.layout.prop(ob, 'angDrag')
+		self.layout.prop(ob, 'dominance')
 
 @bpy.utils.register_class
 class ColliderPanel (bpy.types.Panel):
@@ -1759,6 +1778,23 @@ class JointPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'jointAxis')
 		elif ob.jointType == 'rope':
 			self.layout.prop(ob, 'jointLen')
+			
+@bpy.utils.register_class
+class CharacterControllerPanel (bpy.types.Panel):
+	bl_idname = 'PHYSICS_PT_Character_Controller_Panel'
+	bl_label = 'Character Controller'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'physics'
+
+	def draw (self, context):
+		ob = context.active_object
+		if not ob:
+			return
+		self.layout.prop(ob, 'charControllerExists')
+		if not ob.rigidBodyExists:
+			return
+		self.layout.prop(ob, 'contactOff')
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
