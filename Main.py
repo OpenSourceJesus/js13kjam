@@ -413,7 +413,7 @@ def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
-		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '().setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ');\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n' + rigidBodyName + '.setLinearDamping(' + str(ob.linearDrag) + ');\n' + rigidBodyName + '.setAngularDamping(' + str(ob.angDrag) + ');\nrigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
+		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '().setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ');\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyDescName + '.setDominanceGroup(' + ob.dominance + ');\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n' + rigidBodyName + '.setLinearDamping(' + str(ob.linearDrag) + ');\n' + rigidBodyName + '.setAngularDamping(' + str(ob.angDrag) + ');\nrigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
 		rigidBodies[ob] = rigidBody
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
@@ -1395,7 +1395,7 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'usePolylinePoint%s' %i,
-		bpy.props.BoolProperty(name = 'Use%s' %i)
+		bpy.props.BoolProperty(name = 'Include%s' %i)
 	)
 	setattr(
 		bpy.types.Object,
@@ -1410,7 +1410,7 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'useTrimeshPoint%s' %i,
-		bpy.props.BoolProperty(name = 'Use%s' %i)
+		bpy.props.BoolProperty(name = 'Include%s' %i)
 	)
 	setattr(
 		bpy.types.Object,
@@ -1425,7 +1425,7 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'useConvexHullhPoint%s' %i,
-		bpy.props.BoolProperty(name = 'Use%s' %i)
+		bpy.props.BoolProperty(name = 'Include%s' %i)
 	)
 	setattr(
 		bpy.types.Object,
@@ -1435,7 +1435,7 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'useRoundConvexHullhPoint%s' %i,
-		bpy.props.BoolProperty(name = 'Use%s' %i)
+		bpy.props.BoolProperty(name = 'Include%s' %i)
 	)
 	setattr(
 		bpy.types.Object,
@@ -1445,7 +1445,18 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'useHeight%s' %i,
-		bpy.props.BoolProperty(name = 'Use%s' %i)
+		bpy.props.BoolProperty(name = 'Include%s' %i)
+	)
+MAX_ATTACH_COLLIDER_CNT = 64
+	setattr(
+		bpy.types.Object,
+		'attachTo%s' %i,
+		bpy.props.PointerProperty(name = 'Rigid body%s' %i, type = bpy.types.Object)
+	)
+	setattr(
+		bpy.types.Object,
+		'attach%s' %i,
+		bpy.props.PointerProperty(name = 'Attach to rigid body%s' %i, type = bpy.types.Object)
 	)
 
 @bpy.utils.register_class
