@@ -413,7 +413,7 @@ def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
-		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '().setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ');\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyDescName + '.setDominanceGroup(' + ob.dominance + ');\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n' + rigidBodyName + '.setLinearDamping(' + str(ob.linearDrag) + ');\n' + rigidBodyName + '.setAngularDamping(' + str(ob.angDrag) + ');\nrigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
+		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '().setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ');\n' + rigidBodyDescName + '.enabled = ' + str(ob.rigidBodyEnable).lower() + ';\n' + rigidBodyDescName + '.setDominanceGroup(' + str(ob.dominance) + ');\n' + rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n' + rigidBodyName + '.setLinearDamping(' + str(ob.linearDrag) + ');\n' + rigidBodyName + '.setAngularDamping(' + str(ob.angDrag) + ');\nrigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
 		rigidBodies[ob] = rigidBody
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
@@ -485,10 +485,18 @@ def RegisterPhysics (ob):
 					break
 				collider += str(getattr(ob, 'height%s' %i))
 			collider += '], ' + ToVector2String(ob.heightfieldScale)
-		collider += ');\n' + colliderDescName + '.density = ' + str(ob.density) + ';\n' + colliderDescName + '.enabled = ' + str(ob.colliderEnable).lower() + ';\n' + colliderName + ' = world.createCollider(' + colliderDescName
-		if ob.rigidBodyExists:
-			collider += ', ' + rigidBodyName
-		collider += ');'
+		collider += ');\n' + colliderDescName + '.density = ' + str(ob.density) + ';\n' + colliderDescName + '.enabled = ' + str(ob.colliderEnable).lower() + ';\n'
+		attachTo = []
+		for i in range(MAX_ATTACH_COLLIDER_CNT):
+			_attachTo = getattr(ob, 'attachTo%s' %i)
+			if not getattr(ob, 'attach%s' %i):
+				break
+			attachTo.append(_attachTo)
+		if attachTo == []:
+			collider += colliderName + ' = world.createCollider(' + colliderDescName +');'
+		else:
+			for _attachTo in attachTo:
+				collider += colliderName + GetVarNameFromObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameFromObject(_attachTo) + 'RigidBody);\n'
 		colliders[ob] = collider
 	if ob.jointExists:
 		jointName = GetVarNameFromObject(ob) + 'Joint'
@@ -1048,7 +1056,17 @@ def GenJsAPI (world):
 			vars += 'var ' + rigidBodyName + ';\n'
 		for key in colliders.keys():
 			colliderName = GetVarNameFromObject(key) + 'Collider'
-			vars += 'var ' + colliderName + ';\n'
+			attachTo = []
+			for i in range(MAX_ATTACH_COLLIDER_CNT):
+				_attachTo = getattr(key, 'attachTo%s' %i)
+				if not getattr(key, 'attach%s' %i):
+					break
+				attachTo.append(_attachTo)
+			if attachTo == []:
+				vars += 'var ' + colliderName + ';\n'
+			else:
+				for _attachTo in attachTo:
+					vars += 'var ' + colliderName + GetVarNameFromObject(_attachTo) + ';\n'
 		for key in joints.keys():
 			jointName = GetVarNameFromObject(key) + 'Joint'
 			vars += 'var ' + jointName + ';\n'
@@ -1448,6 +1466,7 @@ for i in range(MAX_SHAPE_POINTS):
 		bpy.props.BoolProperty(name = 'Include%s' %i)
 	)
 MAX_ATTACH_COLLIDER_CNT = 64
+for i in range(MAX_ATTACH_COLLIDER_CNT):
 	setattr(
 		bpy.types.Object,
 		'attachTo%s' %i,
@@ -1456,7 +1475,7 @@ MAX_ATTACH_COLLIDER_CNT = 64
 	setattr(
 		bpy.types.Object,
 		'attach%s' %i,
-		bpy.props.PointerProperty(name = 'Attach to rigid body%s' %i, type = bpy.types.Object)
+		bpy.props.BoolProperty(name = 'Attach to rigid body%s' %i)
 	)
 
 @bpy.utils.register_class
@@ -1757,6 +1776,12 @@ class ColliderPanel (bpy.types.Panel):
 					break
 			self.layout.prop(ob, 'heightfieldScale')
 		self.layout.prop(ob, 'density')
+		for i in range(MAX_ATTACH_COLLIDER_CNT):
+			row = self.layout.row()
+			row.prop(ob, 'attachTo%s' %i)
+			row.prop(ob, 'attach%s' %i)
+			if not getattr(ob, 'attach%s' %i):
+				return
 
 @bpy.utils.register_class
 class JointPanel (bpy.types.Panel):
@@ -1790,7 +1815,7 @@ class JointPanel (bpy.types.Panel):
 		elif ob.jointType == 'rope':
 			self.layout.prop(ob, 'jointLen')
 			
-@bpy.utils.register_class
+# @bpy.utils.register_class
 class CharacterControllerPanel (bpy.types.Panel):
 	bl_idname = 'PHYSICS_PT_Character_Controller_Panel'
 	bl_label = 'Character Controller'
