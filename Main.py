@@ -6,24 +6,26 @@ sys.path.append(EXTENSIONS_SCRIPTS_PATH)
 from MathExtensions import *
 from SystemExtensions import *
 
-if sys.platform == 'win32':
-	TMP_DIR = os.path.expanduser('~\\AppData\\Local\\Temp')
-else:
-	TMP_DIR = '/tmp'
+isLinux = False
+POTRACE_PATH = 'potrace-1.16.'
 UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
 DONT_MANGLE_INDCTR = '-no_mangle=['
 NO_PHYSICS_IDCTR = '-no_physics'
+if sys.platform == 'win32':
+	TMP_DIR = os.path.expanduser('~\\AppData\\Local\\Temp')
+	BLENDER = 'C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe'
+	POTRACE_PATH += 'win64\\potrace.exe'
+else:
+	TMP_DIR = '/tmp'
+	if sys.platform == 'darwin':
+		BLENDER = '/Applications/Blender.app/Contents/MacOS/Blender'
+		POTRACE_PATH += 'mac-x86_64/potrace'
+	else:
+		BLENDER = 'blender'
+		POTRACE_PATH += 'linux-x86_64/potrace'
+		isLinux = True
 usePhysics = True
 dontMangleArg = ''
-
-isLinux = False
-if sys.platform == 'win32':
-	BLENDER = 'C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe'
-elif sys.platform == 'darwin':
-	BLENDER = '/Applications/Blender.app/Contents/MacOS/Blender'
-else:
-	BLENDER = 'blender'
-	isLinux = True
 for arg in sys.argv:
 	if 'blender' in arg:
 		BLENDER = arg
@@ -1864,6 +1866,60 @@ class CharacterControllerPanel (bpy.types.Panel):
 		if not ob.rigidBodyExists:
 			return
 		self.layout.prop(ob, 'contactOff')
+
+@bpy.utils.register_class
+class ConverToCurve (bpy.types.Operator):
+	bl_idname = 'render.convert_to_curve'
+	bl_label = 'Convert Selected Objects To Curve'
+
+	@classmethod
+	def poll (cls, context):
+		return True
+
+	def execute (self, context):
+		renderSettings = bpy.context.scene.render
+		imageSettings = renderSettings.image_settings
+		viewSettings = imageSettings.view_settings
+		prevUsePassObIdx = bpy.context.view_layer.use_pass_object_index
+		prevRenderPath = renderSettings.filepath
+		prevTransparentFilm = renderSettings.film_transparent
+		prevExposure = viewSettings.exposure
+		prevGamma = viewSettings.gamma
+		prevRenderFormat = imageSettings.file_format
+		prevColorMode = imageSettings.color_mode
+		bpy.context.view_layer.use_pass_object_index = True
+		renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
+		renderSettings.film_transparent = True
+		imageSettings.color_management = 'OVERRIDE'
+		viewSettings.exposure = 32
+		viewSettings.gamma = 5
+		imageSettings.file_format = 'BMP'
+		imageSettings.color_mode = 'BW'
+		for i, ob in enumerate(bpy.context.selected_objects):
+			ob.pass_index = i
+		bpy.ops.render.render(write_still = True)
+		cmd = [POTRACE_PATH, '-o ' + os.path.join(TMP_DIR, 'Render.svg'), '-s', renderSettings.filepath, ]
+		print(' '.join(cmd))
+		subprocess.check_call(cmd)
+		bpy.context.view_layer.use_pass_object_index = prevUsePassObIdx
+		renderSettings.filepath = prevRenderPath
+		renderSettings.film_transparent = prevTransparentFilm
+		viewSettings.exposure = prevExposure
+		viewSettings.gamma = prevGamma
+		imageSettings.file_format = prevRenderFormat
+		imageSettings.color_mode = prevColorMode
+		return { 'FINISHED' }
+
+@bpy.utils.register_class
+class ConvertToCurvePanel (bpy.types.Panel):
+	bl_idname = 'RENDER_PT_Convert_To_Curve_Panel'
+	bl_label = 'Convert To Curve'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'render'
+
+	def draw (self, context):
+		self.layout.operator('render.convert_to_curve', icon = 'CONSOLE')
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
