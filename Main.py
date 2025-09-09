@@ -1880,34 +1880,40 @@ class ConverToCurve (bpy.types.Operator):
 		renderSettings = bpy.context.scene.render
 		imageSettings = renderSettings.image_settings
 		viewSettings = imageSettings.view_settings
-		prevUsePassObIdx = bpy.context.view_layer.use_pass_object_index
 		prevRenderPath = renderSettings.filepath
 		prevTransparentFilm = renderSettings.film_transparent
 		prevExposure = viewSettings.exposure
 		prevGamma = viewSettings.gamma
 		prevRenderFormat = imageSettings.file_format
 		prevColorMode = imageSettings.color_mode
-		bpy.context.view_layer.use_pass_object_index = True
-		renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
 		renderSettings.film_transparent = True
 		imageSettings.color_management = 'OVERRIDE'
 		viewSettings.exposure = 32
 		viewSettings.gamma = 5
 		imageSettings.file_format = 'BMP'
 		imageSettings.color_mode = 'BW'
+		renderPaths = []
+		prevHideObsInRender = {}
+		for ob in bpy.context.selected_objects:
+			prevHideObsInRender[ob] = ob.hide_render
 		for i, ob in enumerate(bpy.context.selected_objects):
-			ob.pass_index = i
-		bpy.ops.render.render(write_still = True)
-		cmd = [POTRACE_PATH, '-o ' + os.path.join(TMP_DIR, 'Render.svg'), '-s', renderSettings.filepath, ]
-		print(' '.join(cmd))
-		subprocess.check_call(cmd)
-		bpy.context.view_layer.use_pass_object_index = prevUsePassObIdx
+			for ob2 in bpy.context.selected_objects:
+				ob2.hide_render = ob != ob2
+			renderSettings.filepath = os.path.join(TMP_DIR, 'Render' + str(i) + '.bmp')
+			renderPaths.append(renderSettings.filepath)
+			bpy.ops.render.render(write_still = True)
+		for ob in bpy.context.selected_objects:
+			ob.hide_render = prevHideObsInRender[ob]
 		renderSettings.filepath = prevRenderPath
 		renderSettings.film_transparent = prevTransparentFilm
 		viewSettings.exposure = prevExposure
 		viewSettings.gamma = prevGamma
 		imageSettings.file_format = prevRenderFormat
 		imageSettings.color_mode = prevColorMode
+		cmd = [POTRACE_PATH, '-o ' + os.path.join(TMP_DIR, 'Render.svg'), '-s' ]
+		cmd += renderPaths
+		print(' '.join(cmd))
+		subprocess.check_call(cmd)
 		return { 'FINISHED' }
 
 @bpy.utils.register_class
