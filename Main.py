@@ -1868,16 +1868,17 @@ class CharacterControllerPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'contactOff')
 
 @bpy.utils.register_class
-class ConverToCurve (bpy.types.Operator):
-	bl_idname = 'render.convert_to_curve'
-	bl_label = 'Convert Selected Objects To Curve'
+class ConvertSelectedObjectsToCurves (bpy.types.Operator):
+	bl_idname = 'render.convert_to_curves'
+	bl_label = 'Convert Selected Objects To Curves'
 
 	@classmethod
 	def poll (cls, context):
 		return True
 
 	def execute (self, context):
-		renderSettings = bpy.context.scene.render
+		scene = bpy.context.scene
+		renderSettings = scene.render
 		imageSettings = renderSettings.image_settings
 		viewSettings = imageSettings.view_settings
 		prevRenderPath = renderSettings.filepath
@@ -1893,17 +1894,37 @@ class ConverToCurve (bpy.types.Operator):
 		imageSettings.file_format = 'BMP'
 		imageSettings.color_mode = 'BW'
 		renderPaths = []
-		prevHideObsInRender = {}
+		depsgraph = bpy.context.evaluated_depsgraph_get()
+		renderResScale = renderSettings.resolution_percentage / 100
+		minHitDists = {}
+		cam = scene.camera
+		camData = cam.data
+		viewFrame = camData.view_frame(scene = scene)
+		viewFrameTopLeft = viewFrame[0]
+		viewFrameTopRight = viewFrame[1]
+		viewFrameBottLeft = viewFrame[2]
+		viewFrameXRange = viewFrameTopRight - viewFrameTopLeft
+		viewFrameYRange = viewFrameBottLeft - viewFrameTopLeft
+		camWorldMatrix = cam.matrix_world
+		camPos = camWorldMatrix.translation
+		renderResolutionX = int(renderSettings.resolution_x * renderResScale)
+		renderResolutionY = int(renderSettings.resolution_y * renderResScale)
 		for ob in bpy.context.selected_objects:
-			prevHideObsInRender[ob] = ob.hide_render
+			bvhTree = bvhtree.BVHTree(ob, depsgraph, render = True)
+			for x in range(renderResolutionX):
+				for y in range(renderResolutionY):
+					xNormalized = x / (renderResolutionX - 1)
+					yNormalized = y / (renderResolutionY - 1)
+					pointOnNearClipPlane = viewFrameTopLeft + viewFrameXRange * xNormalized + viewFrameYRange * yNormalized
+					worldPointOnNearClipPlane = camWorldMatrix @ pointOnNearClipPlane
+					rayDir = (worldPointOnNearClipPlane - camPos).normalized()
+					hitDist = bvhTree.ray_cast(worldPointOnNearClipPlane, rayDir)[3]
+					if hitDist != None:
+						pass
 		for i, ob in enumerate(bpy.context.selected_objects):
-			for ob2 in bpy.context.selected_objects:
-				ob2.hide_render = ob != ob2
 			renderSettings.filepath = os.path.join(TMP_DIR, 'Render' + str(i) + '.bmp')
 			renderPaths.append(renderSettings.filepath)
 			bpy.ops.render.render(write_still = True)
-		for ob in bpy.context.selected_objects:
-			ob.hide_render = prevHideObsInRender[ob]
 		renderSettings.filepath = prevRenderPath
 		renderSettings.film_transparent = prevTransparentFilm
 		viewSettings.exposure = prevExposure
@@ -1917,15 +1938,15 @@ class ConverToCurve (bpy.types.Operator):
 		return { 'FINISHED' }
 
 @bpy.utils.register_class
-class ConvertToCurvePanel (bpy.types.Panel):
-	bl_idname = 'RENDER_PT_Convert_To_Curve_Panel'
-	bl_label = 'Convert To Curve'
+class ConvertToCurvesPanel (bpy.types.Panel):
+	bl_idname = 'RENDER_PT_Convert_To_Curves_Panel'
+	bl_label = 'Convert To Curves'
 	bl_space_type = 'PROPERTIES'
 	bl_region_type = 'WINDOW'
 	bl_context = 'render'
 
 	def draw (self, context):
-		self.layout.operator('render.convert_to_curve', icon = 'CONSOLE')
+		self.layout.operator('render.convert_to_curves', icon = 'CONSOLE')
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
