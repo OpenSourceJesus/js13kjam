@@ -416,7 +416,9 @@ def RegisterPhysics (ob):
 		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '()'
 		if ob.location[0] != 0 or ob.location[1] != 0:
 			rigidBody += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
-		rigidBody += '\n'
+		if not ob.canRotate:
+			rigidBody += '.lockRotations();\n'
+		rigidBody += ';\n'
 		if not ob.rigidBodyEnable:
 			rigidBodyDescName + '.enabled = false;\n'
 		if ob.dominance != 0:
@@ -1387,6 +1389,7 @@ bpy.types.Object.dominance = bpy.props.IntProperty(name = 'Dominance', min = -12
 bpy.types.Object.continuousCollideDetect = bpy.props.BoolProperty(name = 'Continuous collision detection')
 bpy.types.Object.gravityScale = bpy.props.FloatProperty(name = 'Gravity scale', default = 1)
 bpy.types.Object.canSleep = bpy.props.BoolProperty(name = 'Can sleep', default = True)
+bpy.types.Object.canRotate = bpy.props.BoolProperty(name = 'Can rotate', default = True)
 bpy.types.Object.jointExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.jointType = bpy.props.EnumProperty(name = 'Type', items = JOINT_TYPE_ITEMS)
 bpy.types.Object.anchorPos1 = bpy.props.FloatVectorProperty(name = 'Anchor position 1', size = 2)
@@ -1709,6 +1712,7 @@ class RigidBodyPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'continuousCollideDetect')
 		self.layout.prop(ob, 'gravityScale')
 		self.layout.prop(ob, 'canSleep')
+		self.layout.prop(ob, 'canRotate')
 
 @bpy.utils.register_class
 class ColliderPanel (bpy.types.Panel):
