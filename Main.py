@@ -60,10 +60,10 @@ if not bpy:
 if not bpy:
 	if isLinux:
 		if not os.path.isfile('/usr/bin/blender'):
-			print('Did you install blender?')
+			print('Did you install blender 4.5?')
 			print('snap install blender')
 	else:
-		print('Download blender from: https://blender.org')
+		print('Download blender 4.5 from: https://blender.org')
 	sys.exit()
 
 MAX_SCRIPTS_PER_OBJECT = 16
@@ -123,7 +123,7 @@ def GetMaxComponents (v : Vector, v2 : Vector, use2D : bool = False):
 	else:
 		return Vector((max(v.x, v2.x), max(v.y, v2.y), max(v.z, v2.z)))
 
-def GetCurveRectMinMax (ob):
+def GetRectMinMax (ob):
 	bounds = [(ob.matrix_world @ Vector(corner)) for corner in ob.bound_box]
 	minX = min(v.x for v in bounds)
 	minY = min(v.y for v in bounds)
@@ -165,12 +165,12 @@ def ToByteString (n, delimeters = '\\`', escapeQuotes : bool = True):
 	return byteStr
 
 def GetColor (color : list):
-	color_ = ClampComponents(Round(Multiply(color, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-	idxOfColor = IndexOfValue(color_, colors)
+	_color = ClampComponents(Round(Multiply(color, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+	idxOfColor = IndexOfValue(_color, colors)
 	keyOfColor = ''
 	if idxOfColor == -1:
 		keyOfColor = string.ascii_letters[len(colors)]
-		colors[keyOfColor] = color_
+		colors[keyOfColor] = _color
 	else:
 		keyOfColor = string.ascii_letters[idxOfColor]
 	return keyOfColor
@@ -254,7 +254,7 @@ def ExportObject (ob):
 		datas.append(data)
 	elif ob.type == 'CURVE':
 		prevFrame = bpy.context.scene.frame_current
-		prevObData = ob.data
+		prevData = ob.data
 		pathDataFrames = []
 		prevPathData = ''
 		posFrames = []
@@ -281,22 +281,22 @@ def ExportObject (ob):
 			svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
 			idxOfName = svgTxt.find('"' + ob.name + '"') + 1
 			idxOfGroupStart = svgTxt.rfind('\n', 0, idxOfName)
-			groupEndIndicator = '</g>'
-			idxOfGroupEnd = svgTxt.find(groupEndIndicator, idxOfGroupStart) + len(groupEndIndicator)
+			groupEndIndctr = '</g>'
+			idxOfGroupEnd = svgTxt.find(groupEndIndctr, idxOfGroupStart) + len(groupEndIndctr)
 			group = svgTxt[idxOfGroupStart : idxOfGroupEnd]
-			parentGroupIndicator = '\n  <g'
-			idxOfParentGroupStart = svgTxt.find(parentGroupIndicator)
-			idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndicator))
+			parentGroupIndctr = '\n  <g'
+			idxOfParentGroupStart = svgTxt.find(parentGroupIndctr)
+			idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndctr))
 			idxOfParentGroupEnd = svgTxt.rfind('</g')
-			min, max = GetCurveRectMinMax(ob)
+			min, max = GetRectMinMax(ob)
 			scale = Vector((sx, sy))
 			min *= scale
 			min += off
 			max *= scale
 			max += off
 			svgTxt = svgTxt[: idxOfParentGroupContents] + group + svgTxt[idxOfParentGroupEnd :]
-			pathDataIndicator = ' d="'
-			idxOfPathDataStart = svgTxt.find(pathDataIndicator) + len(pathDataIndicator)
+			pathDataIndctr = ' d="'
+			idxOfPathDataStart = svgTxt.find(pathDataIndctr) + len(pathDataIndctr)
 			idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
 			pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
 			pathData = pathData.replace('.0', '')
@@ -398,16 +398,267 @@ def ExportObject (ob):
 					dashArr.append(value)
 				data.append(dashArr)
 				data.append(TryChangeToInt(ob.cycleDur))
+				data.append(True)
 				pathDataFrames.append(pathDataStr)
 			else:
 				pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
 			prevPathData = pathDataStr
 		datas.append(data)
 		bpy.context.scene.frame_set(prevFrame)
-		ob.data = prevObData
+		ob.data = prevData
 		for curve in bpy.data.curves:
 			if curve.users == 0:
 				bpy.data.curves.remove(curve)
+		pathsDatas.append(chr(1).join(pathDataFrames))
+	elif ob.type == 'MESH':
+		prevFrame = bpy.context.scene.frame_current
+		pathDataFrames = []
+		# prevPathData = ''
+		posFrames = []
+		data = []
+		prevPos = None
+		for frame in range(ob.minPosFrame, ob.maxPosFrame + 1):
+			bpy.context.scene.frame_set(frame)
+			depsgraph = bpy.context.evaluated_depsgraph_get()
+			evaluatedOb = ob.evaluated_get(depsgraph)
+			if frame > ob.minPosFrame:
+				posFrames.append([TryChangeToInt(evaluatedOb.location.x - prevPos.x), TryChangeToInt(evaluatedOb.location.y - prevPos.y)])
+			prevPos = ob.location
+		for frame in range(ob.minPathFrame, ob.maxPathFrame + 1):
+			bpy.context.scene.frame_set(frame)
+			depsgraph = bpy.context.evaluated_depsgraph_get()
+			evaluatedOb = ob.evaluated_get(depsgraph)
+			meshData = evaluatedOb.to_mesh(preserve_all_data_layers = False, depsgraph = depsgraph)
+			newMeshData = bpy.data.meshes.new(name = ob.name + '_Temp data')
+			verts = [v.co for v in meshData.vertices]
+			faces = [p.vertices for p in meshData.polygons]
+			newMeshData.from_pydata(verts, [], faces)
+			newMeshData.update()
+			newOb = bpy.data.objects.new(name = ob.name + '_Temp', object_data = newMeshData)
+			newOb.active_material = evaluatedOb.active_material
+			newOb.matrix_world = ob.matrix_world
+			bpy.context.scene.collection.objects.link(newOb)
+			evaluatedOb.to_mesh_clear()
+			# ob.data = meshData
+			# bpy.ops.object.select_all(action = 'DESELECT')
+			# ob.select_set(True)
+			# bpy.ops.curve.export_svg()
+			# svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
+			# idxOfName = svgTxt.find('"' + ob.name + '"') + 1
+			# idxOfGroupStart = svgTxt.rfind('\n', 0, idxOfName)
+			# groupEndIndctr = '</g>'
+			# idxOfGroupEnd = svgTxt.find(groupEndIndctr, idxOfGroupStart) + len(groupEndIndctr)
+			# group = svgTxt[idxOfGroupStart : idxOfGroupEnd]
+			# parentGroupIndctr = '\n  <g'
+			# idxOfParentGroupStart = svgTxt.find(parentGroupIndctr)
+			# idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndctr))
+			# idxOfParentGroupEnd = svgTxt.rfind('</g')
+			min, max = GetRectMinMax(ob)
+			# scale = Vector((sx, sy))
+			# min *= scale
+			# min += off
+			# max *= scale
+			# max += off
+			# svgTxt = svgTxt[: idxOfParentGroupContents] + group + svgTxt[idxOfParentGroupEnd :]
+			# pathDataIndctr = ' d="'
+			# idxOfPathDataStart = svgTxt.find(pathDataIndctr) + len(pathDataIndctr)
+			# idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
+			# pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
+			# pathData = pathData.replace('.0', '')
+			# vectors = pathData.split(' ')
+			# pathData = []
+			# minPathVector = Vector((float('inf'), float('inf')))
+			# maxPathVector = Vector((-float('inf'), -float('inf')))
+			# for vector in vectors:
+			# 	if len(vector) == 1:
+			# 		continue
+			# 	components = vector.split(',')
+			# 	x = int(round(float(components[0])))
+			# 	y = int(round(float(components[1])))
+			# 	vector = ob.matrix_world @ Vector((x, y, 0))
+			# 	x = vector.x
+			# 	y = vector.y
+			# 	minPathVector = GetMinComponents(minPathVector, vector, True)
+			# 	maxPathVector = GetMaxComponents(maxPathVector, vector, True)
+			# 	pathData.append(x)
+			# 	pathData.append(y)
+			# offset = -minPathVector + Vector((32, 32))
+			# for i, pathValue in enumerate(pathData):
+			# 	if i % 2 == 1:
+			# 		pathData[i] = ToByteString((maxPathVector[1] - pathValue + minPathVector[1]) + offset[1])
+			# 	else:
+			# 		pathData[i] = ToByteString(pathValue + offset[0])
+			strokeWidth = 0
+			if ob.useStroke:
+				strokeWidth = ob.svgStrokeWidth
+			jiggleDist = ob.jiggleDist * int(ob.useJiggle)
+			# x = min.x - strokeWidth / 2 - jiggleDist
+			# y = -max.y + strokeWidth / 2 + jiggleDist
+			size = max - min
+			size += Vector((1, 1)) * (strokeWidth + jiggleDist * 2)
+			if ob.roundPosAndSize:
+				# x = int(round(x))
+				# y = int(round(y))
+				size = Vector(Round(size))
+			# pathDataStr = ''.join(pathData)
+			scene = bpy.context.scene
+			SCALE = world.exportScale
+			offX = world.exportOffsetX
+			offY = world.exportOffsetY
+			off = Vector((offX, offY))
+			renderSettings = scene.render
+			imageSettings = renderSettings.image_settings
+			viewSettings = imageSettings.view_settings
+			prevRenderPath = renderSettings.filepath
+			prevTransparentFilm = renderSettings.film_transparent
+			prevExposure = viewSettings.exposure
+			prevGamma = viewSettings.gamma
+			prevRenderFormat = imageSettings.file_format
+			prevColorMode = imageSettings.color_mode
+			renderSettings.film_transparent = True
+			prevColorManagement = imageSettings.color_management
+			prevExposure = viewSettings.exposure
+			prevGamma = viewSettings.gamma
+			if len(bpy.data.lights) == 0:
+				imageSettings.color_management = 'OVERRIDE'
+				viewSettings.exposure = 32
+				viewSettings.gamma = 5
+			imageSettings.file_format = 'BMP'
+			imageSettings.color_mode = 'BW'
+			renderPaths = []
+			depsgraph = bpy.context.evaluated_depsgraph_get()
+			prevHideObsInRender = {}
+			for ob2 in bpy.data.objects:
+				prevHideObsInRender[ob2] = ob2.hide_render
+				ob2.hide_render = ob2 != newOb
+			# renderResScale = renderSettings.resolution_percentage / 100
+			# minHitDists = {}
+			# cam = scene.camera
+			# camData = cam.data
+			# viewFrame = camData.view_frame(scene = scene)
+			# viewFrameTopLeft = viewFrame[0]
+			# viewFrameTopRight = viewFrame[1]
+			# viewFrameBottLeft = viewFrame[2]
+			# viewFrameXRange = viewFrameTopRight - viewFrameTopLeft
+			# viewFrameYRange = viewFrameBottLeft - viewFrameTopLeft
+			# camWorldMatrix = cam.matrix_world
+			# camPos = camWorldMatrix.translation
+			# renderResolutionX = int(renderSettings.resolution_x * renderResScale)
+			# renderResolutionY = int(renderSettings.resolution_y * renderResScale)
+			# for ob in bpy.context.selected_objects:
+			# 	bvhTree = bvhtree.BVHTree(ob, depsgraph, render = True)
+			# 	for x in range(renderResolutionX):
+			# 		for y in range(renderResolutionY):
+			# 			xNormalized = x / (renderResolutionX - 1)
+			# 			yNormalized = y / (renderResolutionY - 1)
+			# 			pointOnNearClipPlane = viewFrameTopLeft + viewFrameXRange * xNormalized + viewFrameYRange * yNormalized
+			# 			worldPointOnNearClipPlane = camWorldMatrix @ pointOnNearClipPlane
+			# 			rayDir = (worldPointOnNearClipPlane - camPos).normalized()
+			# 			hitDist = bvhTree.ray_cast(worldPointOnNearClipPlane, rayDir)[3]
+			# 			if hitDist != None:
+			# 				pass
+			renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
+			bpy.ops.render.render(write_still = True)
+			cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(.01), '-i']
+			print(' '.join(cmd))
+			subprocess.check_call(cmd)
+			svgTxt = open(renderSettings.filepath.replace('.bmp', '.svg'), 'r').read()
+			# pathDataIndctr = ' d="'
+			# idxOfPathDataStart = svgTxt.find(pathDataIndctr) + len(pathDataIndctr)
+			# idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
+			# pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
+			svgTxt = svgTxt.replace('\n', ' ')
+			svgTxt = svgTxt[svgTxt.find('<svg') :]
+			fillIndctr = 'fill="'
+			idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
+			idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
+			materialColor = DEFAULT_COLOR
+			if len(ob.material_slots) > 0:
+				materialColor = ob.material_slots[0].material.diffuse_color
+			fillColor = ClampComponents(Round(Multiply(materialColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+			svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillColor[0]) + ' ' + str(fillColor[1]) + ' ' + str(fillColor[2]) + ')' + svgTxt[idxOfFillEnd :]
+			for ob in bpy.data.objects:
+				ob.hide_render = prevHideObsInRender[ob]
+			renderSettings.filepath = prevRenderPath
+			renderSettings.film_transparent = prevTransparentFilm
+			viewSettings.exposure = prevExposure
+			viewSettings.gamma = prevGamma
+			imageSettings.file_format = prevRenderFormat
+			imageSettings.color_mode = prevColorMode
+			imageSettings.color_management = prevColorManagement
+			viewSettings.exposure = prevExposure
+			viewSettings.gamma = prevGamma
+			if frame == ob.minPathFrame:
+				if HandleCopyObject(newOb, [min.x, min.y]):
+					return
+				posFrames.insert(0, [TryChangeToInt(min.x), TryChangeToInt(min.y)])
+				data.append(posFrames)
+				data.append(ob.posPingPong)
+				data.append(TryChangeToInt(size.x))
+				data.append(TryChangeToInt(size.y))
+				data.append(GetColor(materialColor))
+				data.append(TryChangeToInt(strokeWidth))
+				data.append(GetColor(ob.svgStrokeColor))
+				data.append(ob.name)
+				data.append(True)
+				data.append(round(ob.location.z))
+				data.append(False)
+				data.append(TryChangeToInt(ob.jiggleDist * int(ob.useJiggle)))
+				data.append(TryChangeToInt(ob.jiggleDur))
+				data.append(ob.jiggleFrames * int(ob.useJiggle))
+				data.append(TryChangeToInt(ob.rotAngRange[0]))
+				data.append(TryChangeToInt(ob.rotAngRange[1]))
+				data.append(TryChangeToInt(ob.rotDur * int(ob.useRotate)))
+				data.append(ob.rotPingPong)
+				data.append(TryChangeToInt(ob.scaleXRange[0]))
+				data.append(TryChangeToInt(ob.scaleXRange[1]))
+				data.append(TryChangeToInt(ob.scaleYRange[0]))
+				data.append(TryChangeToInt(ob.scaleYRange[1]))
+				data.append(TryChangeToInt(ob.scaleDur * int(ob.useScale)))
+				data.append(TryChangeToInt(ob.scaleHaltDurAtMin * int(ob.useScale)))
+				data.append(TryChangeToInt(ob.scaleHaltDurAtMax * int(ob.useScale)))
+				data.append(ob.scalePingPong)
+				data.append(TryChangeToInt(ob.origin[0]))
+				data.append(TryChangeToInt(ob.origin[1]))
+				data.append(TryChangeToInt(ob.fillHatchDensity[0] * int(ob.useFillHatch[0])))
+				data.append(TryChangeToInt(ob.fillHatchDensity[1] * int(ob.useFillHatch[1])))
+				data.append(TryChangeToInt(ob.fillHatchRandDensity[0] / 100 * int(ob.useFillHatch[0])))
+				data.append(TryChangeToInt(ob.fillHatchRandDensity[1] / 100 * int(ob.useFillHatch[1])))
+				data.append(TryChangeToInt(ob.fillHatchAng[0] * int(ob.useFillHatch[0])))
+				data.append(TryChangeToInt(ob.fillHatchAng[1] * int(ob.useFillHatch[1])))
+				data.append(TryChangeToInt(ob.fillHatchWidth[0] * int(ob.useFillHatch[0])))
+				data.append(TryChangeToInt(ob.fillHatchWidth[1] * int(ob.useFillHatch[1])))
+				data.append(TryChangeToInt(ob.strokeHatchDensity[0] * int(ob.useStrokeHatch[0])))
+				data.append(TryChangeToInt(ob.strokeHatchDensity[1] * int(ob.useStrokeHatch[1])))
+				data.append(TryChangeToInt(ob.strokeHatchRandDensity[0] / 100 * int(ob.useStrokeHatch[0])))
+				data.append(TryChangeToInt(ob.strokeHatchRandDensity[1] / 100 * int(ob.useStrokeHatch[1])))
+				data.append(TryChangeToInt(ob.strokeHatchAng[0] * int(ob.useStrokeHatch[0])))
+				data.append(TryChangeToInt(ob.strokeHatchAng[1] * int(ob.useStrokeHatch[1])))
+				data.append(TryChangeToInt(ob.strokeHatchWidth[0] * int(ob.useStrokeHatch[0])))
+				data.append(TryChangeToInt(ob.strokeHatchWidth[1] * int(ob.useStrokeHatch[1])))
+				data.append(ob.mirrorX)
+				data.append(ob.mirrorY)
+				data.append(CAP_TYPES.index(ob.capType))
+				data.append(JOIN_TYPES.index(ob.joinType))
+				dashArr = []
+				for value in ob.dashLengthsAndSpaces:
+					if value == 0:
+						break
+					dashArr.append(value)
+				data.append(dashArr)
+				data.append(TryChangeToInt(ob.cycleDur))
+				data.append(False)
+				# pathDataFrames.append(pathDataStr)
+			# else:
+			# 	pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
+			pathDataFrames.append(svgTxt)
+			# prevPathData = pathDataStr
+			bpy.data.objects.remove(newOb, do_unlink = True)
+		datas.append(data)
+		bpy.context.scene.frame_set(prevFrame)
+		for mesh in bpy.data.meshes:
+			if mesh.users == 0:
+				bpy.data.meshes.remove(mesh)
 		pathsDatas.append(chr(1).join(pathDataFrames))
 	exportedObs.append(ob)
 
@@ -631,7 +882,10 @@ for (var e of d)
 	var l = e.length;
 	if (l > 10)
 	{
-		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
+		var pathFramesStrings = p.split('\\n')[i];
+		if (e[51])
+			pathFramesStrings = pathFramesStrings.split(String.fromCharCode(1));
+		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], pathFramesStrings, e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50], e[51]);
 		i ++;
 	}
 	else if (l > 4)
@@ -826,189 +1080,195 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (positions, posPingPong, size, fillColor, lineWidth, lineColor, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
+	draw_svg (positions, posPingPong, size, fillColor, lineWidth, lineColor, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur, genPath)
 	{
 		var fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
 		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		var pos = positions[0];
 		var svg = document.createElement('svg');
-		svg.setAttribute('fill-opacity', fillColor[3] / 255);
-		svg.id = id;
-		svg.style = 'z-index:' + zIdx + ';position:absolute';
-		svg.setAttribute('transform-origin', origin[0] + '% ' + origin[1] + '%');
-		svg.setAttribute('x', pos[0]);
-		svg.setAttribute('y', pos[1]);
-		svg.setAttribute('width', size[0]);
-		svg.setAttribute('height', size[1]);
-		var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
-		svg.setAttribute('transform', trs);
-		var pathsValsAndStrings = $.get_svg_paths_and_strings(pathFramesStrings, cyclic);
-		var i = 0;
-		var anim;
-		var frames;
-		var firstFrame = '';
-		for (var pathVals of pathsValsAndStrings[0])
+		if (genPath)
 		{
-			var path = document.createElement('path');
-			path.id = id + ' ';
-			if (i > 0)
-				path.setAttribute('opacity', 0);
-			path.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
-			path.setAttribute('d', pathVals);
-			if (jiggleFrames > 0)
+			svg.setAttribute('fill-opacity', fillColor[3] / 255);
+			svg.id = id;
+			svg.style = 'z-index:' + zIdx + ';position:absolute';
+			svg.setAttribute('transform-origin', origin[0] + '% ' + origin[1] + '%');
+			svg.setAttribute('x', pos[0]);
+			svg.setAttribute('y', pos[1]);
+			svg.setAttribute('width', size[0]);
+			svg.setAttribute('height', size[1]);
+			var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
+			svg.setAttribute('transform', trs);
+			var i = 0;
+			var pathsValsAndStrings = $.get_svg_paths_and_strings(pathFramesStrings, cyclic);
+			var anim;
+			var frames;
+			var firstFrame = '';
+			for (var pathVals of pathsValsAndStrings[0])
+			{
+				var path = document.createElement('path');
+				path.id = id + ' ';
+				if (i > 0)
+					path.setAttribute('opacity', 0);
+				path.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
+				path.setAttribute('d', pathVals);
+				if (jiggleFrames > 0)
+				{
+					anim = document.createElement('animate');
+					anim.setAttribute('attributename', 'd');
+					anim.setAttribute('repeatcount', 'indefinite');
+					anim.setAttribute('dur', jiggleDur + 's');
+					frames = '';
+					for (var i2 = 0; i2 < jiggleFrames; i2 ++)
+					{
+						pathVals = pathsValsAndStrings[1][i];
+						for (var i3 = 0; i3 < pathVals.length; i3 += 2)
+						{
+							off = normalize(random_vector(1));
+							off = [off[0] * jiggleDist, off[1] * jiggleDist];
+							pathVals = pathVals.slice(0, i3) + String.fromCharCode(pathVals.charCodeAt(i3) + off[0]) + String.fromCharCode(pathVals.charCodeAt(i3 + 1) + off[1]) + pathVals.slice(i3 + 2);
+						}
+						pathVals = $.get_svg_path(pathVals, cyclic);
+						if (i2 == 0)
+						{
+							firstFrame = pathVals;
+							anim.setAttribute('from', pathVals);
+							anim.setAttribute('to', pathVals);
+						}
+						frames += pathVals + ';';
+					}
+					anim.setAttribute('values', frames + firstFrame);
+					path.appendChild(anim);
+				}
+				svg.appendChild(path);
+				i ++;
+			}
+			document.body.innerHTML += svg.outerHTML;
+			var off = lineWidth / 2 + jiggleDist;
+			var min = 32 - off;
+			svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
+			svg = document.getElementById(id);
+			path = document.getElementById(id + ' ');
+			var svgRect = svg.getBoundingClientRect();
+			var pathRect = path.getBoundingClientRect();
+			path.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
+			if (rotDur > 0)
+			{
+				anim = document.createElement('animatetransform');
+				anim.setAttribute('attributename', 'transform');
+				anim.setAttribute('type', 'rotate');
+				anim.setAttribute('repeatcount', 'indefinite');
+				anim.setAttribute('dur', rotDur + 's');
+				firstFrame = rotAngRange[0];
+				anim.setAttribute('from', firstFrame);
+				frames = firstFrame + ';' + rotAngRange[1];
+				if (rotPingPong)
+				{
+					anim.setAttribute('to', firstFrame);
+					frames += ';' + firstFrame;
+				}
+				else
+					anim.setAttribute('to', rotAngRange[1]);
+				anim.setAttribute('values', frames);
+				anim.setAttribute('additive', 'sum');
+				svg.innerHTML += anim.outerHTML;
+			}
+			var totalScaleDur = scaleDur + scaleHaltDurAtMin + scaleHaltDurAtMax;
+			if (totalScaleDur > 0)
+			{
+				anim = document.createElement('animatetransform');
+				anim.setAttribute('attributename', 'transform');
+				anim.setAttribute('type', 'scale');
+				anim.setAttribute('repeatcount', 'indefinite');
+				if (scalePingPong)
+					totalScaleDur += scaleDur;
+				anim.setAttribute('dur', totalScaleDur + 's');
+				firstFrame = scaleXRange[0] + ' ' + scaleYRange[0];
+				anim.setAttribute('from', firstFrame);
+				var thirdFrame = scaleXRange[1] + ' ' + scaleYRange[1];
+				frames = firstFrame + ';' + firstFrame + ';' + thirdFrame + ';' + thirdFrame;
+				var time = scaleHaltDurAtMin / totalScaleDur;
+				var times = '0;' + time + ';';
+				time += scaleDur / totalScaleDur;
+				times += time + ';';
+				time += scaleHaltDurAtMax / totalScaleDur;
+				times += time;
+				if (scalePingPong)
+				{
+					anim.setAttribute('to', firstFrame);
+					frames += ';' + firstFrame;
+					times += ';' + 1;
+				}
+				else
+					anim.setAttribute('to', thirdFrame);
+				anim.setAttribute('values', frames);
+				anim.setAttribute('keytimes', times);
+				anim.setAttribute('additive', 'sum');
+				svg.innerHTML += anim.outerHTML;
+			}
+			if (cycleDur != 0)
 			{
 				anim = document.createElement('animate');
-				anim.setAttribute('attributename', 'd');
+				anim.setAttribute('attributename', 'stroke-dashoffset');
 				anim.setAttribute('repeatcount', 'indefinite');
-				anim.setAttribute('dur', jiggleDur + 's');
-				frames = '';
-				for (var i2 = 0; i2 < jiggleFrames; i2 ++)
-				{
-					pathVals = pathsValsAndStrings[1][i];
-					for (var i3 = 0; i3 < pathVals.length; i3 += 2)
-					{
-						off = normalize(random_vector(1));
-						off = [off[0] * jiggleDist, off[1] * jiggleDist];
-						pathVals = pathVals.slice(0, i3) + String.fromCharCode(pathVals.charCodeAt(i3) + off[0]) + String.fromCharCode(pathVals.charCodeAt(i3 + 1) + off[1]) + pathVals.slice(i3 + 2);
-					}
-					pathVals = $.get_svg_path(pathVals, cyclic);
-					if (i2 == 0)
-					{
-						firstFrame = pathVals;
-						anim.setAttribute('from', pathVals);
-						anim.setAttribute('to', pathVals);
-					}
-					frames += pathVals + ';';
-				}
-				anim.setAttribute('values', frames + firstFrame);
+				var pathLen = path.getTotalLength();
+				anim.setAttribute('dur', cycleDur + 's');
+				anim.setAttribute('from', 0);
+				anim.setAttribute('to', pathLen);
+				anim.setAttribute('values', '0;' + pathLen);
 				path.appendChild(anim);
 			}
+			document.getElementById(id + ' ').remove();
 			svg.appendChild(path);
-			i ++;
-		}
-		document.body.innerHTML += svg.outerHTML;
-		var off = lineWidth / 2 + jiggleDist;
-		var min = 32 - off;
-		svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
-		svg = document.getElementById(id);
-		path = document.getElementById(id + ' ');
-		var svgRect = svg.getBoundingClientRect();
-		var pathRect = path.getBoundingClientRect();
-		path.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
-		if (rotDur > 0)
-		{
-			anim = document.createElement('animatetransform');
-			anim.setAttribute('attributename', 'transform');
-			anim.setAttribute('type', 'rotate');
-			anim.setAttribute('repeatcount', 'indefinite');
-			anim.setAttribute('dur', rotDur + 's');
-			firstFrame = rotAngRange[0];
-			anim.setAttribute('from', firstFrame);
-			frames = firstFrame + ';' + rotAngRange[1];
-			if (rotPingPong)
+			var capTypes = ['butt', 'round', 'square'];
+			svg.style.strokeLinecap = capTypes[capType];
+			var joinTypes = ['arcs', 'bevel', 'miter', 'miter-clip', 'round'];
+			svg.style.strokeLinejoin = joinTypes[joinType];
+			svg.style.strokeDasharray = dashArr;
+			if (magnitude(fillHatchDensity) > 0)
 			{
-				anim.setAttribute('to', firstFrame);
-				frames += ';' + firstFrame;
+				var args = [fillColor, true, svg, path]; 
+				if (fillHatchDensity[0] > 0)
+					$.hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
+				if (fillHatchDensity[1] > 0)
+					$.hatch ('|' + id, ...args, fillHatchDensity[1], fillHatchRandDensity[1], fillHatchAng[1], fillHatchWidth[1]);
+				lineColor[3] = 255;
 			}
-			else
-				anim.setAttribute('to', rotAngRange[1]);
-			anim.setAttribute('values', frames);
-			anim.setAttribute('additive', 'sum');
-			svg.innerHTML += anim.outerHTML;
-		}
-		var totalScaleDur = scaleDur + scaleHaltDurAtMin + scaleHaltDurAtMax;
-		if (totalScaleDur > 0)
-		{
-			anim = document.createElement('animatetransform');
-			anim.setAttribute('attributename', 'transform');
-			anim.setAttribute('type', 'scale');
-			anim.setAttribute('repeatcount', 'indefinite');
-			if (scalePingPong)
-				totalScaleDur += scaleDur;
-			anim.setAttribute('dur', totalScaleDur + 's');
-			firstFrame = scaleXRange[0] + ' ' + scaleYRange[0];
-			anim.setAttribute('from', firstFrame);
-			var thirdFrame = scaleXRange[1] + ' ' + scaleYRange[1];
-			frames = firstFrame + ';' + firstFrame + ';' + thirdFrame + ';' + thirdFrame;
-			var time = scaleHaltDurAtMin / totalScaleDur;
-			var times = '0;' + time + ';';
-			time += scaleDur / totalScaleDur;
-			times += time + ';';
-			time += scaleHaltDurAtMax / totalScaleDur;
-			times += time;
-			if (scalePingPong)
+			if (magnitude(lineHatchDensity) > 0)
 			{
-				anim.setAttribute('to', firstFrame);
-				frames += ';' + firstFrame;
-				times += ';' + 1;
+				var args = [lineColor, false, svg, path]; 
+				if (lineHatchDensity[0] > 0)
+					$.hatch ('@' + id, ...args, lineHatchDensity[0], lineHatchRandDensity[0], lineHatchAng[0], lineHatchWidth[0]);
+				if (lineHatchDensity[1] > 0)
+					$.hatch ('$' + id, ...args, lineHatchDensity[1], lineHatchRandDensity[1], lineHatchAng[1], lineHatchWidth[1]);
+				lineColor[3] = 255;
 			}
-			else
-				anim.setAttribute('to', thirdFrame);
-			anim.setAttribute('values', frames);
-			anim.setAttribute('keytimes', times);
-			anim.setAttribute('additive', 'sum');
-			svg.innerHTML += anim.outerHTML;
+			svg.setAttribute('stroke-opacity', lineColor[3] / 255);
+			if (mirrorX)
+			{
+				svg = $.copy_node(id, '~' + id, pos);
+				svg.setAttribute('transform', trs + 'scale(-1,1)');
+				svg.setAttribute('transform-origin', 50 - (origin[0] - 50) + '% ' + origin[1] + '%');
+			}
+			if (mirrorY)
+			{
+				svg = $.copy_node(id, '`' + id, pos);
+				svg.setAttribute('transform', trs + 'scale(1,-1)');
+				svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
+			}
+			var pathRect = svg.children[svg.children.length - 1].getBoundingClientRect();
+			for (var i = svg.children.length - 2; i >= 0; i --)
+			{
+				var child = svg.children[i];
+				var childRect = child.getBoundingClientRect();
+				var pathAnchor = [lerp(pathRect.x, pathRect.right, origin[0] / 100), lerp(pathRect.y, pathRect.bottom, origin[1] / 100)];
+				var childAnchor = [lerp(childRect.x, childRect.right, origin[0] / 100), lerp(childRect.y, childRect.bottom, origin[1] / 100)];
+				child.setAttribute('transform', 'translate(' + (pathAnchor[0] - childAnchor[0]) + ',' + (pathAnchor[1] - childAnchor[1]) + ')');
+				pathRect = childRect;
+			}
 		}
-		if (cycleDur != 0)
-		{
-			anim = document.createElement('animate');
-			anim.setAttribute('attributename', 'stroke-dashoffset');
-			anim.setAttribute('repeatcount', 'indefinite');
-			var pathLen = path.getTotalLength();
-			anim.setAttribute('dur', cycleDur + 's');
-			anim.setAttribute('from', 0);
-			anim.setAttribute('to', pathLen);
-			anim.setAttribute('values', '0;' + pathLen);
-			path.appendChild(anim);
-		}
-		document.getElementById(id + ' ').remove();
-		svg.appendChild(path);
-		var capTypes = ['butt', 'round', 'square'];
-		svg.style.strokeLinecap = capTypes[capType];
-		var joinTypes = ['arcs', 'bevel', 'miter', 'miter-clip', 'round'];
-		svg.style.strokeLinejoin = joinTypes[joinType];
-		svg.style.strokeDasharray = dashArr;
-		if (magnitude(fillHatchDensity) > 0)
-		{
-			var args = [fillColor, true, svg, path]; 
-			if (fillHatchDensity[0] > 0)
-				$.hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
-			if (fillHatchDensity[1] > 0)
-				$.hatch ('|' + id, ...args, fillHatchDensity[1], fillHatchRandDensity[1], fillHatchAng[1], fillHatchWidth[1]);
-			lineColor[3] = 255;
-		}
-		if (magnitude(lineHatchDensity) > 0)
-		{
-			var args = [lineColor, false, svg, path]; 
-			if (lineHatchDensity[0] > 0)
-				$.hatch ('@' + id, ...args, lineHatchDensity[0], lineHatchRandDensity[0], lineHatchAng[0], lineHatchWidth[0]);
-			if (lineHatchDensity[1] > 0)
-				$.hatch ('$' + id, ...args, lineHatchDensity[1], lineHatchRandDensity[1], lineHatchAng[1], lineHatchWidth[1]);
-			lineColor[3] = 255;
-		}
-		svg.setAttribute('stroke-opacity', lineColor[3] / 255);
-		if (mirrorX)
-		{
-			svg = $.copy_node(id, '~' + id, pos);
-			svg.setAttribute('transform', trs + 'scale(-1,1)');
-			svg.setAttribute('transform-origin', 50 - (origin[0] - 50) + '% ' + origin[1] + '%');
-		}
-		if (mirrorY)
-		{
-			svg = $.copy_node(id, '`' + id, pos);
-			svg.setAttribute('transform', trs + 'scale(1,-1)');
-			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
-		}
-		var pathRect = svg.children[svg.children.length - 1].getBoundingClientRect();
-		for (var i = svg.children.length - 2; i >= 0; i --)
-		{
-			var child = svg.children[i];
-			var childRect = child.getBoundingClientRect();
-			var pathAnchor = [lerp(pathRect.x, pathRect.right, origin[0] / 100), lerp(pathRect.y, pathRect.bottom, origin[1] / 100)];
-			var childAnchor = [lerp(childRect.x, childRect.right, origin[0] / 100), lerp(childRect.y, childRect.bottom, origin[1] / 100)];
-			child.setAttribute('transform', 'translate(' + (pathAnchor[0] - childAnchor[0]) + ',' + (pathAnchor[1] - childAnchor[1]) + ')');
-			pathRect = childRect;
-		}
+		else
+			for (var svgData of pathFramesStrings.split(String.fromCharCode(1)))
+				document.body.innerHTML += svgData;
 	}
 	hatch (id, color, useFIll, svg, path, density, randDensity, ang, width)
 	{
@@ -1597,7 +1857,7 @@ class ObjectPanel (bpy.types.Panel):
 		ob = context.active_object
 		if not ob:
 			return
-		if ob.type == 'CURVE':
+		if ob.type == 'CURVE' or ob.type == 'MESH':
 			self.layout.prop(ob, 'roundPosAndSize')
 			self.layout.prop(ob, 'origin')
 			self.layout.prop(ob, 'useStroke')
@@ -1878,6 +2138,11 @@ class ConvertSelectedObjectsToCurves (bpy.types.Operator):
 
 	def execute (self, context):
 		scene = bpy.context.scene
+		world = bpy.data.worlds[0]
+		SCALE = world.exportScale
+		offX = world.exportOffsetX
+		offY = world.exportOffsetY
+		off = Vector((offX, offY))
 		renderSettings = scene.render
 		imageSettings = renderSettings.image_settings
 		viewSettings = imageSettings.view_settings
@@ -1888,53 +2153,85 @@ class ConvertSelectedObjectsToCurves (bpy.types.Operator):
 		prevRenderFormat = imageSettings.file_format
 		prevColorMode = imageSettings.color_mode
 		renderSettings.film_transparent = True
-		imageSettings.color_management = 'OVERRIDE'
-		viewSettings.exposure = 32
-		viewSettings.gamma = 5
+		if len(bpy.data.lights) == 0:
+			imageSettings.color_management = 'OVERRIDE'
+			viewSettings.exposure = 32
+			viewSettings.gamma = 5
 		imageSettings.file_format = 'BMP'
 		imageSettings.color_mode = 'BW'
-		renderPaths = []
 		depsgraph = bpy.context.evaluated_depsgraph_get()
-		renderResScale = renderSettings.resolution_percentage / 100
-		minHitDists = {}
-		cam = scene.camera
-		camData = cam.data
-		viewFrame = camData.view_frame(scene = scene)
-		viewFrameTopLeft = viewFrame[0]
-		viewFrameTopRight = viewFrame[1]
-		viewFrameBottLeft = viewFrame[2]
-		viewFrameXRange = viewFrameTopRight - viewFrameTopLeft
-		viewFrameYRange = viewFrameBottLeft - viewFrameTopLeft
-		camWorldMatrix = cam.matrix_world
-		camPos = camWorldMatrix.translation
-		renderResolutionX = int(renderSettings.resolution_x * renderResScale)
-		renderResolutionY = int(renderSettings.resolution_y * renderResScale)
-		for ob in bpy.context.selected_objects:
-			bvhTree = bvhtree.BVHTree(ob, depsgraph, render = True)
-			for x in range(renderResolutionX):
-				for y in range(renderResolutionY):
-					xNormalized = x / (renderResolutionX - 1)
-					yNormalized = y / (renderResolutionY - 1)
-					pointOnNearClipPlane = viewFrameTopLeft + viewFrameXRange * xNormalized + viewFrameYRange * yNormalized
-					worldPointOnNearClipPlane = camWorldMatrix @ pointOnNearClipPlane
-					rayDir = (worldPointOnNearClipPlane - camPos).normalized()
-					hitDist = bvhTree.ray_cast(worldPointOnNearClipPlane, rayDir)[3]
-					if hitDist != None:
-						pass
+		prevHideObsInRender = {}
+		for ob2 in bpy.data.objects:
+			prevHideObsInRender[ob2] = ob.hide_render
+			ob2.hide_render = ob != ob2
+		# renderResScale = renderSettings.resolution_percentage / 100
+		# minHitDists = {}
+		# cam = scene.camera
+		# camData = cam.data
+		# viewFrame = camData.view_frame(scene = scene)
+		# viewFrameTopLeft = viewFrame[0]
+		# viewFrameTopRight = viewFrame[1]
+		# viewFrameBottLeft = viewFrame[2]
+		# viewFrameXRange = viewFrameTopRight - viewFrameTopLeft
+		# viewFrameYRange = viewFrameBottLeft - viewFrameTopLeft
+		# camWorldMatrix = cam.matrix_world
+		# camPos = camWorldMatrix.translation
+		# renderResolutionX = int(renderSettings.resolution_x * renderResScale)
+		# renderResolutionY = int(renderSettings.resolution_y * renderResScale)
+		# for ob in bpy.context.selected_objects:
+		# 	bvhTree = bvhtree.BVHTree(ob, depsgraph, render = True)
+		# 	for x in range(renderResolutionX):
+		# 		for y in range(renderResolutionY):
+		# 			xNormalized = x / (renderResolutionX - 1)
+		# 			yNormalized = y / (renderResolutionY - 1)
+		# 			pointOnNearClipPlane = viewFrameTopLeft + viewFrameXRange * xNormalized + viewFrameYRange * yNormalized
+		# 			worldPointOnNearClipPlane = camWorldMatrix @ pointOnNearClipPlane
+		# 			rayDir = (worldPointOnNearClipPlane - camPos).normalized()
+		# 			hitDist = bvhTree.ray_cast(worldPointOnNearClipPlane, rayDir)[3]
+		# 			if hitDist != None:
+		# 				pass
 		for i, ob in enumerate(bpy.context.selected_objects):
 			renderSettings.filepath = os.path.join(TMP_DIR, 'Render' + str(i) + '.bmp')
 			renderPaths.append(renderSettings.filepath)
 			bpy.ops.render.render(write_still = True)
+		for ob in bpy.context.selected_objects:
+			ob.hide_render = prevHideObsInRender[ob]
 		renderSettings.filepath = prevRenderPath
 		renderSettings.film_transparent = prevTransparentFilm
 		viewSettings.exposure = prevExposure
 		viewSettings.gamma = prevGamma
 		imageSettings.file_format = prevRenderFormat
 		imageSettings.color_mode = prevColorMode
-		cmd = [POTRACE_PATH, '-o ' + os.path.join(TMP_DIR, 'Render.svg'), '-s' ]
+		cmd = [POTRACE_PATH, '-o ' + os.path.join(TMP_DIR, 'Render.svg'), '-s']
 		cmd += renderPaths
 		print(' '.join(cmd))
 		subprocess.check_call(cmd)
+		for i, ob in enumerate(bpy.context.selected_objects):
+			svgTxt = open(renderPaths[i].replace('.bmp', '.svg'), 'r').read()
+			# print('YAY' + str(i) + svgTxt)
+			# idxOfTrsStart = svgTxt.rfind('transform="')
+			# trsEndIndctr = '"'
+			# idxOfTrsEnd = svgTxt.find(trsEndIndctr, idxOfTrsStart) + len(trsEndIndctr)
+			# trs = svgTxt[idxOfTrsStart + len(idxOfTrsStart) : idxOfTrsEnd]
+			# min, max = GetRectMinMax(ob)
+			# pathDataIndctr = ' d="'
+			# idxOfPathDataStart = svgTxt.find(pathDataIndctr) + len(pathDataIndctr)
+			# idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
+			# pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
+			# pathData = pathData[: 1] + ' ' + pathData[1 :]
+			# pathData = pathData[: -1]
+			# pathData = pathData.replace('.0', '')
+			# vectors = pathData.split(' ')
+			# pathData = []
+			# for vector in vectors:
+			# 	if len(vector) == 1:
+			# 		continue
+			# 	components = vector.split(' ')
+			# 	x = float(components[0])
+			# 	y = float(components[1])
+			# 	vector = ob.matrix_world @ Vector((x, y, 0))
+			# 	pathData.append(x)
+			# 	pathData.append(y)
 		return { 'FINISHED' }
 
 @bpy.utils.register_class
