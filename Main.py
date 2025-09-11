@@ -1,4 +1,4 @@
-import os, sys, json, string, atexit, webbrowser, subprocess
+import os, sys, json, string, atexit, webbrowser, subprocess, math
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
 EXTENSIONS_SCRIPTS_PATH = os.path.join(_thisDir, 'Extensions')
@@ -35,8 +35,9 @@ for arg in sys.argv:
 		usePhysics = False
 
 try:
-	import bpy
+	import bpy, gpu
 	from mathutils import *
+	from gpu_extras.batch import batch_for_shader
 except:
 	bpy = None
 
@@ -778,7 +779,7 @@ function ang (from, to)
 }
 function signed_ang (from, to)
 {
-    return ang(from, to) * Math.sign(from[0] * to[1] - from[1] * to[0]);
+	return ang(from, to) * Math.sign(from[0] * to[1] - from[1] * to[0]);
 }
 function rotate (v, ang)
 {
@@ -873,7 +874,7 @@ import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
 var world;
 var rigidBodiesIds = {};
 RAPIER.init().then(() => {
-    // Gravity
+	// Gravity
 	world = new RAPIER.World(gravity);
 	// Rigid Bodies
 	// Colliders
@@ -1388,6 +1389,73 @@ def BuildUnity (world):
 	# print(scene.entry.anchor)
 	PostBuild ()
 
+def DrawCollidersCallback (self, context):
+	gpu.state.blend_set('ALPHA')
+	gpu.state.line_width_set(2)
+	shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+	shader.bind()
+	for ob in self.objects:
+		if not ob.colliderExists:
+			continue
+		matrix = ob.matrix_world
+		color = (0.2, 1.0, 0.2, 0.8)
+		shader.uniform_float('color', color)
+		if ob.shapeType == 'ball':
+			radius = ob.radius
+			segments = 32
+			localVerts = []
+			for i in range(segments + 1):
+				ang = (i / segments) * 2 * math.pi
+				localVerts.append(Vector((radius * math.cos(ang), radius * math.sin(ang), 0)))
+			worldVerts = [matrix @ v for v in localVerts]
+			batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : worldVerts})
+			batch.draw(shader)
+		elif ob.shapeType == 'cuboid':
+			min, max = -Vector((ob.size[0], ob.size[1], 0)) / 2, Vector((ob.size[0], ob.size[1], 0)) / 2
+			verts = [matrix @ v for v in [min, Vector((min.x, max.y, 0)), max, Vector((max.x, min.y, 0))]]
+			idxs = (
+				(0, 1), (1, 2), (2, 3), (3, 0),
+				(4, 5), (5, 6), (6, 7), (7, 4)
+			)
+			batch = batch_for_shader(shader, 'LINES', {'pos' : verts}, indices = idxs)
+			batch.draw(shader)
+		elif ob.shapeType == 'capsule':
+			radius = ob.capsuleRadius
+			height = ob.capsuleHeight / 2
+			segments = 32
+			top = Vector((0, 0, height))
+			bottom = Vector((0, 0, -height))
+			for i in range(4):
+				ang = (i / 4) * 2 * math.pi
+				x, y = radius * math.cos(ang), radius * math.sin(ang)
+				p1 = matrix @ (top + Vector((x, y, 0)))
+				p2 = matrix @ (bottom + Vector((x, y, 0)))
+				batch = batch_for_shader(shader, 'LINES', {'pos': [p1, p2]})
+				batch.draw(shader)
+			for h in [height, -height]:
+				localVerts = []
+				for i in range(segments + 1):
+					ang = (i / segments) * 2 * math.pi
+					x, y = radius * math.cos(ang), radius * math.sin(ang)
+					localVerts.append(matrix @ (Vector((x, y, h))))
+				batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : localVerts})
+				batch.draw(shader)
+				for axis in ['x', 'y']:
+					localVerts = []
+					for i in range(int(segments / 2) + 1):
+						ang = (i / segments) * math.pi
+						if axis == 'x':
+							x_, y_, z_ = 0, radius * math.cos(ang), radius * math.sin(ang)
+						else:
+							x_, y_, z_ = radius * math.cos(ang), 0, radius * math.sin(ang)
+						if h > 0:
+							localVerts.append(matrix @ (Vector((x_, y_, z_)) + top))
+						else:
+							localVerts.append(matrix @ (Vector((x_, y_, -z_)) + bottom))
+					batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : localVerts})
+					batch.draw(shader)
+	gpu.state.blend_set('NONE')
+
 def Update ():
 	for ob in bpy.data.objects:
 		if len(ob.material_slots) == 0 or ob.material_slots[0].material == None:
@@ -1596,7 +1664,7 @@ for i in range(MAX_SHAPE_POINTS):
 	)
 	setattr(
 		bpy.types.Object,
-		'useConvexHullhPoint%s' %i,
+		'useConvexHullPoint%s' %i,
 		bpy.props.BoolProperty(name = 'Include%s' %i)
 	)
 	setattr(
@@ -1606,7 +1674,7 @@ for i in range(MAX_SHAPE_POINTS):
 	)
 	setattr(
 		bpy.types.Object,
-		'useRoundConvexHullhPoint%s' %i,
+		'useRoundConvexHullPoint%s' %i,
 		bpy.props.BoolProperty(name = 'Include%s' %i)
 	)
 	setattr(
@@ -1990,6 +2058,57 @@ class CharacterControllerPanel (bpy.types.Panel):
 			return
 		self.layout.prop(ob, 'contactOff')
 
+class DrawColliders (bpy.types.Operator):
+	bl_idname = 'view3d.draw_colliders'
+	bl_label = 'Draw Colliders'
+	handle = None
+	isRunning = False
+
+	def modal (self, context, event):
+		if not self.isRunning:
+			bpy.types.SpaceView3D.draw_handler_remove(self.handle, 'WINDOW')
+			self.handle = None
+			context.area.tag_redraw()
+			return {'CANCELLED'}
+		context.area.tag_redraw()
+		if event.type in {'RIGHTMOUSE', 'ESC'}:
+			self.isRunning = False
+			return {'PASS_THROUGH'}
+		return {'PASS_THROUGH'}
+
+	def invoke (self, context, event):
+		if context.area.type == 'VIEW_3D':
+			if DrawColliders.handle:
+				DrawColliders.isRunning = False
+				return {'FINISHED'}
+			self.objects = context.selected_objects
+			if not self.objects:
+				self.report({'INFO'}, 'No objects selected.')
+				return {'CANCELLED'}
+			args = (self, context)
+			DrawColliders.handle = bpy.types.SpaceView3D.draw_handler_add(DrawCollidersCallback, args, 'WINDOW', 'POST_VIEW')
+			DrawColliders.isRunning = True
+			self.isRunning = True
+			context.window_manager.modal_handler_add(self)
+			return {'RUNNING_MODAL'}
+		else:
+			self.report({'WARNING'}, 'View3D not found, cannot run operator')
+			return {'CANCELLED'}
+
+class DrawCollidersPanel (bpy.types.Panel):
+	bl_label = 'Collider Visualizer'
+	bl_idname = 'VIEW3D_PT_collider_visualizer'
+	bl_space_type = 'VIEW_3D'
+	bl_region_type = 'UI'
+	bl_category = 'Tool'
+
+	def draw (self, context):
+		layout = self.layout
+		if DrawColliders.isRunning:
+			layout.operator('view3d.draw_colliders', text = 'Stop Visualizing', depress = True)
+		else:
+			layout.operator('view3d.draw_colliders', text = 'Visualize Colliders', depress = False)
+
 @bpy.utils.register_class
 class ConvertSelectedObjectsToCurves (bpy.types.Operator):
 	bl_idname = 'render.convert_to_curves'
@@ -2107,6 +2226,28 @@ class ConvertToCurvesPanel (bpy.types.Panel):
 
 	def draw (self, context):
 		self.layout.operator('render.convert_to_curves', icon = 'CONSOLE')
+
+classes = (
+	DrawColliders,
+	DrawCollidersPanel
+)
+
+def register():
+	for cls in classes:
+		bpy.utils.register_class(cls)
+	DrawColliders.handle = None
+	DrawColliders.is_running = False
+
+def unregister():
+	if DrawColliders.handle:
+		bpy.types.SpaceView3D.draw_handler_remove(DrawColliders.handle, 'WINDOW')
+	DrawColliders.isRunning = False
+	DrawColliders.handle = None
+	for cls in reversed(classes):
+		bpy.utils.unregister_class(cls)
+
+if __name__ == '__main__':
+	register()
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
