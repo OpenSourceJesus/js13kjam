@@ -214,8 +214,10 @@ pathsDatas = []
 initCode = []
 updateCode = []
 userJS = ''
+svgData = ''
 
 def ExportObject (ob):
+	global svgData
 	if ob.hide_get() or ob in exportedObs:
 		return
 	world = bpy.data.worlds[0]
@@ -398,7 +400,6 @@ def ExportObject (ob):
 					dashArr.append(value)
 				data.append(dashArr)
 				data.append(TryChangeToInt(ob.cycleDur))
-				data.append(True)
 				pathDataFrames.append(pathDataStr)
 			else:
 				pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
@@ -655,12 +656,12 @@ def ExportObject (ob):
 					dashArr.append(value)
 				data.append(dashArr)
 				data.append(TryChangeToInt(ob.cycleDur))
-				data.append(False)
 				# pathDataFrames.append(pathDataStr)
 			# else:
 			# 	pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
-			pathDataFrames.append(svgTxt)
+			# pathDataFrames.append(svgTxt)
 			# prevPathData = pathDataStr
+			svgData += svgTxt
 			bpy.data.objects.remove(newOb, do_unlink = True)
 		datas.append(data)
 		bpy.context.scene.frame_set(prevFrame)
@@ -857,6 +858,7 @@ def GetBlenderData ():
 	charControllers = {}
 	initCode = []
 	updateCode = []
+	svgData = ''
 	for ob in bpy.data.objects:
 		ExportObject (ob)
 	for ob in bpy.data.objects:
@@ -893,7 +895,7 @@ for (var e of d)
 		var pathFramesStrings = p.split('\\n')[i];
 		if (e[51])
 			pathFramesStrings = pathFramesStrings.split(String.fromCharCode(1));
-		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], pathFramesStrings, e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50], e[51]);
+		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], pathFramesStrings, e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
 		i ++;
 	}
 	else if (l > 4)
@@ -1088,195 +1090,189 @@ class api
 		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (positions, posPingPong, size, fillColor, lineWidth, lineColor, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur, genPath)
+	draw_svg (positions, posPingPong, size, fillColor, lineWidth, lineColor, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
 	{
 		var fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
 		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		var pos = positions[0];
 		var svg = document.createElement('svg');
-		if (genPath)
+		svg.setAttribute('fill-opacity', fillColor[3] / 255);
+		svg.id = id;
+		svg.style = 'z-index:' + zIdx + ';position:absolute';
+		svg.setAttribute('transform-origin', origin[0] + '% ' + origin[1] + '%');
+		svg.setAttribute('x', pos[0]);
+		svg.setAttribute('y', pos[1]);
+		svg.setAttribute('width', size[0]);
+		svg.setAttribute('height', size[1]);
+		var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
+		svg.setAttribute('transform', trs);
+		var i = 0;
+		var pathsValsAndStrings = $.get_svg_paths_and_strings(pathFramesStrings, cyclic);
+		var anim;
+		var frames;
+		var firstFrame = '';
+		for (var pathVals of pathsValsAndStrings[0])
 		{
-			svg.setAttribute('fill-opacity', fillColor[3] / 255);
-			svg.id = id;
-			svg.style = 'z-index:' + zIdx + ';position:absolute';
-			svg.setAttribute('transform-origin', origin[0] + '% ' + origin[1] + '%');
-			svg.setAttribute('x', pos[0]);
-			svg.setAttribute('y', pos[1]);
-			svg.setAttribute('width', size[0]);
-			svg.setAttribute('height', size[1]);
-			var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
-			svg.setAttribute('transform', trs);
-			var i = 0;
-			var pathsValsAndStrings = $.get_svg_paths_and_strings(pathFramesStrings, cyclic);
-			var anim;
-			var frames;
-			var firstFrame = '';
-			for (var pathVals of pathsValsAndStrings[0])
-			{
-				var path = document.createElement('path');
-				path.id = id + ' ';
-				if (i > 0)
-					path.setAttribute('opacity', 0);
-				path.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
-				path.setAttribute('d', pathVals);
-				if (jiggleFrames > 0)
-				{
-					anim = document.createElement('animate');
-					anim.setAttribute('attributename', 'd');
-					anim.setAttribute('repeatcount', 'indefinite');
-					anim.setAttribute('dur', jiggleDur + 's');
-					frames = '';
-					for (var i2 = 0; i2 < jiggleFrames; i2 ++)
-					{
-						pathVals = pathsValsAndStrings[1][i];
-						for (var i3 = 0; i3 < pathVals.length; i3 += 2)
-						{
-							off = normalize(random_vector(1));
-							off = [off[0] * jiggleDist, off[1] * jiggleDist];
-							pathVals = pathVals.slice(0, i3) + String.fromCharCode(pathVals.charCodeAt(i3) + off[0]) + String.fromCharCode(pathVals.charCodeAt(i3 + 1) + off[1]) + pathVals.slice(i3 + 2);
-						}
-						pathVals = $.get_svg_path(pathVals, cyclic);
-						if (i2 == 0)
-						{
-							firstFrame = pathVals;
-							anim.setAttribute('from', pathVals);
-							anim.setAttribute('to', pathVals);
-						}
-						frames += pathVals + ';';
-					}
-					anim.setAttribute('values', frames + firstFrame);
-					path.appendChild(anim);
-				}
-				svg.appendChild(path);
-				i ++;
-			}
-			document.body.innerHTML += svg.outerHTML;
-			var off = lineWidth / 2 + jiggleDist;
-			var min = 32 - off;
-			svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
-			svg = document.getElementById(id);
-			path = document.getElementById(id + ' ');
-			var svgRect = svg.getBoundingClientRect();
-			var pathRect = path.getBoundingClientRect();
-			path.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
-			if (rotDur > 0)
-			{
-				anim = document.createElement('animatetransform');
-				anim.setAttribute('attributename', 'transform');
-				anim.setAttribute('type', 'rotate');
-				anim.setAttribute('repeatcount', 'indefinite');
-				anim.setAttribute('dur', rotDur + 's');
-				firstFrame = rotAngRange[0];
-				anim.setAttribute('from', firstFrame);
-				frames = firstFrame + ';' + rotAngRange[1];
-				if (rotPingPong)
-				{
-					anim.setAttribute('to', firstFrame);
-					frames += ';' + firstFrame;
-				}
-				else
-					anim.setAttribute('to', rotAngRange[1]);
-				anim.setAttribute('values', frames);
-				anim.setAttribute('additive', 'sum');
-				svg.innerHTML += anim.outerHTML;
-			}
-			var totalScaleDur = scaleDur + scaleHaltDurAtMin + scaleHaltDurAtMax;
-			if (totalScaleDur > 0)
-			{
-				anim = document.createElement('animatetransform');
-				anim.setAttribute('attributename', 'transform');
-				anim.setAttribute('type', 'scale');
-				anim.setAttribute('repeatcount', 'indefinite');
-				if (scalePingPong)
-					totalScaleDur += scaleDur;
-				anim.setAttribute('dur', totalScaleDur + 's');
-				firstFrame = scaleXRange[0] + ' ' + scaleYRange[0];
-				anim.setAttribute('from', firstFrame);
-				var thirdFrame = scaleXRange[1] + ' ' + scaleYRange[1];
-				frames = firstFrame + ';' + firstFrame + ';' + thirdFrame + ';' + thirdFrame;
-				var time = scaleHaltDurAtMin / totalScaleDur;
-				var times = '0;' + time + ';';
-				time += scaleDur / totalScaleDur;
-				times += time + ';';
-				time += scaleHaltDurAtMax / totalScaleDur;
-				times += time;
-				if (scalePingPong)
-				{
-					anim.setAttribute('to', firstFrame);
-					frames += ';' + firstFrame;
-					times += ';' + 1;
-				}
-				else
-					anim.setAttribute('to', thirdFrame);
-				anim.setAttribute('values', frames);
-				anim.setAttribute('keytimes', times);
-				anim.setAttribute('additive', 'sum');
-				svg.innerHTML += anim.outerHTML;
-			}
-			if (cycleDur != 0)
+			var path = document.createElement('path');
+			path.id = id + ' ';
+			if (i > 0)
+				path.setAttribute('opacity', 0);
+			path.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
+			path.setAttribute('d', pathVals);
+			if (jiggleFrames > 0)
 			{
 				anim = document.createElement('animate');
-				anim.setAttribute('attributename', 'stroke-dashoffset');
+				anim.setAttribute('attributename', 'd');
 				anim.setAttribute('repeatcount', 'indefinite');
-				var pathLen = path.getTotalLength();
-				anim.setAttribute('dur', cycleDur + 's');
-				anim.setAttribute('from', 0);
-				anim.setAttribute('to', pathLen);
-				anim.setAttribute('values', '0;' + pathLen);
+				anim.setAttribute('dur', jiggleDur + 's');
+				frames = '';
+				for (var i2 = 0; i2 < jiggleFrames; i2 ++)
+				{
+					pathVals = pathsValsAndStrings[1][i];
+					for (var i3 = 0; i3 < pathVals.length; i3 += 2)
+					{
+						off = normalize(random_vector(1));
+						off = [off[0] * jiggleDist, off[1] * jiggleDist];
+						pathVals = pathVals.slice(0, i3) + String.fromCharCode(pathVals.charCodeAt(i3) + off[0]) + String.fromCharCode(pathVals.charCodeAt(i3 + 1) + off[1]) + pathVals.slice(i3 + 2);
+					}
+					pathVals = $.get_svg_path(pathVals, cyclic);
+					if (i2 == 0)
+					{
+						firstFrame = pathVals;
+						anim.setAttribute('from', pathVals);
+						anim.setAttribute('to', pathVals);
+					}
+					frames += pathVals + ';';
+				}
+				anim.setAttribute('values', frames + firstFrame);
 				path.appendChild(anim);
 			}
-			document.getElementById(id + ' ').remove();
 			svg.appendChild(path);
-			var capTypes = ['butt', 'round', 'square'];
-			svg.style.strokeLinecap = capTypes[capType];
-			var joinTypes = ['arcs', 'bevel', 'miter', 'miter-clip', 'round'];
-			svg.style.strokeLinejoin = joinTypes[joinType];
-			svg.style.strokeDasharray = dashArr;
-			if (magnitude(fillHatchDensity) > 0)
-			{
-				var args = [fillColor, true, svg, path]; 
-				if (fillHatchDensity[0] > 0)
-					$.hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
-				if (fillHatchDensity[1] > 0)
-					$.hatch ('|' + id, ...args, fillHatchDensity[1], fillHatchRandDensity[1], fillHatchAng[1], fillHatchWidth[1]);
-				lineColor[3] = 255;
-			}
-			if (magnitude(lineHatchDensity) > 0)
-			{
-				var args = [lineColor, false, svg, path]; 
-				if (lineHatchDensity[0] > 0)
-					$.hatch ('@' + id, ...args, lineHatchDensity[0], lineHatchRandDensity[0], lineHatchAng[0], lineHatchWidth[0]);
-				if (lineHatchDensity[1] > 0)
-					$.hatch ('$' + id, ...args, lineHatchDensity[1], lineHatchRandDensity[1], lineHatchAng[1], lineHatchWidth[1]);
-				lineColor[3] = 255;
-			}
-			svg.setAttribute('stroke-opacity', lineColor[3] / 255);
-			if (mirrorX)
-			{
-				svg = $.copy_node(id, '~' + id, pos);
-				svg.setAttribute('transform', trs + 'scale(-1,1)');
-				svg.setAttribute('transform-origin', 50 - (origin[0] - 50) + '% ' + origin[1] + '%');
-			}
-			if (mirrorY)
-			{
-				svg = $.copy_node(id, '`' + id, pos);
-				svg.setAttribute('transform', trs + 'scale(1,-1)');
-				svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
-			}
-			var pathRect = svg.children[svg.children.length - 1].getBoundingClientRect();
-			for (var i = svg.children.length - 2; i >= 0; i --)
-			{
-				var child = svg.children[i];
-				var childRect = child.getBoundingClientRect();
-				var pathAnchor = [lerp(pathRect.x, pathRect.right, origin[0] / 100), lerp(pathRect.y, pathRect.bottom, origin[1] / 100)];
-				var childAnchor = [lerp(childRect.x, childRect.right, origin[0] / 100), lerp(childRect.y, childRect.bottom, origin[1] / 100)];
-				child.setAttribute('transform', 'translate(' + (pathAnchor[0] - childAnchor[0]) + ',' + (pathAnchor[1] - childAnchor[1]) + ')');
-				pathRect = childRect;
-			}
+			i ++;
 		}
-		else
-			for (var svgData of pathFramesStrings.split(String.fromCharCode(1)))
-				document.body.innerHTML += svgData;
+		document.body.innerHTML += svg.outerHTML;
+		var off = lineWidth / 2 + jiggleDist;
+		var min = 32 - off;
+		svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
+		svg = document.getElementById(id);
+		path = document.getElementById(id + ' ');
+		var svgRect = svg.getBoundingClientRect();
+		var pathRect = path.getBoundingClientRect();
+		path.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
+		if (rotDur > 0)
+		{
+			anim = document.createElement('animatetransform');
+			anim.setAttribute('attributename', 'transform');
+			anim.setAttribute('type', 'rotate');
+			anim.setAttribute('repeatcount', 'indefinite');
+			anim.setAttribute('dur', rotDur + 's');
+			firstFrame = rotAngRange[0];
+			anim.setAttribute('from', firstFrame);
+			frames = firstFrame + ';' + rotAngRange[1];
+			if (rotPingPong)
+			{
+				anim.setAttribute('to', firstFrame);
+				frames += ';' + firstFrame;
+			}
+			else
+				anim.setAttribute('to', rotAngRange[1]);
+			anim.setAttribute('values', frames);
+			anim.setAttribute('additive', 'sum');
+			svg.innerHTML += anim.outerHTML;
+		}
+		var totalScaleDur = scaleDur + scaleHaltDurAtMin + scaleHaltDurAtMax;
+		if (totalScaleDur > 0)
+		{
+			anim = document.createElement('animatetransform');
+			anim.setAttribute('attributename', 'transform');
+			anim.setAttribute('type', 'scale');
+			anim.setAttribute('repeatcount', 'indefinite');
+			if (scalePingPong)
+				totalScaleDur += scaleDur;
+			anim.setAttribute('dur', totalScaleDur + 's');
+			firstFrame = scaleXRange[0] + ' ' + scaleYRange[0];
+			anim.setAttribute('from', firstFrame);
+			var thirdFrame = scaleXRange[1] + ' ' + scaleYRange[1];
+			frames = firstFrame + ';' + firstFrame + ';' + thirdFrame + ';' + thirdFrame;
+			var time = scaleHaltDurAtMin / totalScaleDur;
+			var times = '0;' + time + ';';
+			time += scaleDur / totalScaleDur;
+			times += time + ';';
+			time += scaleHaltDurAtMax / totalScaleDur;
+			times += time;
+			if (scalePingPong)
+			{
+				anim.setAttribute('to', firstFrame);
+				frames += ';' + firstFrame;
+				times += ';' + 1;
+			}
+			else
+				anim.setAttribute('to', thirdFrame);
+			anim.setAttribute('values', frames);
+			anim.setAttribute('keytimes', times);
+			anim.setAttribute('additive', 'sum');
+			svg.innerHTML += anim.outerHTML;
+		}
+		if (cycleDur != 0)
+		{
+			anim = document.createElement('animate');
+			anim.setAttribute('attributename', 'stroke-dashoffset');
+			anim.setAttribute('repeatcount', 'indefinite');
+			var pathLen = path.getTotalLength();
+			anim.setAttribute('dur', cycleDur + 's');
+			anim.setAttribute('from', 0);
+			anim.setAttribute('to', pathLen);
+			anim.setAttribute('values', '0;' + pathLen);
+			path.appendChild(anim);
+		}
+		document.getElementById(id + ' ').remove();
+		svg.appendChild(path);
+		var capTypes = ['butt', 'round', 'square'];
+		svg.style.strokeLinecap = capTypes[capType];
+		var joinTypes = ['arcs', 'bevel', 'miter', 'miter-clip', 'round'];
+		svg.style.strokeLinejoin = joinTypes[joinType];
+		svg.style.strokeDasharray = dashArr;
+		if (magnitude(fillHatchDensity) > 0)
+		{
+			var args = [fillColor, true, svg, path]; 
+			if (fillHatchDensity[0] > 0)
+				$.hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
+			if (fillHatchDensity[1] > 0)
+				$.hatch ('|' + id, ...args, fillHatchDensity[1], fillHatchRandDensity[1], fillHatchAng[1], fillHatchWidth[1]);
+			lineColor[3] = 255;
+		}
+		if (magnitude(lineHatchDensity) > 0)
+		{
+			var args = [lineColor, false, svg, path]; 
+			if (lineHatchDensity[0] > 0)
+				$.hatch ('@' + id, ...args, lineHatchDensity[0], lineHatchRandDensity[0], lineHatchAng[0], lineHatchWidth[0]);
+			if (lineHatchDensity[1] > 0)
+				$.hatch ('$' + id, ...args, lineHatchDensity[1], lineHatchRandDensity[1], lineHatchAng[1], lineHatchWidth[1]);
+			lineColor[3] = 255;
+		}
+		svg.setAttribute('stroke-opacity', lineColor[3] / 255);
+		if (mirrorX)
+		{
+			svg = $.copy_node(id, '~' + id, pos);
+			svg.setAttribute('transform', trs + 'scale(-1,1)');
+			svg.setAttribute('transform-origin', 50 - (origin[0] - 50) + '% ' + origin[1] + '%');
+		}
+		if (mirrorY)
+		{
+			svg = $.copy_node(id, '`' + id, pos);
+			svg.setAttribute('transform', trs + 'scale(1,-1)');
+			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
+		}
+		var pathRect = svg.children[svg.children.length - 1].getBoundingClientRect();
+		for (var i = svg.children.length - 2; i >= 0; i --)
+		{
+			var child = svg.children[i];
+			var childRect = child.getBoundingClientRect();
+			var pathAnchor = [lerp(pathRect.x, pathRect.right, origin[0] / 100), lerp(pathRect.y, pathRect.bottom, origin[1] / 100)];
+			var childAnchor = [lerp(childRect.x, childRect.right, origin[0] / 100), lerp(childRect.y, childRect.bottom, origin[1] / 100)];
+			child.setAttribute('transform', 'translate(' + (pathAnchor[0] - childAnchor[0]) + ',' + (pathAnchor[1] - childAnchor[1]) + ')');
+			pathRect = childRect;
+		}
 	}
 	hatch (id, color, useFIll, svg, path, density, randDensity, ang, width)
 	{
@@ -1411,7 +1407,8 @@ def GenHtml (world, datas, background = ''):
 		'<body style="%swidth:600px;height:300px;overflow:hidden">' %background,
 		'<script type="module">',
 		js,
-		'</script>'
+		'</script>',
+		svgData
 	]
 	htmlSize = len('\n'.join(o))
 	buildInfo['js-size'] = len(js)
