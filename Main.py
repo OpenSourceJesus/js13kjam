@@ -100,6 +100,12 @@ def Multiply (v : list, multiply : list):
 		output.append(elmt * multiply[i])
 	return output
 
+def Subtract (v : list, subtract : list):
+	output = []
+	for i, elmt in enumerate(v):
+		output.append(elmt - subtract[i])
+	return output
+
 def Round (v : list):
 	output = []
 	for elmt in v:
@@ -528,6 +534,95 @@ def ExportObject (ob):
 		for mesh in bpy.data.meshes:
 			if mesh.users == 0:
 				bpy.data.meshes.remove(mesh)
+	elif ob.type == 'GREASEPENCIL':
+		min, max = GetRectMinMax(ob)
+		if HandleCopyObject(ob, [min.x, min.y]):
+			return
+		scene = bpy.context.scene
+		renderSettings = scene.render
+		imageSettings = renderSettings.image_settings
+		viewSettings = imageSettings.view_settings
+		prevRenderPath = renderSettings.filepath
+		prevTransparentFilm = renderSettings.film_transparent
+		prevExposure = viewSettings.exposure
+		prevGamma = viewSettings.gamma
+		prevRenderFormat = imageSettings.file_format
+		prevColorMode = imageSettings.color_mode
+		renderSettings.film_transparent = True
+		prevColorManagement = imageSettings.color_management
+		prevExposure = viewSettings.exposure
+		prevGamma = viewSettings.gamma
+		if len(bpy.data.lights) == 0:
+			imageSettings.color_management = 'OVERRIDE'
+			viewSettings.exposure = 32
+			viewSettings.gamma = 5
+		imageSettings.file_format = 'BMP'
+		imageSettings.color_mode = 'BW'
+		renderPaths = []
+		world = bpy.data.worlds[0]
+		worldColor = world.color
+		prevWorldColor = [worldColor[0], worldColor[1], worldColor[2]]
+		prevMatAlpha = ob.active_material.grease_pencil.color[3]
+		ob.active_material.grease_pencil.color = Subtract([1, 1, 1, 1], ob.active_material.grease_pencil.color)
+		ob.active_material.grease_pencil.color[3] = prevMatAlpha
+		world.color = [0, 0, 0]
+		prevObsColors = {}
+		for ob2 in bpy.data.objects:
+			if ob2 != ob:
+				mat = ob2.active_material
+				if mat:
+					matColor = mat.diffuse_color
+					prevObsColors[ob2] = [matColor[0], matColor[1], matColor[2], matColor[3]]
+					mat.diffuse_color = DEFAULT_COLOR
+		cam = scene.camera
+		renderSettings.filepath = os.path.join(TMP_DIR, 'Render 2.bmp')
+		bpy.ops.render.render(write_still = True)
+		cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(.01), '-i']
+		print(' '.join(cmd))
+		subprocess.check_call(cmd)
+		svgTxt = open(renderSettings.filepath.replace('.bmp', '.svg'), 'r').read()
+		svgTxt = svgTxt.replace('\n', ' ')
+		svgIndctr = '<svg '
+		svgTxt = svgTxt[svgTxt.find(svgIndctr) :]
+		svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
+		metadataEndIndctr = '/metadata>'
+		svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
+		camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
+		camToOb = ob.location - cam.location
+		projectedVec = camToOb.project(camForward)
+		svgTxt = svgTxt[: len(svgIndctr)] + 'id="' + ob.name + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"' + svgTxt[len(svgIndctr) :]
+		fillIndctr = 'fill="'
+		idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
+		idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
+		materialColor = DEFAULT_COLOR
+		if len(ob.material_slots) > 0:
+			materialColor = ob.material_slots[0].material.diffuse_color
+		prevMatAlpha = materialColor[3]
+		fillColor = Subtract([1, 1, 1, 1], materialColor)
+		fillColor[3] = prevMatAlpha
+		fillColor = ClampComponents(Round(Multiply(fillColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+		svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillColor[0]) + ' ' + str(fillColor[1]) + ' ' + str(fillColor[2]) + ')' + svgTxt[idxOfFillEnd :]
+		if ob.useStroke:
+			strokeColor = ClampComponents(Round(Multiply(ob.strokeColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+			svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeColor[0]) + ' ' + str(strokeColor[1]) + ' ' + str(strokeColor[2]) + ')" stroke-width=' + str(ob.strokeWidth))
+		ob.active_material.grease_pencil.color = Subtract([1, 1, 1, 1], ob.active_material.grease_pencil.color)
+		ob.active_material.grease_pencil.color[3] = prevMatAlpha
+		world.color = prevWorldColor
+		for ob2 in bpy.data.objects:
+			if ob2 != ob:
+				mat = ob2.active_material
+				if mat:
+					mat.diffuse_color = prevObsColors[ob2]
+		renderSettings.filepath = prevRenderPath
+		renderSettings.film_transparent = prevTransparentFilm
+		viewSettings.exposure = prevExposure
+		viewSettings.gamma = prevGamma
+		imageSettings.file_format = prevRenderFormat
+		imageSettings.color_mode = prevColorMode
+		imageSettings.color_management = prevColorManagement
+		viewSettings.exposure = prevExposure
+		viewSettings.gamma = prevGamma
+		svgData += svgTxt
 	exportedObs.append(ob)
 
 def RegisterPhysics (ob):
@@ -678,21 +773,24 @@ def RegisterPhysics (ob):
 		charControllers[ob] = charController
 
 def HandleCopyObject (ob, pos):
-	for exportedOb in exportedObs:
-		idxOfPeriod = ob.name.find('.')
-		if idxOfPeriod == -1:
-			obNameWithoutPeriod = ob.name
-		else:
-			obNameWithoutPeriod = ob.name[: idxOfPeriod]
-		idxOfPeriod = exportedOb.name.find('.')
-		if idxOfPeriod == -1:
-			exportedObNameWithoutPeriod = exportedOb.name
-		else:
-			exportedObNameWithoutPeriod = exportedOb.name[: idxOfPeriod]
-		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
-			datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1])])
-			exportedObs.append(ob)
-			return True
+	try:
+		for exportedOb in exportedObs:
+			idxOfPeriod = ob.name.find('.')
+			if idxOfPeriod == -1:
+				obNameWithoutPeriod = ob.name
+			else:
+				obNameWithoutPeriod = ob.name[: idxOfPeriod]
+			idxOfPeriod = exportedOb.name.find('.')
+			if idxOfPeriod == -1:
+				exportedObNameWithoutPeriod = exportedOb.name
+			else:
+				exportedObNameWithoutPeriod = exportedOb.name[: idxOfPeriod]
+			if obNameWithoutPeriod == exportedObNameWithoutPeriod:
+				datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1])])
+				exportedObs.append(ob)
+				return True
+	except:
+		return False
 	return False
 
 def GetPathDelta (fromPathData, toPathData):
@@ -705,7 +803,7 @@ def GetPathDelta (fromPathData, toPathData):
 	return output
 
 def GetBlenderData ():
-	global datas, colors, userJS, initCode, pathsDatas, updateCode, exportedObs
+	global datas, colors, userJS, initCode, pathsDatas, updateCode, exportedObs, svgData
 	exportedObs = []
 	userJS = ''
 	datas = []
@@ -1457,6 +1555,7 @@ def DrawCollidersCallback (self, context):
 	gpu.state.blend_set('NONE')
 
 def Update ():
+	bpy.data.worlds[0].use_nodes = False
 	for ob in bpy.data.objects:
 		if len(ob.material_slots) == 0 or ob.material_slots[0].material == None:
 			continue
@@ -1788,7 +1887,7 @@ class ObjectPanel (bpy.types.Panel):
 		ob = context.active_object
 		if not ob:
 			return
-		if ob.type == 'CURVE' or ob.type == 'MESH':
+		if ob.type == 'CURVE' or ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
 			self.layout.prop(ob, 'roundPosAndSize')
 			self.layout.prop(ob, 'origin')
 			self.layout.prop(ob, 'useStroke')
