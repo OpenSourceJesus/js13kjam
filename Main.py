@@ -533,7 +533,7 @@ def ExportObject (ob):
 				ob2.hide_render = ob2 != newOb
 			# renderResScale = renderSettings.resolution_percentage / 100
 			# minHitDists = {}
-			# cam = scene.camera
+			cam = scene.camera
 			# camData = cam.data
 			# viewFrame = camData.view_frame(scene = scene)
 			# viewFrameTopLeft = viewFrame[0]
@@ -568,7 +568,15 @@ def ExportObject (ob):
 			# idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
 			# pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
 			svgTxt = svgTxt.replace('\n', ' ')
-			svgTxt = svgTxt[svgTxt.find('<svg') :]
+			svgIndctr = '<svg '
+			svgTxt = svgTxt[svgTxt.find(svgIndctr) :]
+			svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
+			metadataEndIndctr = '/metadata>'
+			svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
+			camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
+			camToOb = newOb.location - cam.location
+			projectedVec = camToOb.project(camForward)
+			svgTxt = svgTxt[: len(svgIndctr)] + 'id="' + ob.name + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"' + svgTxt[len(svgIndctr) :]
 			fillIndctr = 'fill="'
 			idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
 			idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
