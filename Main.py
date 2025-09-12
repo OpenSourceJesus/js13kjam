@@ -78,7 +78,7 @@ def GetScripts (ob, isAPI : bool):
 		if getattr(ob, type + 'Script%sDisable' %i):
 			continue
 		txt = getattr(ob, type + 'Script%s' %i)
-		if txt != None:
+		if txt:
 			if isAPI:
 				scripts.append(txt.as_string())
 			else:
@@ -152,7 +152,7 @@ def Copy (ob, copyData = True, copyActions = True, collection = None):
 		copy.data = copy.data.copy()
 	if copyActions and copy.animation_data:
 		copy.animation_data.action = copy.animation_data.action.copy()
-	if collection == None:
+	if not collection:
 		collection = bpy.context.collection
 	collection.objects.link(copy)
 	for child in ob.children:
@@ -227,22 +227,20 @@ def ExportObject (ob):
 	global svgData
 	if ob.hide_get() or ob in exportedObs:
 		return
+	RegisterPhysics (ob)
 	world = bpy.data.worlds[0]
 	SCALE = world.exportScale
 	offX = world.exportOffsetX
 	offY = world.exportOffsetY
 	off = Vector((offX, offY))
 	sx, sy, sz = ob.scale * SCALE
-	RegisterPhysics (ob)
-	if ob.type == 'EMPTY' and len(ob.children) > 0:
-		if HandleCopyObject(ob, GetObjectPosition(ob)):
-			return
+	if len(ob.children) > 0:
 		for child in ob.children:
 			ExportObject (child)
 		firstAndLastChildIdsTxt = ''
 		firstAndLastChildIdsTxt += ob.children[0].name + ';' + ob.children[-1].name
 		datas.append([ob.name, firstAndLastChildIdsTxt])
-	elif ob.type == 'LIGHT':
+	if ob.type == 'LIGHT':
 		radius = ob.data.shadow_soft_size
 		pos = GetObjectPosition(ob)
 		if HandleCopyObject(ob, pos):
@@ -358,7 +356,7 @@ def ExportObject (ob):
 					materialColor = ob.material_slots[0].material.diffuse_color
 				data.append(GetColor(materialColor))
 				data.append(round(strokeWidth))
-				data.append(GetColor(ob.strokeColor))
+				data.append(GetColor(ob.strokeClr))
 				data.append(ob.name)
 				data.append(ob.data.splines[0].use_cyclic_u)
 				data.append(round(ob.location.z))
@@ -419,117 +417,140 @@ def ExportObject (ob):
 				bpy.data.curves.remove(curve)
 		pathsDatas.append(chr(1).join(pathDataFrames))
 	elif ob.type == 'MESH':
+		prevObName = ob.name
+		ob.name += '_'
 		prevFrame = bpy.context.scene.frame_current
-		for frame in range(ob.minPathFrame, ob.maxPathFrame + 1):
-			bpy.context.scene.frame_set(frame)
-			depsgraph = bpy.context.evaluated_depsgraph_get()
-			evaluatedOb = ob.evaluated_get(depsgraph)
-			meshData = evaluatedOb.to_mesh(preserve_all_data_layers = False, depsgraph = depsgraph)
-			newMeshData = bpy.data.meshes.new(name = ob.name + '_Temp')
-			verts = [v.co for v in meshData.vertices]
-			faces = [p.vertices for p in meshData.polygons]
-			newMeshData.from_pydata(verts, [], faces)
-			newMeshData.update()
-			newOb = bpy.data.objects.new(name = ob.name + '_Temp', object_data = newMeshData)
-			newOb.active_material = evaluatedOb.active_material
-			newOb.matrix_world = ob.matrix_world
-			bpy.context.scene.collection.objects.link(newOb)
-			evaluatedOb.to_mesh_clear()
-			min, max = GetRectMinMax(ob)
-			scene = bpy.context.scene
-			renderSettings = scene.render
-			imageSettings = renderSettings.image_settings
-			viewSettings = imageSettings.view_settings
-			prevRenderPath = renderSettings.filepath
-			prevTransparentFilm = renderSettings.film_transparent
-			prevExposure = viewSettings.exposure
-			prevGamma = viewSettings.gamma
-			prevRenderFormat = imageSettings.file_format
-			prevColorMode = imageSettings.color_mode
-			renderSettings.film_transparent = True
-			prevColorManagement = imageSettings.color_management
-			prevExposure = viewSettings.exposure
-			prevGamma = viewSettings.gamma
-			if len(bpy.data.lights) == 0:
-				imageSettings.color_management = 'OVERRIDE'
-				viewSettings.exposure = 32
-				viewSettings.gamma = 5
-			imageSettings.file_format = 'BMP'
-			imageSettings.color_mode = 'BW'
-			renderPaths = []
-			depsgraph = bpy.context.evaluated_depsgraph_get()
-			prevHideObsInRender = {}
-			for ob2 in bpy.data.objects:
-				prevHideObsInRender[ob2] = ob2.hide_render
-				ob2.hide_render = ob2 != newOb
-			# renderResScale = renderSettings.resolution_percentage / 100
-			# minHitDists = {}
-			cam = scene.camera
-			# camData = cam.data
-			# viewFrame = camData.view_frame(scene = scene)
-			# viewFrameTopLeft = viewFrame[0]
-			# viewFrameTopRight = viewFrame[1]
-			# viewFrameBottLeft = viewFrame[2]
-			# viewFrameXRange = viewFrameTopRight - viewFrameTopLeft
-			# viewFrameYRange = viewFrameBottLeft - viewFrameTopLeft
-			# camWorldMatrix = cam.matrix_world
-			# camPos = camWorldMatrix.translation
-			# renderResolutionX = int(renderSettings.resolution_x * renderResScale)
-			# renderResolutionY = int(renderSettings.resolution_y * renderResScale)
-			# for ob in bpy.context.selected_objects:
-			# 	bvhTree = bvhtree.BVHTree(ob, depsgraph, render = True)
-			# 	for x in range(renderResolutionX):
-			# 		for y in range(renderResolutionY):
-			# 			xNormalized = x / (renderResolutionX - 1)
-			# 			yNormalized = y / (renderResolutionY - 1)
-			# 			pointOnNearClipPlane = viewFrameTopLeft + viewFrameXRange * xNormalized + viewFrameYRange * yNormalized
-			# 			worldPointOnNearClipPlane = camWorldMatrix @ pointOnNearClipPlane
-			# 			rayDir = (worldPointOnNearClipPlane - camPos).normalized()
-			# 			hitDist = bvhTree.ray_cast(worldPointOnNearClipPlane, rayDir)[3]
-			# 			if hitDist != None:
-			# 				pass
-			renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
-			bpy.ops.render.render(write_still = True)
-			cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(.01), '-i']
-			print(' '.join(cmd))
-			subprocess.check_call(cmd)
-			svgTxt = open(renderSettings.filepath.replace('.bmp', '.svg'), 'r').read()
-			svgTxt = svgTxt.replace('\n', ' ')
-			svgIndctr = '<svg '
-			svgTxt = svgTxt[svgTxt.find(svgIndctr) :]
-			svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
-			metadataEndIndctr = '/metadata>'
-			svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
-			camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
-			camToOb = newOb.location - cam.location
-			projectedVec = camToOb.project(camForward)
-			svgTxt = svgTxt[: len(svgIndctr)] + 'id="' + ob.name + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"' + svgTxt[len(svgIndctr) :]
-			fillIndctr = 'fill="'
-			idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
-			idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
-			materialColor = DEFAULT_COLOR
-			if len(ob.material_slots) > 0:
-				materialColor = ob.material_slots[0].material.diffuse_color
-			fillColor = ClampComponents(Round(Multiply(materialColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-			svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillColor[0]) + ' ' + str(fillColor[1]) + ' ' + str(fillColor[2]) + ')' + svgTxt[idxOfFillEnd :]
-			if ob.useStroke:
-				strokeColor = ClampComponents(Round(Multiply(ob.strokeColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-				svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeColor[0]) + ' ' + str(strokeColor[1]) + ' ' + str(strokeColor[2]) + ')" stroke-width=' + str(ob.strokeWidth))
-			for ob in bpy.data.objects:
-				ob.hide_render = prevHideObsInRender[ob]
-			renderSettings.filepath = prevRenderPath
-			renderSettings.film_transparent = prevTransparentFilm
-			viewSettings.exposure = prevExposure
-			viewSettings.gamma = prevGamma
-			imageSettings.file_format = prevRenderFormat
-			imageSettings.color_mode = prevColorMode
-			imageSettings.color_management = prevColorManagement
-			viewSettings.exposure = prevExposure
-			viewSettings.gamma = prevGamma
-			if frame == ob.minPathFrame and HandleCopyObject(newOb, [min.x, min.y]):
-				return
-			svgData += svgTxt
-			bpy.data.objects.remove(newOb, do_unlink = True)
+		for matSlotIdx, matSlot in enumerate(ob.material_slots):
+			mat = matSlot.material
+			if mat:
+				for frame in range(ob.minPathFrame, ob.maxPathFrame + 1):
+					bpy.context.scene.frame_set(frame)
+					depsgraph = bpy.context.evaluated_depsgraph_get()
+					evaluatedOb = ob.evaluated_get(depsgraph)
+					meshData = evaluatedOb.to_mesh(preserve_all_data_layers = False, depsgraph = depsgraph)
+					newName = prevObName
+					if matSlotIdx > 0:
+						newName += '_' + mat.name
+					newMeshData = bpy.data.meshes.new(name = newName)
+					verts = [v.co for v in meshData.vertices]
+					faces = [p.vertices for p in meshData.polygons]
+					newMeshData.from_pydata(verts, [], faces)
+					newMeshData.update()
+					newOb = bpy.data.objects.new(name = newName, object_data = newMeshData)
+					newOb.active_material = mat
+					newOb.matrix_world = ob.matrix_world
+					scene = bpy.context.scene
+					scene.collection.objects.link(newOb)
+					evaluatedOb.to_mesh_clear()
+					min, max = GetRectMinMax(ob)
+					if frame == ob.minPathFrame and HandleCopyObject(newOb, [min.x, min.y]):
+						bpy.data.objects.remove(newOb, do_unlink = True)
+						break
+					renderSettings = scene.render
+					imageSettings = renderSettings.image_settings
+					viewSettings = imageSettings.view_settings
+					prevRenderPath = renderSettings.filepath
+					prevTransparentFilm = renderSettings.film_transparent
+					prevExposure = viewSettings.exposure
+					prevGamma = viewSettings.gamma
+					prevRenderFormat = imageSettings.file_format
+					prevColorMode = imageSettings.color_mode
+					renderSettings.film_transparent = True
+					prevColorManagement = imageSettings.color_management
+					prevExposure = viewSettings.exposure
+					prevGamma = viewSettings.gamma
+					if len(bpy.data.lights) == 0:
+						imageSettings.color_management = 'OVERRIDE'
+						viewSettings.exposure = 32
+						viewSettings.gamma = 5
+					imageSettings.file_format = 'BMP'
+					imageSettings.color_mode = 'BW'
+					renderPaths = []
+					prevHideObsInRender = {}
+					for ob2 in bpy.data.objects:
+						prevHideObsInRender[ob2] = ob2.hide_render
+						ob2.hide_render = ob2 != newOb
+					prevMatColors = {}
+					for matSlot in ob.material_slots:
+						mat2 = matSlot.material
+						if mat2 and mat != mat2:
+							prevMatColors[mat2] = mat2.diffuse_color
+							mat2.diffuse_color = DEFAULT_COLOR
+					# renderResScale = renderSettings.resolution_percentage / 100
+					# minHitDists = {}
+					cam = scene.camera
+					# camData = cam.data
+					# viewFrame = camData.view_frame(scene = scene)
+					# viewFrameTopLeft = viewFrame[0]
+					# viewFrameTopRight = viewFrame[1]
+					# viewFrameBottLeft = viewFrame[2]
+					# viewFrameXRange = viewFrameTopRight - viewFrameTopLeft
+					# viewFrameYRange = viewFrameBottLeft - viewFrameTopLeft
+					# camWorldMatrix = cam.matrix_world
+					# camPos = camWorldMatrix.translation
+					# renderResolutionX = int(renderSettings.resolution_x * renderResScale)
+					# renderResolutionY = int(renderSettings.resolution_y * renderResScale)
+					# for ob in bpy.context.selected_objects:
+					# 	bvhTree = bvhtree.BVHTree(ob, depsgraph, render = True)
+					# 	for x in range(renderResolutionX):
+					# 		for y in range(renderResolutionY):
+					# 			xNormalized = x / (renderResolutionX - 1)
+					# 			yNormalized = y / (renderResolutionY - 1)
+					# 			pointOnNearClipPlane = viewFrameTopLeft + viewFrameXRange * xNormalized + viewFrameYRange * yNormalized
+					# 			worldPointOnNearClipPlane = camWorldMatrix @ pointOnNearClipPlane
+					# 			rayDir = (worldPointOnNearClipPlane - camPos).normalized()
+					# 			hitDist = bvhTree.ray_cast(worldPointOnNearClipPlane, rayDir)[3]
+					# 			if hitDist:
+					# 				pass
+					renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
+					bpy.ops.render.render(write_still = True)
+					cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(.01), '-i']
+					print(' '.join(cmd))
+					subprocess.check_call(cmd)
+					svgTxt = open(renderSettings.filepath.replace('.bmp', '.svg'), 'r').read()
+					svgTxt = svgTxt.replace('\n', ' ')
+					svgIndctr = '<svg '
+					svgTxt = svgTxt[svgTxt.find(svgIndctr) :]
+					svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
+					metadataEndIndctr = '/metadata>'
+					svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
+					svgTxt = svgTxt.replace('.000000', '')
+					camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
+					camToOb = newOb.location - cam.location
+					projectedVec = camToOb.project(camForward)
+					svgTxt = svgTxt[: len(svgIndctr)] + 'id="' + newName + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"' + svgTxt[len(svgIndctr) :]
+					fillIndctr = 'fill="'
+					idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
+					idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
+					materialColor = DEFAULT_COLOR
+					if len(ob.material_slots) > 0:
+						materialColor = ob.material_slots[0].material.diffuse_color
+					fillClr = ClampComponents(Round(Multiply(materialColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+					if ob.lightFill:
+						svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.lightFill.name + ')' + svgTxt[idxOfFillEnd :]
+					else:
+						svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillClr[0]) + ' ' + str(fillClr[1]) + ' ' + str(fillClr[2]) + ')' + svgTxt[idxOfFillEnd :]
+					if ob.useStroke:
+						strokeClr = ClampComponents(Round(Multiply(ob.strokeClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+						svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeClr[0]) + ' ' + str(strokeClr[1]) + ' ' + str(strokeClr[2]) + ')" stroke-width=' + str(ob.strokeWidth))
+					for ob in bpy.data.objects:
+						ob.hide_render = prevHideObsInRender[ob]
+					for matSlot in ob.material_slots:
+						mat2 = matSlot.material
+						if mat2 in prevMatColors:
+							mat2.diffuse_color = prevMatColors[mat2]
+					renderSettings.filepath = prevRenderPath
+					renderSettings.film_transparent = prevTransparentFilm
+					viewSettings.exposure = prevExposure
+					viewSettings.gamma = prevGamma
+					imageSettings.file_format = prevRenderFormat
+					imageSettings.color_mode = prevColorMode
+					imageSettings.color_management = prevColorManagement
+					viewSettings.exposure = prevExposure
+					viewSettings.gamma = prevGamma
+					svgData += svgTxt
+					bpy.data.objects.remove(newOb, do_unlink = True)
+		bpy.data.objects[prevObName + '_'].name = prevObName
 		bpy.context.scene.frame_set(prevFrame)
 		for mesh in bpy.data.meshes:
 			if mesh.users == 0:
@@ -561,7 +582,7 @@ def ExportObject (ob):
 		renderPaths = []
 		world = bpy.data.worlds[0]
 		worldColor = world.color
-		prevWorldColor = [worldColor[0], worldColor[1], worldColor[2]]
+		prevWorldColor = list(worldColor)
 		prevMatAlpha = ob.active_material.grease_pencil.color[3]
 		ob.active_material.grease_pencil.color = Subtract([1, 1, 1, 1], ob.active_material.grease_pencil.color)
 		ob.active_material.grease_pencil.color[3] = prevMatAlpha
@@ -571,11 +592,11 @@ def ExportObject (ob):
 			if ob2 != ob:
 				mat = ob2.active_material
 				if mat:
-					matColor = mat.diffuse_color
-					prevObsColors[ob2] = [matColor[0], matColor[1], matColor[2], matColor[3]]
+					matClr = mat.diffuse_color
+					prevObsColors[ob2] = list(matClr)
 					mat.diffuse_color = DEFAULT_COLOR
 		cam = scene.camera
-		renderSettings.filepath = os.path.join(TMP_DIR, 'Render 2.bmp')
+		renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
 		bpy.ops.render.render(write_still = True)
 		cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(.01), '-i']
 		print(' '.join(cmd))
@@ -598,21 +619,19 @@ def ExportObject (ob):
 		if len(ob.material_slots) > 0:
 			materialColor = ob.material_slots[0].material.diffuse_color
 		prevMatAlpha = materialColor[3]
-		fillColor = Subtract([1, 1, 1, 1], materialColor)
-		fillColor[3] = prevMatAlpha
-		fillColor = ClampComponents(Round(Multiply(fillColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-		svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillColor[0]) + ' ' + str(fillColor[1]) + ' ' + str(fillColor[2]) + ')' + svgTxt[idxOfFillEnd :]
+		fillClr = Subtract([1, 1, 1, 1], materialColor)
+		fillClr[3] = prevMatAlpha
+		fillClr = ClampComponents(Round(Multiply(fillClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+		svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillClr[0]) + ' ' + str(fillClr[1]) + ' ' + str(fillClr[2]) + ')' + svgTxt[idxOfFillEnd :]
 		if ob.useStroke:
-			strokeColor = ClampComponents(Round(Multiply(ob.strokeColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-			svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeColor[0]) + ' ' + str(strokeColor[1]) + ' ' + str(strokeColor[2]) + ')" stroke-width=' + str(ob.strokeWidth))
+			strokeClr = ClampComponents(Round(Multiply(ob.strokeClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+			svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeClr[0]) + ' ' + str(strokeClr[1]) + ' ' + str(strokeClr[2]) + ')" stroke-width=' + str(ob.strokeWidth))
 		ob.active_material.grease_pencil.color = Subtract([1, 1, 1, 1], ob.active_material.grease_pencil.color)
 		ob.active_material.grease_pencil.color[3] = prevMatAlpha
 		world.color = prevWorldColor
 		for ob2 in bpy.data.objects:
-			if ob2 != ob:
-				mat = ob2.active_material
-				if mat:
-					mat.diffuse_color = prevObsColors[ob2]
+			if ob2 in prevObsColors:
+				ob2.active_material.diffuse_color = prevObsColors[ob2]
 		renderSettings.filepath = prevRenderPath
 		renderSettings.film_transparent = prevTransparentFilm
 		viewSettings.exposure = prevExposure
@@ -773,24 +792,21 @@ def RegisterPhysics (ob):
 		charControllers[ob] = charController
 
 def HandleCopyObject (ob, pos):
-	try:
-		for exportedOb in exportedObs:
-			idxOfPeriod = ob.name.find('.')
-			if idxOfPeriod == -1:
-				obNameWithoutPeriod = ob.name
-			else:
-				obNameWithoutPeriod = ob.name[: idxOfPeriod]
-			idxOfPeriod = exportedOb.name.find('.')
-			if idxOfPeriod == -1:
-				exportedObNameWithoutPeriod = exportedOb.name
-			else:
-				exportedObNameWithoutPeriod = exportedOb.name[: idxOfPeriod]
-			if obNameWithoutPeriod == exportedObNameWithoutPeriod:
-				datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1])])
-				exportedObs.append(ob)
-				return True
-	except:
-		return False
+	for exportedOb in exportedObs:
+		idxOfPeriod = ob.name.find('.')
+		if idxOfPeriod == -1:
+			obNameWithoutPeriod = ob.name
+		else:
+			obNameWithoutPeriod = ob.name[: idxOfPeriod]
+		idxOfPeriod = exportedOb.name.find('.')
+		if idxOfPeriod == -1:
+			exportedObNameWithoutPeriod = exportedOb.name
+		else:
+			exportedObNameWithoutPeriod = exportedOb.name[: idxOfPeriod]
+		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
+			datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1])])
+			exportedObs.append(ob)
+			return True
 	return False
 
 def GetPathDelta (fromPathData, toPathData):
@@ -863,7 +879,7 @@ for (var e of d)
 		g.push(e);
 }
 for (var e of g)
-	$.add_group (e[0], e[1]);
+	$.add_children (e[0], e[1]);
 $.main ()
 '''
 JS = '''
@@ -1027,13 +1043,23 @@ class api
 		document.body.appendChild(copy);
 		return copy;
 	}
-	add_group (id, firstAndLastChildIds)
+	add_children (id, firstAndLastChildIds)
 	{
 		var children = firstAndLastChildIds.split(';');
-		var html = document.body.innerHTML;
-		var idxOfFirstChild = html.lastIndexOf('<svg', html.indexOf('id="' + children[0]));
-		var idxOfLastChild = html.indexOf('</svg>', html.indexOf('id="' + children[1])) + 6;
-		document.body.innerHTML = html.slice(0, idxOfFirstChild) + '<g id="' + id + '">' + html.slice(idxOfFirstChild, idxOfLastChild) + '</g>' + html.slice(idxOfLastChild);
+		var foundFirstChild = false;
+		var parent = document.getElementById(id);
+		for (var elt of [...document.body.children])
+		{
+			if (elt.id == children[0])
+				foundFirstChild = true;
+			if (foundFirstChild)
+			{
+				elt.style.position = 'fixed';
+				parent.appendChild(elt);
+			}
+			if (elt.id == children[1])
+				break;
+		}
 	}
 	add_radial_gradient (id, pos, zIdx, diameter, color, color2, color3, colorPositions, subtractive)
 	{
@@ -1044,16 +1070,16 @@ class api
 		var mixMode = 'lighter';
 		if (subtractive)
 			mixMode = 'darker';
-		group.style = 'position:absolute;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
+		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (positions, posPingPong, size, fillColor, lineWidth, lineColor, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
+	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineColor, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
 	{
-		var fillColorTxt = 'rgb(' + fillColor[0] + ' ' + fillColor[1] + ' ' + fillColor[2] + ')';
+		var fillClrTxt = 'rgb(' + fillClr[0] + ' ' + fillClr[1] + ' ' + fillClr[2] + ')';
 		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
 		var pos = positions[0];
 		var svg = document.createElement('svg');
-		svg.setAttribute('fill-opacity', fillColor[3] / 255);
+		svg.setAttribute('fill-opacity', fillClr[3] / 255);
 		svg.id = id;
 		svg.style = 'z-index:' + zIdx + ';position:absolute';
 		svg.setAttribute('transform-origin', origin[0] + '% ' + origin[1] + '%');
@@ -1074,7 +1100,7 @@ class api
 			path.id = id + ' ';
 			if (i > 0)
 				path.setAttribute('opacity', 0);
-			path.style = 'fill:' + fillColorTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
+			path.style = 'fill:' + fillClrTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
 			path.setAttribute('d', pathVals);
 			if (jiggleFrames > 0)
 			{
@@ -1191,7 +1217,7 @@ class api
 		svg.style.strokeDasharray = dashArr;
 		if (magnitude(fillHatchDensity) > 0)
 		{
-			var args = [fillColor, true, svg, path]; 
+			var args = [fillClr, true, svg, path]; 
 			if (fillHatchDensity[0] > 0)
 				$.hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
 			if (fillHatchDensity[1] > 0)
@@ -1331,7 +1357,7 @@ def GenJsAPI (world):
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
 	js = js.replace('// Update', '\n'.join(updateCode))
-	datas = json.dumps(datas).replace(' ', '')
+	datas = json.dumps(datas).replace(', ', ',')
 	colors = json.dumps(colors).replace(' ', '')
 	if world.minifyMethod == 'terser':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
@@ -1362,10 +1388,10 @@ def GenHtml (world, datas, background = ''):
 		'<!DOCTYPE html>',
 		'<html>',
 		'<body style="%swidth:600px;height:300px;overflow:hidden">' %background,
+		svgData,
 		'<script type="module">',
 		js,
-		'</script>',
-		svgData
+		'</script>'
 	]
 	htmlSize = len('\n'.join(o))
 	buildInfo['js-size'] = len(js)
@@ -1555,19 +1581,6 @@ def DrawCollidersCallback (self, context):
 	gpu.state.blend_set('NONE')
 
 def Update ():
-	bpy.data.worlds[0].use_nodes = False
-	for ob in bpy.data.objects:
-		if len(ob.material_slots) == 0 or ob.material_slots[0].material == None:
-			continue
-		mat = ob.material_slots[0].material
-		mat.use_nodes = False
-		idxOfPeriod = mat.name.find('.')
-		if idxOfPeriod != -1:
-			origName = mat.name[: idxOfPeriod]
-			for ob2 in bpy.data.objects:
-				if len(ob2.material_slots) > 0 and ob2.material_slots[0].material.name == origName:
-					ob.material_slots[0].material = ob2.material_slots[0].material
-			bpy.data.materials.remove(mat)
 	for txt in bpy.data.texts:
 		idxOfPeriod = txt.name.find('.')
 		if idxOfPeriod != -1:
@@ -1611,7 +1624,7 @@ bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 
 bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke')
 bpy.types.Object.strokeWidth = bpy.props.FloatProperty(name = 'Stroke width')
-bpy.types.Object.strokeColor = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
+bpy.types.Object.strokeClr = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
 bpy.types.Object.capType = bpy.props.EnumProperty(name = 'Stroke cap type', items = CAP_TYPE_ITEMS)
 bpy.types.Object.joinType = bpy.props.EnumProperty(name = 'Stroke corner type', items = JOIN_TYPE_ITEMS)
 bpy.types.Object.dashLengthsAndSpaces = bpy.props.FloatVectorProperty(name = 'Stroke dash lengths and spaces', size = 5, min = 0)
@@ -1697,6 +1710,7 @@ bpy.types.Object.jointAxis = bpy.props.FloatVectorProperty(name = 'Axis', size =
 bpy.types.Object.jointLen = bpy.props.FloatProperty(name = 'Length', min = 0)
 bpy.types.Object.charControllerExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.contactOff = bpy.props.FloatProperty(name = 'Contact offset', min = 0)
+bpy.types.Object.lightFill = bpy.props.PointerProperty(name = 'Fill with light', type = bpy.types.Light)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -1893,10 +1907,11 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'useStroke')
 			if ob.useStroke:
 				self.layout.prop(ob, 'strokeWidth')
-				self.layout.prop(ob, 'strokeColor')
+				self.layout.prop(ob, 'strokeClr')
 				self.layout.prop(ob, 'capType')
 				self.layout.prop(ob, 'joinType')
 				self.layout.prop(ob, 'dashLengthsAndSpaces')
+			self.layout.prop(ob, 'lightFill')
 			self.layout.prop(ob, 'useFillHatch')
 			if ob.useFillHatch:
 				self.layout.prop(ob, 'fillHatchDensity')
@@ -1945,7 +1960,7 @@ class ObjectPanel (bpy.types.Panel):
 		self.layout.label(text = 'Scripts')
 		foundUnassignedScript = False
 		for i in range(MAX_SCRIPTS_PER_OBJECT):
-			hasProp = getattr(ob, 'apiScript%s' %i) != None
+			hasProp = getattr(ob, 'apiScript%s' %i)
 			if hasProp or not foundUnassignedScript:
 				row = self.layout.row()
 				row.prop(ob, 'apiScript%s' %i)
@@ -1954,7 +1969,7 @@ class ObjectPanel (bpy.types.Panel):
 				foundUnassignedScript = not hasProp
 		foundUnassignedScript = False
 		for i in range(MAX_SCRIPTS_PER_OBJECT):
-			hasProp = getattr(ob, 'runtimeScript%s' %i) != None
+			hasProp = getattr(ob, 'runtimeScript%s' %i)
 			if hasProp or not foundUnassignedScript:
 				row = self.layout.row()
 				row.prop(ob, 'runtimeScript%s' %i)
@@ -2269,7 +2284,7 @@ class ConvertSelectedObjectsToCurves (bpy.types.Operator):
 		# 			worldPointOnNearClipPlane = camWorldMatrix @ pointOnNearClipPlane
 		# 			rayDir = (worldPointOnNearClipPlane - camPos).normalized()
 		# 			hitDist = bvhTree.ray_cast(worldPointOnNearClipPlane, rayDir)[3]
-		# 			if hitDist != None:
+		# 			if hitDist:
 		# 				pass
 		for i, ob in enumerate(bpy.context.selected_objects):
 			renderSettings.filepath = os.path.join(TMP_DIR, 'Render' + str(i) + '.bmp')
