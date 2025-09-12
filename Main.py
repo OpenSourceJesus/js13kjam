@@ -221,10 +221,10 @@ pathsDatas = []
 initCode = []
 updateCode = []
 userJS = ''
-svgData = ''
+svgsDatas = {}
 
 def ExportObject (ob):
-	global svgData
+	global svgsDatas
 	if ob.hide_get() or ob in exportedObs:
 		return
 	RegisterPhysics (ob)
@@ -234,12 +234,6 @@ def ExportObject (ob):
 	offY = world.exportOffsetY
 	off = Vector((offX, offY))
 	sx, sy, sz = ob.scale * SCALE
-	if len(ob.children) > 0:
-		for child in ob.children:
-			ExportObject (child)
-		firstAndLastChildIdsTxt = ''
-		firstAndLastChildIdsTxt += ob.children[0].name + ';' + ob.children[-1].name
-		datas.append([ob.name, firstAndLastChildIdsTxt])
 	if ob.type == 'LIGHT':
 		radius = ob.data.shadow_soft_size
 		pos = GetObjectPosition(ob)
@@ -548,7 +542,7 @@ def ExportObject (ob):
 					imageSettings.color_management = prevColorManagement
 					viewSettings.exposure = prevExposure
 					viewSettings.gamma = prevGamma
-					svgData += svgTxt
+					svgsDatas[newName] = svgTxt
 					bpy.data.objects.remove(newOb, do_unlink = True)
 		bpy.data.objects[prevObName + '_'].name = prevObName
 		bpy.context.scene.frame_set(prevFrame)
@@ -641,7 +635,14 @@ def ExportObject (ob):
 		imageSettings.color_management = prevColorManagement
 		viewSettings.exposure = prevExposure
 		viewSettings.gamma = prevGamma
-		svgData += svgTxt
+		svgsDatas[ob.name] = svgTxt
+	elif ob.type == 'EMPTY':
+		if len(ob.children) > 0:
+			childrenNames = []
+			for child in ob.children:
+				ExportObject (child)
+				childrenNames.append(child.name)
+			datas.append([ob.name, childrenNames])
 	exportedObs.append(ob)
 
 def RegisterPhysics (ob):
@@ -819,7 +820,7 @@ def GetPathDelta (fromPathData, toPathData):
 	return output
 
 def GetBlenderData ():
-	global datas, colors, userJS, initCode, pathsDatas, updateCode, exportedObs, svgData
+	global datas, colors, userJS, initCode, pathsDatas, updateCode, exportedObs, svgsDatas
 	exportedObs = []
 	userJS = ''
 	datas = []
@@ -831,7 +832,7 @@ def GetBlenderData ():
 	charControllers = {}
 	initCode = []
 	updateCode = []
-	svgData = ''
+	svgsDatas = {}
 	for ob in bpy.data.objects:
 		ExportObject (ob)
 	for ob in bpy.data.objects:
@@ -879,7 +880,12 @@ for (var e of d)
 		g.push(e);
 }
 for (var e of g)
+{
+	var newGroup = document.createElement('g');
+	newGroup.id = e[0];
+	document.body.appendChild(newGroup);
 	$.add_children (e[0], e[1]);
+}
 $.main ()
 '''
 JS = '''
@@ -1043,22 +1049,14 @@ class api
 		document.body.appendChild(copy);
 		return copy;
 	}
-	add_children (id, firstAndLastChildIds)
+	add_children (id, childIds)
 	{
-		var children = firstAndLastChildIds.split(';');
 		var foundFirstChild = false;
-		var parent = document.getElementById(id);
-		for (var elt of [...document.body.children])
+		for (var childId of childIds)
 		{
-			if (elt.id == children[0])
-				foundFirstChild = true;
-			if (foundFirstChild)
-			{
-				elt.style.position = 'fixed';
-				parent.appendChild(elt);
-			}
-			if (elt.id == children[1])
-				break;
+			var elt = document.getElementById(childId);
+			elt.style.position = 'fixed';
+			document.getElementById(id).appendChild(elt);
 		}
 	}
 	add_radial_gradient (id, pos, zIdx, diameter, color, color2, color3, colorPositions, subtractive)
@@ -1388,7 +1386,7 @@ def GenHtml (world, datas, background = ''):
 		'<!DOCTYPE html>',
 		'<html>',
 		'<body style="%swidth:600px;height:300px;overflow:hidden">' %background,
-		svgData,
+		''.join(svgsDatas.values()),
 		'<script type="module">',
 		js,
 		'</script>'
