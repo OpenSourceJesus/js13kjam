@@ -1553,8 +1553,7 @@ def DrawCollidersCallback (self, context):
 		rot = matrix.to_euler()
 		rot.x = 0
 		rot.y = 0
-		scale = matrix.to_scale()
-		matrix = Matrix.LocRotScale(pos, rot, scale)
+		matrix = Matrix.LocRotScale(pos, rot, Vector((1, 1, 1)))
 		color = (0.2, 1.0, 0.2, 0.8)
 		shader.uniform_float('color', color)
 		if ob.shapeType == 'ball':
@@ -1574,16 +1573,46 @@ def DrawCollidersCallback (self, context):
 			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
 			batch.draw(shader)
 		elif ob.shapeType == 'cuboid':
-			min, max = -Vector((ob.size[0], ob.size[1], 0)) / 2, Vector((ob.size[0], ob.size[1], 0)) / 2
-			verts = [matrix @ v for v in [min, Vector((min.x, max.y, 0)), max, Vector((max.x, min.y, 0)), min]]
+			_min, _max = -Vector((ob.size[0], ob.size[1], 0)) / 2, Vector((ob.size[0], ob.size[1], 0)) / 2
+			verts = [matrix @ v for v in [_min, Vector((_min.x, _max.y, 0)), _max, Vector((_max.x, _min.y, 0)), _min]]
 			batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : verts})
 			batch.draw(shader)
 		elif ob.shapeType == 'roundCuboid':
-			min, max = -Vector((ob.size[0], ob.size[1], 0)) / 2, Vector((ob.size[0], ob.size[1], 0)) / 2
-			verts = [matrix @ v for v in [min, Vector((min.x, max.y, 0)), max, Vector((max.x, min.y, 0)), min]]
-			batch = batch_for_shader(shader, 'LINES', {'pos' : verts})
+			halfWidth = ob.size[0] / 2
+			halfHeight = ob.size[1] / 2
+			radius = ob.cuboidBorderRadius
+			segments = 8
+			verts = []
+			center = (halfWidth, halfHeight, 0)
+			for i in range(segments + 1):
+				t = i / segments
+				angle = (math.pi / 2) * (1 - t)
+				x = center[0] + radius * math.cos(angle)
+				y = center[1] + radius * math.sin(angle)
+				verts.append(matrix @ Vector((x, y, 0)))
+			center = (halfWidth, -halfHeight, 0)
+			for i in range(segments + 1):
+				t = i / segments
+				angle = (2 * math.pi) - (math.pi / 2) * t
+				x = center[0] + radius * math.cos(angle)
+				y = center[1] + radius * math.sin(angle)
+				verts.append(matrix @ Vector((x, y, 0)))
+			center = (-halfWidth, -halfHeight, 0)
+			for i in range(segments + 1):
+				t = i / segments
+				angle = (3 * math.pi / 2) - (math.pi / 2) * t
+				x = center[0] + radius * math.cos(angle)
+				y = center[1] + radius * math.sin(angle)
+				verts.append(matrix @ Vector((x, y, 0)))
+			center = (-halfWidth, halfHeight, 0)
+			for i in range(segments + 1):
+				t = i / segments
+				angle = math.pi - (math.pi / 2) * t
+				x = center[0] + radius * math.cos(angle)
+				y = center[1] + radius * math.sin(angle)
+				verts.append(matrix @ Vector((x, y, 0)))
+			batch = batch_for_shader(shader, 'LINE_LOOP', {"pos" : verts})
 			batch.draw(shader)
-			segments = 32
 		elif ob.shapeType == 'capsule':
 			radius = ob.capsuleRadius
 			height = ob.capsuleHeight / 2
@@ -1595,10 +1624,10 @@ def DrawCollidersCallback (self, context):
 			pnt2 = matrix @ (Vector((radius, height / 2, 0)))
 			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
 			batch.draw(shader)
-			segments = 32
+			segments = 16
 			for h in [height, -height]:
 				verts = []
-				for i in range(int(segments / 2) + 1):
+				for i in range(segments + 1):
 					ang = i / segments * math.pi * 2
 					x, y = radius * math.cos(ang), radius * math.sin(ang)
 					if h < 0:
