@@ -234,6 +234,7 @@ def ExportObject (ob):
 	offY = world.exportOffsetY
 	off = Vector((offX, offY))
 	sx, sy, sz = ob.scale * SCALE
+	prevFrame = bpy.context.scene.frame_current
 	if ob.type == 'LIGHT':
 		radius = ob.data.shadow_soft_size
 		pos = GetObjectPosition(ob)
@@ -254,7 +255,6 @@ def ExportObject (ob):
 		data.append(ob.subtractive)
 		datas.append(data)
 	elif ob.type == 'CURVE':
-		prevFrame = bpy.context.scene.frame_current
 		prevData = ob.data
 		pathDataFrames = []
 		prevPathData = ''
@@ -413,33 +413,41 @@ def ExportObject (ob):
 	elif ob.type == 'MESH':
 		prevObName = ob.name
 		ob.name += '_'
-		prevFrame = bpy.context.scene.frame_current
+		geosDatas = []
+		for frame in range(ob.minPathFrame, ob.maxPathFrame + 1):
+			bpy.context.scene.frame_set(frame)
+			depsgraph = bpy.context.evaluated_depsgraph_get()
+			evaluatedOb = ob.evaluated_get(depsgraph)
+			meshData = evaluatedOb.to_mesh(preserve_all_data_layers = False, depsgraph = depsgraph)
+			verts = [v.co.copy() for v in meshData.vertices]
+			faces = [p.vertices[:] for p in meshData.polygons]
+			worldMatrix = evaluatedOb.matrix_world.copy()
+			geosDatas.append({'verts' : verts, 'faces' : faces, 'matrix' : worldMatrix})
+		bpy.context.scene.frame_set(prevFrame)
+		tempCollection = bpy.data.collections.new('TempExportCollection')
+		bpy.context.scene.collection.children.link(tempCollection)
+		newMeshData = bpy.data.meshes.new(name='TempExportMesh')
+		newOb = bpy.data.objects.new(name = 'TempExportObject', object_data = newMeshData)
+		tempCollection.objects.link(newOb)
 		for matSlotIdx, matSlot in enumerate(ob.material_slots):
 			mat = matSlot.material
 			if mat:
-				for frame in range(ob.minPathFrame, ob.maxPathFrame + 1):
-					bpy.context.scene.frame_set(frame)
-					depsgraph = bpy.context.evaluated_depsgraph_get()
-					evaluatedOb = ob.evaluated_get(depsgraph)
-					meshData = evaluatedOb.to_mesh(preserve_all_data_layers = False, depsgraph = depsgraph)
-					newName = prevObName
-					if matSlotIdx > 0:
-						newName += '_' + mat.name
-					newMeshData = bpy.data.meshes.new(name = newName)
-					verts = [v.co for v in meshData.vertices]
-					faces = [p.vertices for p in meshData.polygons]
-					newMeshData.from_pydata(verts, [], faces)
+				newName = prevObName
+				if matSlotIdx > 0:
+					newName += '_' + mat.name
+				newOb.active_material = mat
+				for frame, geoData in enumerate(geosDatas):
+					if frame > ob.minPathFrame:
+						newName = newName.replace('_' + str(frame - 1), '')
+						newName += '_' + str(frame)
+					newMeshData.clear_geometry()
+					newMeshData.from_pydata(geoData['verts'], [], geoData['faces'])
 					newMeshData.update()
-					newOb = bpy.data.objects.new(name = newName, object_data = newMeshData)
-					newOb.active_material = mat
-					newOb.matrix_world = ob.matrix_world
-					scene = bpy.context.scene
-					scene.collection.objects.link(newOb)
-					evaluatedOb.to_mesh_clear()
+					newOb.matrix_world = geoData['matrix']
 					min, max = GetRectMinMax(ob)
 					if frame == ob.minPathFrame and HandleCopyObject(newOb, [min.x, min.y]):
-						bpy.data.objects.remove(newOb, do_unlink = True)
 						break
+					scene = bpy.context.scene
 					renderSettings = scene.render
 					imageSettings = renderSettings.image_settings
 					viewSettings = imageSettings.view_settings
@@ -508,11 +516,15 @@ def ExportObject (ob):
 					svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
 					metadataEndIndctr = '/metadata>'
 					svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
+					svgTxt = svgTxt.replace('00000', '')
 					svgTxt = svgTxt.replace('.000000', '')
 					camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
 					camToOb = newOb.location - cam.location
 					projectedVec = camToOb.project(camForward)
-					svgTxt = svgTxt[: len(svgIndctr)] + 'id="' + newName + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"' + svgTxt[len(svgIndctr) :]
+					addToSvgTxt = 'id="' + newName + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"'
+					if frame > 0:
+						addToSvgTxt += ' opacity=0'
+					svgTxt = svgTxt[: len(svgIndctr)] + addToSvgTxt + svgTxt[len(svgIndctr) :]
 					fillIndctr = 'fill="'
 					idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
 					idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
@@ -543,9 +555,12 @@ def ExportObject (ob):
 					viewSettings.exposure = prevExposure
 					viewSettings.gamma = prevGamma
 					svgsDatas[newName] = svgTxt
-					bpy.data.objects.remove(newOb, do_unlink = True)
+		tempCollection.objects.unlink(newOb)
+		bpy.data.objects.remove(newOb)
+		bpy.data.meshes.remove(newMeshData)
+		bpy.context.scene.collection.children.unlink(tempCollection)
+		bpy.data.collections.remove(tempCollection)
 		bpy.data.objects[prevObName + '_'].name = prevObName
-		bpy.context.scene.frame_set(prevFrame)
 		for mesh in bpy.data.meshes:
 			if mesh.users == 0:
 				bpy.data.meshes.remove(mesh)
@@ -793,21 +808,24 @@ def RegisterPhysics (ob):
 		charControllers[ob] = charController
 
 def HandleCopyObject (ob, pos):
-	for exportedOb in exportedObs:
-		idxOfPeriod = ob.name.find('.')
-		if idxOfPeriod == -1:
-			obNameWithoutPeriod = ob.name
-		else:
-			obNameWithoutPeriod = ob.name[: idxOfPeriod]
-		idxOfPeriod = exportedOb.name.find('.')
-		if idxOfPeriod == -1:
-			exportedObNameWithoutPeriod = exportedOb.name
-		else:
-			exportedObNameWithoutPeriod = exportedOb.name[: idxOfPeriod]
-		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
-			datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1])])
-			exportedObs.append(ob)
-			return True
+	try:
+		for exportedOb in exportedObs:
+			idxOfPeriod = ob.name.find('.')
+			if idxOfPeriod == -1:
+				obNameWithoutPeriod = ob.name
+			else:
+				obNameWithoutPeriod = ob.name[: idxOfPeriod]
+			idxOfPeriod = exportedOb.name.find('.')
+			if idxOfPeriod == -1:
+				exportedObNameWithoutPeriod = exportedOb.name
+			else:
+				exportedObNameWithoutPeriod = exportedOb.name[: idxOfPeriod]
+			if obNameWithoutPeriod == exportedObNameWithoutPeriod:
+				datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1])])
+				exportedObs.append(ob)
+				return True
+	except:
+		return False
 	return False
 
 def GetPathDelta (fromPathData, toPathData):
@@ -1071,10 +1089,10 @@ class api
 		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineColor, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
+	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
 	{
 		var fillClrTxt = 'rgb(' + fillClr[0] + ' ' + fillClr[1] + ' ' + fillClr[2] + ')';
-		var lineColorTxt = 'rgb(' + lineColor[0] + ' ' + lineColor[1] + ' ' + lineColor[2] + ')';
+		var lineClrTxt = 'rgb(' + lineClr[0] + ' ' + lineClr[1] + ' ' + lineClr[2] + ')';
 		var pos = positions[0];
 		var svg = document.createElement('svg');
 		svg.setAttribute('fill-opacity', fillClr[3] / 255);
@@ -1098,7 +1116,7 @@ class api
 			path.id = id + ' ';
 			if (i > 0)
 				path.setAttribute('opacity', 0);
-			path.style = 'fill:' + fillClrTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineColorTxt;
+			path.style = 'fill:' + fillClrTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineClrTxt;
 			path.setAttribute('d', pathVals);
 			if (jiggleFrames > 0)
 			{
@@ -1220,18 +1238,18 @@ class api
 				$.hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
 			if (fillHatchDensity[1] > 0)
 				$.hatch ('|' + id, ...args, fillHatchDensity[1], fillHatchRandDensity[1], fillHatchAng[1], fillHatchWidth[1]);
-			lineColor[3] = 255;
+			lineClr[3] = 255;
 		}
 		if (magnitude(lineHatchDensity) > 0)
 		{
-			var args = [lineColor, false, svg, path]; 
+			var args = [lineClr, false, svg, path]; 
 			if (lineHatchDensity[0] > 0)
 				$.hatch ('@' + id, ...args, lineHatchDensity[0], lineHatchRandDensity[0], lineHatchAng[0], lineHatchWidth[0]);
 			if (lineHatchDensity[1] > 0)
 				$.hatch ('$' + id, ...args, lineHatchDensity[1], lineHatchRandDensity[1], lineHatchAng[1], lineHatchWidth[1]);
-			lineColor[3] = 255;
+			lineClr[3] = 255;
 		}
-		svg.setAttribute('stroke-opacity', lineColor[3] / 255);
+		svg.setAttribute('stroke-opacity', lineClr[3] / 255);
 		if (mirrorX)
 		{
 			svg = $.copy_node(id, '~' + id, pos);
@@ -1579,6 +1597,11 @@ def DrawCollidersCallback (self, context):
 	gpu.state.blend_set('NONE')
 
 def Update ():
+	for ob in bpy.data.objects:
+		for matSlot in ob.material_slots:
+			mat = matSlot.material
+			if mat:
+				mat.use_nodes = False
 	for txt in bpy.data.texts:
 		idxOfPeriod = txt.name.find('.')
 		if idxOfPeriod != -1:
