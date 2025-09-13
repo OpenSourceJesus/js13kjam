@@ -1574,8 +1574,8 @@ def DrawCollidersCallback (self, context):
 			batch.draw(shader)
 		elif ob.shapeType == 'cuboid':
 			_min, _max = -Vector((ob.size[0], ob.size[1], 0)) / 2, Vector((ob.size[0], ob.size[1], 0)) / 2
-			verts = [matrix @ v for v in [_min, Vector((_min.x, _max.y, 0)), _max, Vector((_max.x, _min.y, 0)), _min]]
-			batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : verts})
+			verts = [matrix @ v for v in [_min, Vector((_min.x, _max.y, 0)), _max, Vector((_max.x, _min.y, 0))]]
+			batch = batch_for_shader(shader, 'LINE_LOOP', {'pos' : verts})
 			batch.draw(shader)
 		elif ob.shapeType == 'roundCuboid':
 			halfWidth = ob.size[0] / 2
@@ -1635,6 +1635,17 @@ def DrawCollidersCallback (self, context):
 					verts.append(matrix @ (Vector((x, y + h / 2, 0))))
 				batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : verts})
 				batch.draw(shader)
+		elif ob.shapeType == 'segment':
+			pnt = matrix @ Vector(list(ob.segmentPos1))
+			pnt2 = matrix @ Vector(list(ob.segmentPos2))
+			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
+			batch.draw(shader)
+		elif ob.shapeType == 'triangle':
+			pnt = matrix @ Vector(list(ob.trianglePos1) + [0])
+			pnt2 = matrix @ Vector(list(ob.trianglePos2) + [0])
+			pnt3 = matrix @ Vector(list(ob.trianglePos3) + [0])
+			batch = batch_for_shader(shader, 'LINE_LOOP', {'pos' : [pnt, pnt2, pnt3]})
+			batch.draw(shader)
 	gpu.state.blend_set('NONE')
 
 def Update ():
