@@ -352,8 +352,8 @@ def ExportObject (ob):
 				data.append(TryChangeToInt(size.x))
 				data.append(TryChangeToInt(size.y))
 				materialColor = DEFAULT_COLOR
-				if len(ob.material_slots) > 0:
-					materialColor = ob.material_slots[0].material.diffuse_color
+				if ob.active_material:
+					materialColor = ob.active_material.diffuse_color
 				data.append(GetColor(materialColor))
 				data.append(round(strokeWidth))
 				data.append(GetColor(ob.strokeClr))
@@ -534,9 +534,7 @@ def ExportObject (ob):
 					fillIndctr = 'fill="'
 					idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
 					idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
-					materialColor = DEFAULT_COLOR
-					if len(ob.material_slots) > 0:
-						materialColor = ob.material_slots[0].material.diffuse_color
+					materialColor = mat.diffuse_color
 					fillClr = ClampComponents(Round(Multiply(materialColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
 					if ob.lightFill:
 						svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.lightFill.name + ')' + svgTxt[idxOfFillEnd :]
@@ -631,8 +629,8 @@ def ExportObject (ob):
 		idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
 		idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
 		materialColor = DEFAULT_COLOR
-		if len(ob.material_slots) > 0:
-			materialColor = ob.material_slots[0].material.diffuse_color
+		if ob.active_material:
+			materialColor = ob.active_material.diffuse_color
 		prevMatAlpha = materialColor[3]
 		fillClr = Subtract([1, 1, 1, 1], materialColor)
 		fillClr[3] = prevMatAlpha
@@ -1450,6 +1448,8 @@ def BuildHtml (world):
 	if SERVER_PROC:
 		SERVER_PROC.kill()
 	PreBuild ()
+	prevMode = current_mode = bpy.context.active_object.mode
+	bpy.ops.object.mode_set(mode = 'OBJECT')
 	bpy.context.scene.export_svg_output = TMP_DIR + '/Output.svg'
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
@@ -1488,6 +1488,7 @@ def BuildHtml (world):
 		atexit.register(lambda: SERVER_PROC.kill())
 		webbrowser.open('http://localhost:6969')
 	PostBuild ()
+	bpy.ops.object.mode_set(mode = prevMode)
 	return html
 
 def BuildUnity (world):
@@ -1586,30 +1587,30 @@ def DrawCollidersCallback (self, context):
 			center = (halfWidth, halfHeight, 0)
 			for i in range(segments + 1):
 				t = i / segments
-				angle = (math.pi / 2) * (1 - t)
-				x = center[0] + radius * math.cos(angle)
-				y = center[1] + radius * math.sin(angle)
+				ang = (math.pi / 2) * (1 - t)
+				x = center[0] + radius * math.cos(ang)
+				y = center[1] + radius * math.sin(ang)
 				verts.append(matrix @ Vector((x, y, 0)))
 			center = (halfWidth, -halfHeight, 0)
 			for i in range(segments + 1):
 				t = i / segments
-				angle = (2 * math.pi) - (math.pi / 2) * t
-				x = center[0] + radius * math.cos(angle)
-				y = center[1] + radius * math.sin(angle)
+				ang = (2 * math.pi) - (math.pi / 2) * t
+				x = center[0] + radius * math.cos(ang)
+				y = center[1] + radius * math.sin(ang)
 				verts.append(matrix @ Vector((x, y, 0)))
 			center = (-halfWidth, -halfHeight, 0)
 			for i in range(segments + 1):
 				t = i / segments
-				angle = (3 * math.pi / 2) - (math.pi / 2) * t
-				x = center[0] + radius * math.cos(angle)
-				y = center[1] + radius * math.sin(angle)
+				ang = (3 * math.pi / 2) - (math.pi / 2) * t
+				x = center[0] + radius * math.cos(ang)
+				y = center[1] + radius * math.sin(ang)
 				verts.append(matrix @ Vector((x, y, 0)))
 			center = (-halfWidth, halfHeight, 0)
 			for i in range(segments + 1):
 				t = i / segments
-				angle = math.pi - (math.pi / 2) * t
-				x = center[0] + radius * math.cos(angle)
-				y = center[1] + radius * math.sin(angle)
+				ang = math.pi - (math.pi / 2) * t
+				x = center[0] + radius * math.cos(ang)
+				y = center[1] + radius * math.sin(ang)
 				verts.append(matrix @ Vector((x, y, 0)))
 			batch = batch_for_shader(shader, 'LINE_LOOP', {"pos" : verts})
 			batch.draw(shader)
@@ -1646,6 +1647,56 @@ def DrawCollidersCallback (self, context):
 			pnt3 = matrix @ Vector(list(ob.trianglePos3) + [0])
 			batch = batch_for_shader(shader, 'LINE_LOOP', {'pos' : [pnt, pnt2, pnt3]})
 			batch.draw(shader)
+		# elif ob.shapeType == 'roundTriangle':
+		# 	try:
+		# 		pnt = Vector(list(ob.trianglePos1) + [0])
+		# 		pnt2 = Vector(list(ob.trianglePos2) + [0])
+		# 		pnt3 = Vector(list(ob.trianglePos3) + [0])
+		# 		radius = ob.triangleBorderRadius
+		# 		v12, v21 = (pnt2 - pnt).normalized(), (pnt - pnt2).normalized()
+		# 		v23, v32 = (pnt3 - pnt2).normalized(), (pnt2 - pnt3).normalized()
+		# 		v31, v13 = (pnt - pnt3).normalized(), (pnt3 - pnt).normalized()
+		# 		halfAng = math.acos(max(-1, min(1, v12.dot(v13)))) / 2
+		# 		halfAng2 = math.acos(max(-1, min(1, v21.dot(v23)))) / 2
+		# 		halfAng3 = math.acos(max(-1, min(1, v31.dot(v32)))) / 2
+		# 		bisector1 = (v12 + v13).normalized()
+		# 		bisector2 = (v21 + v23).normalized()
+		# 		bisector3 = (v31 + v32).normalized()
+		# 		center = pnt + bisector1 * (radius / (math.sin(halfAng)))
+		# 		center2 = pnt2 + bisector2 * (radius / (math.sin(halfAng2)))
+		# 		center3 = pnt3 + bisector3 * (radius / (math.sin(halfAng3)))
+		# 		perp12 = Vector((-v12.y, v12.x, 0))
+		# 		perp13 = Vector((v13.y, -v13.x, 0))
+		# 		perp21 = Vector((v21.y, -v21.x, 0))
+		# 		perp23 = Vector((-v23.y, v23.x, 0))
+		# 		perp31 = Vector((-v31.y, v31.x, 0))
+		# 		perp32 = Vector((v32.y, -v32.x, 0))
+		# 		t12, t13 = center + radius * perp12, center + radius * perp13
+		# 		t21, t23 = center2 + radius * perp21, center2 + radius * perp23
+		# 		t31, t32 = center3 + radius * perp31, center3 + radius * perp32
+		# 		def GetArcPoints (center, startPnt, endPnt, segments = 12):
+		# 			toStartPnt, toEndPnt = startPnt - center, endPnt - center
+		# 			startAng = math.atan2(toStartPnt.y, toStartPnt.x)
+		# 			endAng = math.atan2(toEndPnt.y, toEndPnt.x)
+		# 			if endAng < startAng:
+		# 				endAng += 2 * math.pi
+		# 			if (endAng - startAng) > math.pi:
+		# 				endAng -= 2 * math.pi
+		# 			verts = []
+		# 			for i in range(segments + 1):
+		# 				ang = startAng + (endAng - startAng) * i / segments
+		# 				verts.append(matrix @ (center + radius * Vector((math.cos(ang), math.sin(ang), 0))))
+		# 			return verts
+		# 		verts = GetArcPoints(center, t13, t12)
+		# 		verts.extend(GetArcPoints(center2, t21, t23))
+		# 		verts.extend(GetArcPoints(center3, t32, t31))
+		# 	except (ValueError, ZeroDivisionError):
+		# 		pnt = matrix @ pnt1
+		# 		pnt2 = matrix @ pnt2
+		# 		pnt3 = matrix @ pnt3
+		# 		verts = [pnt, pnt2, pnt3]
+		# 	batch = batch_for_shader(shader, 'LINE_LOOP', {"pos" : verts})
+		# 	batch.draw(shader)
 	gpu.state.blend_set('NONE')
 
 def Update ():
@@ -1709,7 +1760,7 @@ bpy.types.Object.jiggleDur = bpy.props.FloatProperty(name = 'Jiggle duration', m
 bpy.types.Object.jiggleFrames = bpy.props.IntProperty(name = 'Jiggle frames', min = 0)
 bpy.types.Object.useRotate = bpy.props.BoolProperty(name = 'Use rotate')
 bpy.types.Object.rotPingPong = bpy.props.BoolProperty(name = 'Ping pong rotate')
-bpy.types.Object.rotAngRange = bpy.props.FloatVectorProperty(name = 'Rotate angle range', size = 2)
+bpy.types.Object.rotAngRange = bpy.props.FloatVectorProperty(name = 'Rotate ang range', size = 2)
 bpy.types.Object.rotDur = bpy.props.FloatProperty(name = 'Rotate duration', min = 0)
 bpy.types.Object.useScale = bpy.props.BoolProperty(name = 'Use scale')
 bpy.types.Object.scalePingPong = bpy.props.BoolProperty(name = 'Ping pong scale')
@@ -1727,12 +1778,12 @@ bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive')
 bpy.types.Object.useFillHatch = bpy.props.BoolVectorProperty(name = 'Use fill hatch', size = 2)
 bpy.types.Object.fillHatchDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch density', size = 2, min = 0)
 bpy.types.Object.fillHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch randomize density percent', size = 2, min = 0)
-bpy.types.Object.fillHatchAng = bpy.props.FloatVectorProperty(name = 'Fill hatch angle', size = 2, min = -360, max = 360)
+bpy.types.Object.fillHatchAng = bpy.props.FloatVectorProperty(name = 'Fill hatch ang', size = 2, min = -360, max = 360)
 bpy.types.Object.fillHatchWidth = bpy.props.FloatVectorProperty(name = 'Fill hatch width', size = 2, min = 0)
 bpy.types.Object.useStrokeHatch = bpy.props.BoolVectorProperty(name = 'Use stroke hatch', size = 2)
 bpy.types.Object.strokeHatchDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch density', size = 2, min = 0)
 bpy.types.Object.strokeHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch randomize density percent', size = 2, min = 0)
-bpy.types.Object.strokeHatchAng = bpy.props.FloatVectorProperty(name = 'Stroke hatch angle', size = 2, min = -360, max = 360)
+bpy.types.Object.strokeHatchAng = bpy.props.FloatVectorProperty(name = 'Stroke hatch ang', size = 2, min = -360, max = 360)
 bpy.types.Object.strokeHatchWidth = bpy.props.FloatVectorProperty(name = 'Stroke hatch width', size = 2, min = 0)
 bpy.types.Object.minPathFrame = bpy.props.IntProperty(name = 'Min frame for shape animation')
 bpy.types.Object.maxPathFrame = bpy.props.IntProperty(name = 'Max frame for shape animation')
