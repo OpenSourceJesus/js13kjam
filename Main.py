@@ -118,6 +118,12 @@ def ClampComponents (v : list, min : list, max : list):
 		output.append(Clamp(elmt, min[i], max[i]))
 	return output
 
+def Rotate90 (v : Vector, clockwise : bool = True):
+	if clockwise:
+		return Vector((v.y, -v.x))
+	else:
+		return Vector((-v.y, v.x))
+
 def GetMinComponents (v : Vector, v2 : Vector, use2D : bool = False):
 	if use2D:
 		return Vector((min(v.x, v2.x), min(v.y, v2.y)))
@@ -1550,6 +1556,13 @@ def DrawCollidersCallback (self, context):
 			worldVerts = [matrix @ v for v in localVerts]
 			batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : worldVerts})
 			batch.draw(shader)
+		elif ob.shapeType == 'halfspace':
+			normal = Vector(list(ob.normal) + [0]).normalized()
+			dir = Vector(list(Rotate90(normal)) + [0])
+			pnt = matrix @ (-dir * 99999)
+			pnt2 = matrix @ (dir * 99999)
+			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
+			batch.draw(shader)
 		elif ob.shapeType == 'cuboid':
 			min, max = -Vector((ob.size[0], ob.size[1], 0)) / 2, Vector((ob.size[0], ob.size[1], 0)) / 2
 			verts = [matrix @ v for v in [min, Vector((min.x, max.y, 0)), max, Vector((max.x, min.y, 0))]]
@@ -1563,37 +1576,24 @@ def DrawCollidersCallback (self, context):
 			radius = ob.capsuleRadius
 			height = ob.capsuleHeight / 2
 			segments = 32
-			top = Vector((0, 0, height))
-			bottom = Vector((0, 0, -height))
-			for i in range(4):
-				ang = (i / 4) * 2 * math.pi
-				x, y = radius * math.cos(ang), radius * math.sin(ang)
-				p1 = matrix @ (top + Vector((x, y, 0)))
-				p2 = matrix @ (bottom + Vector((x, y, 0)))
-				batch = batch_for_shader(shader, 'LINES', {'pos': [p1, p2]})
-				batch.draw(shader)
+			pnt = matrix @ (Vector((-radius, -height / 2, 0)))
+			pnt2 = matrix @ (Vector((-radius, height / 2, 0)))
+			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
+			batch.draw(shader)
+			pnt = matrix @ (Vector((radius, -height / 2, 0)))
+			pnt2 = matrix @ (Vector((radius, height / 2, 0)))
+			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
+			batch.draw(shader)
 			for h in [height, -height]:
 				localVerts = []
-				for i in range(segments + 1):
-					ang = (i / segments) * 2 * math.pi
+				for i in range(int(segments / 2) + 1):
+					ang = i / segments * math.pi * 2
 					x, y = radius * math.cos(ang), radius * math.sin(ang)
-					localVerts.append(matrix @ (Vector((x, y, h))))
+					if h < 0:
+						y = -y
+					localVerts.append(matrix @ (Vector((x, y + h / 2, 0))))
 				batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : localVerts})
 				batch.draw(shader)
-				for axis in ['x', 'y']:
-					localVerts = []
-					for i in range(int(segments / 2) + 1):
-						ang = (i / segments) * math.pi
-						if axis == 'x':
-							x_, y_, z_ = 0, radius * math.cos(ang), radius * math.sin(ang)
-						else:
-							x_, y_, z_ = radius * math.cos(ang), 0, radius * math.sin(ang)
-						if h > 0:
-							localVerts.append(matrix @ (Vector((x_, y_, z_)) + top))
-						else:
-							localVerts.append(matrix @ (Vector((x_, y_, -z_)) + bottom))
-					batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : localVerts})
-					batch.draw(shader)
 	gpu.state.blend_set('NONE')
 
 def Update ():
@@ -1845,7 +1845,7 @@ class HTMLExport (bpy.types.Operator):
 
 	def execute (self, context):
 		BuildHtml (context.world)
-		return { 'FINISHED' }
+		return {'FINISHED'}
 
 @bpy.utils.register_class
 class UnityExport (bpy.types.Operator):
@@ -1858,7 +1858,7 @@ class UnityExport (bpy.types.Operator):
 
 	def execute (self, context):
 		BuildUnity (context.world)
-		return { 'FINISHED' }
+		return {'FINISHED'}
 
 @bpy.utils.register_class
 class WorldPanel (bpy.types.Panel):
@@ -1880,7 +1880,7 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.operator('world.unity_export', icon = 'CONSOLE')
 
 @bpy.utils.register_class
-class JS13KB_Panel (bpy.types.Panel):
+class JS13KBPanel (bpy.types.Panel):
 	bl_idname = 'WORLD_PT_JS13KB_Panel'
 	bl_label = 'js13kgames.com'
 	bl_space_type = 'PROPERTIES'
@@ -2200,14 +2200,14 @@ class DrawColliders (bpy.types.Operator):
 	isRunning = False
 
 	def modal (self, context, event):
-		if not self.isRunning:
-			bpy.types.SpaceView3D.draw_handler_remove(self.handle, 'WINDOW')
-			self.handle = None
+		if not DrawColliders.isRunning:
+			bpy.types.SpaceView3D.draw_handler_remove(DrawColliders.handle, 'WINDOW')
+			DrawColliders.handle = None
 			context.area.tag_redraw()
 			return {'CANCELLED'}
 		context.area.tag_redraw()
 		if event.type in {'RIGHTMOUSE', 'ESC'}:
-			self.isRunning = False
+			DrawColliders.isRunning = False
 			return {'PASS_THROUGH'}
 		return {'PASS_THROUGH'}
 
@@ -2223,7 +2223,6 @@ class DrawColliders (bpy.types.Operator):
 			args = (self, context)
 			DrawColliders.handle = bpy.types.SpaceView3D.draw_handler_add(DrawCollidersCallback, args, 'WINDOW', 'POST_VIEW')
 			DrawColliders.isRunning = True
-			self.isRunning = True
 			context.window_manager.modal_handler_add(self)
 			return {'RUNNING_MODAL'}
 		else:
@@ -2349,7 +2348,7 @@ class ConvertSelectedObjectsToCurves (bpy.types.Operator):
 			# 	vector = ob.matrix_world @ Vector((x, y, 0))
 			# 	pathData.append(x)
 			# 	pathData.append(y)
-		return { 'FINISHED' }
+		return {'FINISHED'}
 
 @bpy.utils.register_class
 class ConvertToCurvesPanel (bpy.types.Panel):
