@@ -671,8 +671,13 @@ def RegisterPhysics (ob):
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
 		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '()'
-		if ob.location[0] != 0 or ob.location[1] != 0:
+		if ob.location.x != 0 or ob.location.y != 0:
 			rigidBody += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
+		prevRotMode = ob.rotation_mode
+		ob.rotation_mode = 'XYZ'
+		if ob.rotation_euler.z != 0:
+			rigidBody += '.setRotation(' + str(ob.location.z) + ')'
+		ob.rotation_mode = prevRotMode
 		if not ob.canRotate:
 			rigidBody += '.lockRotations();\n'
 		rigidBody += ';\n'
@@ -1544,17 +1549,22 @@ def DrawCollidersCallback (self, context):
 		if not ob.colliderExists:
 			continue
 		matrix = ob.matrix_world
+		pos = matrix.to_translation()
+		rot = matrix.to_euler()
+		rot.x = 0
+		rot.y = 0
+		scale = matrix.to_scale()
+		matrix = Matrix.LocRotScale(pos, rot, scale)
 		color = (0.2, 1.0, 0.2, 0.8)
 		shader.uniform_float('color', color)
 		if ob.shapeType == 'ball':
 			radius = ob.radius
 			segments = 32
-			localVerts = []
+			verts = []
 			for i in range(segments + 1):
 				ang = (i / segments) * 2 * math.pi
-				localVerts.append(Vector((radius * math.cos(ang), radius * math.sin(ang), 0)))
-			worldVerts = [matrix @ v for v in localVerts]
-			batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : worldVerts})
+				verts.append(matrix @ Vector((radius * math.cos(ang), radius * math.sin(ang), 0)))
+			batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : verts})
 			batch.draw(shader)
 		elif ob.shapeType == 'halfspace':
 			normal = Vector(list(ob.normal) + [0]).normalized()
@@ -1565,17 +1575,18 @@ def DrawCollidersCallback (self, context):
 			batch.draw(shader)
 		elif ob.shapeType == 'cuboid':
 			min, max = -Vector((ob.size[0], ob.size[1], 0)) / 2, Vector((ob.size[0], ob.size[1], 0)) / 2
-			verts = [matrix @ v for v in [min, Vector((min.x, max.y, 0)), max, Vector((max.x, min.y, 0))]]
-			idxs = (
-				(0, 1), (1, 2), (2, 3), (3, 0),
-				(4, 5), (5, 6), (6, 7), (7, 4)
-			)
-			batch = batch_for_shader(shader, 'LINES', {'pos' : verts}, indices = idxs)
+			verts = [matrix @ v for v in [min, Vector((min.x, max.y, 0)), max, Vector((max.x, min.y, 0)), min]]
+			batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : verts})
 			batch.draw(shader)
+		elif ob.shapeType == 'roundCuboid':
+			min, max = -Vector((ob.size[0], ob.size[1], 0)) / 2, Vector((ob.size[0], ob.size[1], 0)) / 2
+			verts = [matrix @ v for v in [min, Vector((min.x, max.y, 0)), max, Vector((max.x, min.y, 0)), min]]
+			batch = batch_for_shader(shader, 'LINES', {'pos' : verts})
+			batch.draw(shader)
+			segments = 32
 		elif ob.shapeType == 'capsule':
 			radius = ob.capsuleRadius
 			height = ob.capsuleHeight / 2
-			segments = 32
 			pnt = matrix @ (Vector((-radius, -height / 2, 0)))
 			pnt2 = matrix @ (Vector((-radius, height / 2, 0)))
 			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
@@ -1584,15 +1595,16 @@ def DrawCollidersCallback (self, context):
 			pnt2 = matrix @ (Vector((radius, height / 2, 0)))
 			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
 			batch.draw(shader)
+			segments = 32
 			for h in [height, -height]:
-				localVerts = []
+				verts = []
 				for i in range(int(segments / 2) + 1):
 					ang = i / segments * math.pi * 2
 					x, y = radius * math.cos(ang), radius * math.sin(ang)
 					if h < 0:
 						y = -y
-					localVerts.append(matrix @ (Vector((x, y + h / 2, 0))))
-				batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : localVerts})
+					verts.append(matrix @ (Vector((x, y + h / 2, 0))))
+				batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : verts})
 				batch.draw(shader)
 	gpu.state.blend_set('NONE')
 
