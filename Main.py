@@ -893,10 +893,7 @@ for (var e of d)
 	var l = e.length;
 	if (l > 10)
 	{
-		var pathFramesStrings = p.split('\\n')[i];
-		if (e[51])
-			pathFramesStrings = pathFramesStrings.split(String.fromCharCode(1));
-		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], pathFramesStrings, e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
+		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
 		i ++;
 	}
 	else if (l > 4)
@@ -1127,6 +1124,7 @@ class api
 				path.setAttribute('opacity', 0);
 			path.style = 'fill:' + fillClrTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineClrTxt;
 			path.setAttribute('d', pathVals);
+			console.log(pathVals);
 			if (jiggleFrames > 0)
 			{
 				anim = document.createElement('animate');
@@ -1373,7 +1371,11 @@ def GenJsAPI (world):
 			charControllerName = GetVarNameFromObject(key) + 'CharController'
 			vars += 'var ' + charControllerName + ';\n'
 		physics = physics.replace('// Vars', vars)
-		physics = physics.replace('// Gravity', 'var gravity = ' + ToVector2String(bpy.context.scene.gravity) + ';')
+		if bpy.context.scene.use_gravity:
+			gravity = ToVector2String(bpy.context.scene.gravity)
+		else:
+			gravity = '{x : 0, y : 0}'
+		physics = physics.replace('// Gravity', 'var gravity = ' + gravity + ';')
 		physics = physics.replace('// Colliders', '\n'.join(colliders.values()))
 		physics = physics.replace('// Rigid Bodies', '\n'.join(rigidBodies.values()))
 		physics = physics.replace('// Joints', '\n'.join(joints.values()))
@@ -1439,7 +1441,7 @@ def PreBuild ():
 			bpy.data.objects.remove(ob, do_unlink = True)
 
 def PostBuild ():
-	if os.path.isfile('SlimeJump.py') and bpy.data.filepath.endswith('Slime Jump.blend'):
+	if os.path.isfile('SlimeJump.py') and bpy.data.filepath.endswith('SlimeJump.blend'):
 		import SlimeJump as slimeJump
 		slimeJump.GenLevel ()
 
@@ -1461,7 +1463,7 @@ def BuildHtml (world):
 			print(' '.join(cmd))
 			subprocess.check_call(cmd, cwd = TMP_DIR)
 
-			zip = open(TMP_DIR + '/index.html.zip','rb').read()
+			zip = open(TMP_DIR + '/index.html.zip', 'rb').read()
 			buildInfo['zip-size'] = len(zip)
 			if world.exportZip:
 				out = os.path.expanduser(world.exportZip)
@@ -1472,9 +1474,8 @@ def BuildHtml (world):
 				open(out, 'wb').write(zip)
 			else:
 				buildInfo['zip'] = TMP_DIR + '/index.html.zip'
-		else:
-			if len(html.encode('utf-8')) > 1024 * 13:
-				raise SyntaxError('HTML is over 13kb')
+		elif len(html.encode('utf-8')) > 1024 * 13:
+			raise SyntaxError('HTML is over 13kb')
 	if world.exportHtml:
 		out = os.path.expanduser(world.exportHtml)
 		print('Saving:', out)
