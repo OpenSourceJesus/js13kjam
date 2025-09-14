@@ -694,6 +694,7 @@ def RegisterPhysics (ob):
 		rigidBody += rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n'
 		if ob.continuousCollideDetect:
 			rigidBody += rigidBodyName + '.enableCcd(true);\n'
+		rigidBody += 'rigidBodyDescsIds["' + ob.name + '"] = ' + rigidBodyDescName + ';\n'
 		rigidBody += 'rigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
 		rigidBodies[ob] = rigidBody
 	if ob.colliderExists:
@@ -804,6 +805,7 @@ def RegisterPhysics (ob):
 				collider += colliderName + GetVarNameFromObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameFromObject(_attachTo) + 'RigidBody);\n'
 				if ob.isSensor:
 					collider += colliderName + GetVarNameFromObject(_attachTo) + '.setSensor(true);\n'
+		collider += 'colliderDescsIds["' + ob.name + '"] = ' + colliderDescName + ';'
 		if not ob.rigidBodyExists and ob not in attachTo:
 			collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
 		colliders[ob] = collider
@@ -1070,6 +1072,8 @@ import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
 var world;
 var rigidBodiesIds = {};
 var collidersIds = {};
+var colliderDescsIds = {};
+var rigidBodyDescsIds = {};
 RAPIER.init().then(() => {
 	// Gravity
 	world = new RAPIER.World(gravity);
@@ -1125,6 +1129,34 @@ class api
 		copy.setAttribute('y', pos[1]);
 		copy.setAttribute('transform', 'translate(' + pos[0] + ',' + pos[1] + ')');
 		document.body.appendChild(copy);
+		// Physics Section Start
+		if (rigidBodyDescsIds[id])
+		{
+			var originalRigidBodyDesc = rigidBodyDescsIds[id];
+			var newRigidBodyDesc = JSON.parse(JSON.stringify(originalRigidBodyDesc));
+			newRigidBodyDesc.setTranslation(pos[0], pos[1]);
+			var newRigidBody = world.createRigidBody(newRigidBodyDesc);
+			rigidBodiesIds[newId] = newRigidBody;
+			rigidBodyDescsIds[newId] = newRigidBodyDesc;
+			if (colliderDescsIds[id])
+			{
+				var originalColliderDesc = colliderDescsIds[id];
+				var newColliderDesc = JSON.parse(JSON.stringify(originalColliderDesc));
+				var newCollider = world.createCollider(newColliderDesc, newRigidBody);
+				collidersIds[newId] = newCollider;
+				colliderDescsIds[newId] = newColliderDesc;
+			}
+		}
+		else if (colliderDescsIds[id])
+		{
+            var originalColliderDesc = colliderDescsIds[id];
+            var newColliderDesc = JSON.parse(JSON.stringify(originalColliderDesc));
+            newColliderDesc.setTranslation(pos[0], pos[1]);
+            var newCollider = world.createCollider(newColliderDesc);
+            collidersIds[newId] = newCollider;
+            colliderDescsIds[newId] = newColliderDesc;
+        }
+		// Physics Section End
 		return copy;
 	}
 	add_children (id, childIds)
@@ -1404,7 +1436,15 @@ var $ = new api;
 
 def GenJsAPI (world):
 	global datas, userJS, colors
-	js = [JS, JS_API, userJS]
+	jsApi = JS_API
+	if not usePhysics:
+		while True:
+			idxOfPhysicsSectionStart = jsApi.find('// Physics Section Start')
+			if idxOfPhysicsSectionStart == -1:
+				break
+			idxOfPhysicsSectionEnd = jsApi.find('// Physics Section End')
+			jsApi = jsAp[: idxOfPhysicsSectionStart] + jsAp[idxOfPhysicsSectionEnd :]
+	js = [JS, jsApi, userJS]
 	if usePhysics:
 		physics = PHYSICS
 		vars = ''
