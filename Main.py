@@ -774,7 +774,7 @@ def RegisterPhysics (ob):
 		if ob.rotation_euler.z != 0:
 			collider += '.setRotation(' + str(ob.location.z) + ')'
 		ob.rotation_mode = prevRotMode
-		collider += ';\n'
+		collider += '.setActiveEvents(3);\n'
 		if ob.density != 0:
 			collider += colliderDescName + '.density = ' + str(ob.density) + ';\n'
 		if not ob.colliderEnable:
@@ -1357,7 +1357,7 @@ class api
 			var idxOfPosStart = trs.indexOf('translate(');
 			var idxOfPosEnd = trs.indexOf(')', idxOfPosStart);
 			var pos = value.translation();
-			var posStr = 'translate(' + pos.x + 'px,' + pos.y + 'px)';
+			var posStr = 'translate(' + (pos.x - node.getAttribute('width') / 2) + 'px,' + (pos.y - node.getAttribute('height') / 2) + 'px)';
 			if (idxOfPosStart == -1)
 				node.style.transform = posStr + trs;
 			else
@@ -1371,15 +1371,17 @@ class api
 			$.dt = (ts - $.prev) / 1000;
 			$.prev = ts;
 			window.requestAnimationFrame(f);
-			world.step();
-			$.set_transforms (rigidBodiesIds);
-			$.set_transforms (collidersIds);
 			// Update
 		};
 		window.requestAnimationFrame(ts => {
 			$.prev = ts;
 			window.requestAnimationFrame(f);
 		});
+		setInterval(() => {
+			world.step();
+			$.set_transforms (rigidBodiesIds);
+			$.set_transforms (collidersIds);
+		}, 16);
 	}
 }
 var $ = new api;
@@ -1775,7 +1777,7 @@ JOIN_TYPES = ['arcs', 'bevl', 'miter', 'miter-clip', 'round']
 JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')]
 MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
 SHAPE_TYPE_ITEMS = [('ball', 'circle', ''), ('halfspace', 'half-space', ''), ('cuboid', 'rectangle', ''), ('roundCuboid', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('roundTriangle', 'rounded-triangle', ''), ('polyline', 'segment-series', ''), ('trimesh', 'triangle-mesh', ''), ('convexHull', 'convex-polygon', ''), ('roundConvexHull', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
-RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinemaitcPositionBased', 'kinemaitc-position-based', ''), ('kinemaitcVelocityBased', 'kinemaitc-velocity-based', '')]
+RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinematicPositionBased', 'kinematic-position-based', ''), ('kinematicVelocityBased', 'kinematic-velocity-based', '')]
 JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('', '', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
