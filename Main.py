@@ -790,6 +790,8 @@ def RegisterPhysics (ob):
 		else:
 			for _attachTo in attachTo:
 				collider += colliderName + GetVarNameFromObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameFromObject(_attachTo) + 'RigidBody);\n'
+		if ob.isSensor:
+			collider += colliderName + '.setSensor(true);\n'
 		if not ob.rigidBodyExists:
 			collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
 		colliders[ob] = collider
@@ -1854,6 +1856,7 @@ bpy.types.Object.trianglePos3 = bpy.props.FloatVectorProperty(name = 'Position 3
 bpy.types.Object.triangleBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0)
 bpy.types.Object.roundConvexHullBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0)
 bpy.types.Object.heightfieldScale = bpy.props.FloatVectorProperty(name = 'Scale', size = 2)
+bpy.types.Object.isSensor = bpy.props.BoolProperty(name = 'Is sensor')
 bpy.types.Object.density = bpy.props.FloatProperty(name = 'Density', min = 0)
 bpy.types.Object.rigidBodyExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.rigidBodyEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
@@ -2285,6 +2288,7 @@ class ColliderPanel (bpy.types.Panel):
 				if not getattr(ob, 'useHeight%s' %i):
 					break
 			self.layout.prop(ob, 'heightfieldScale')
+		self.layout.prop(ob, 'isSensor')
 		self.layout.prop(ob, 'density')
 		for i in range(MAX_ATTACH_COLLIDER_CNT):
 			row = self.layout.row()
