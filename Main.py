@@ -766,7 +766,15 @@ def RegisterPhysics (ob):
 					break
 				collider += str(getattr(ob, 'height%s' %i))
 			collider += '], ' + ToVector2String(ob.heightfieldScale)
-		collider += ');\n'
+		collider += ')'
+		if ob.location.x != 0 or ob.location.y != 0:
+			collider += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
+		prevRotMode = ob.rotation_mode
+		ob.rotation_mode = 'XYZ'
+		if ob.rotation_euler.z != 0:
+			collider += '.setRotation(' + str(ob.location.z) + ')'
+		ob.rotation_mode = prevRotMode
+		collider += ';\n'
 		if ob.density != 0:
 			collider += colliderDescName + '.density = ' + str(ob.density) + ';\n'
 		if not ob.colliderEnable:
@@ -782,6 +790,8 @@ def RegisterPhysics (ob):
 		else:
 			for _attachTo in attachTo:
 				collider += colliderName + GetVarNameFromObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameFromObject(_attachTo) + 'RigidBody);\n'
+		if not ob.rigidBodyExists:
+			collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
 		colliders[ob] = collider
 	if ob.jointExists:
 		jointName = GetVarNameFromObject(ob) + 'Joint'
@@ -976,15 +986,43 @@ function random_vector (maxDist)
 }
 function magnitude (v)
 {
-	var output = 0;
-	for (var elt of v)
-		output += elt * elt;
-	return Math.sqrt(output);
+	return Math.sqrt(v[0] * v[0] + v[1] * v[1]);
+}
+function magnitude_vec (v)
+{
+	return Math.sqrt(v.x * v.x + v.y * v.y);
 }
 function normalize (v)
 {
-	var mag = magnitude(v);
-	return [v[0] / mag, v[1] / mag];
+	return divide(v, magnitude(v));
+}
+function normalize_vec (v)
+{
+	return divide_vec(v, magnitude_vec(v));
+}
+function multiply (v, f)
+{
+	return [v[0] * f,  v[1] * f];
+}
+function multiply_vec (v, f)
+{
+	return {x : v.x * f,  y : v.y * f};
+}
+function divide (v, f)
+{
+	return [v[0] / f,  v[1] / f];
+}
+function divide_vec (v, f)
+{
+	return {x : v.x / f,  y : v.y / f};
+}
+function add (v, v2)
+{
+	return [v[0] * v2[0],  v[1] * v2[1]];
+}
+function add_vec (v, v2)
+{
+	return {x : v.x + v2.x,  y : v.y + v2.y};
 }
 function random (min, max)
 {
@@ -1017,6 +1055,7 @@ import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
 // Vars
 var world;
 var rigidBodiesIds = {};
+var collidersIds = {};
 RAPIER.init().then(() => {
 	// Gravity
 	world = new RAPIER.World(gravity);
@@ -1078,9 +1117,9 @@ class api
 		var foundFirstChild = false;
 		for (var childId of childIds)
 		{
-			var elt = document.getElementById(childId);
-			elt.style.position = 'fixed';
-			document.getElementById(id).appendChild(elt);
+			var node = document.getElementById(childId);
+			node.style.position = 'fixed';
+			document.getElementById(id).appendChild(node);
 		}
 	}
 	add_radial_gradient (id, pos, zIdx, diameter, color, color2, color3, colorPositions, subtractive)
@@ -1124,7 +1163,6 @@ class api
 				path.setAttribute('opacity', 0);
 			path.style = 'fill:' + fillClrTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineClrTxt;
 			path.setAttribute('d', pathVals);
-			console.log(pathVals);
 			if (jiggleFrames > 0)
 			{
 				anim = document.createElement('animate');
@@ -1310,6 +1348,22 @@ class api
 			path.style.stroke = 'url(#' + id + ')';
 		svg.innerHTML += path.outerHTML;
 	}
+	set_transforms (dict)
+	{
+		for (var [key, value] of Object.entries(dict))
+		{
+			var node = document.getElementById(key);
+			var trs = node.style.transform;
+			var idxOfPosStart = trs.indexOf('translate(');
+			var idxOfPosEnd = trs.indexOf(')', idxOfPosStart);
+			var pos = value.translation();
+			var posStr = 'translate(' + pos.x + 'px,' + pos.y + 'px)';
+			if (idxOfPosStart == -1)
+				node.style.transform = posStr + trs;
+			else
+				node.style.transform = trs.slice(0, idxOfPosStart) + posStr + trs.slice(idxOfPosEnd + 1);
+		}
+	}
 	main ()
 	{
 		// Init
@@ -1318,19 +1372,8 @@ class api
 			$.prev = ts;
 			window.requestAnimationFrame(f);
 			world.step();
-			for (var [key, value] of Object.entries(rigidBodiesIds))
-			{
-				var node = document.getElementById(key);
-				var trs = node.style.transform;
-				var idxOfPosStart = trs.indexOf('translate(');
-				var idxOfPosEnd = trs.indexOf(')', idxOfPosStart);
-				var pos = value.translation();
-				var posStr = 'translate(' + pos.x + 'px,' + pos.y + 'px)';
-				if (idxOfPosStart == -1)
-					node.style.transform = posStr + trs;
-				else
-					node.style.transform = trs.slice(0, idxOfPosStart) + posStr + trs.slice(idxOfPosEnd + 1);
-			}
+			$.set_transforms (rigidBodiesIds);
+			$.set_transforms (collidersIds);
 			// Update
 		};
 		window.requestAnimationFrame(ts => {
@@ -1413,8 +1456,8 @@ def GenHtml (world, datas, background = ''):
 		background = 'background-color:%s;' %background
 	o = [
 		'<!DOCTYPE html>',
-		'<html>',
-		'<body style="%swidth:600px;height:300px;overflow:hidden">' %background,
+		'<html style="' + background + 'width:9999px;height:9999px;overflow:hidden">',
+		'<body>',
 		''.join(svgsDatas.values()),
 		'<script type="module">',
 		js,
