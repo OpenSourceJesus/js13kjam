@@ -777,6 +777,16 @@ def RegisterPhysics (ob):
 		collider += '.setActiveEvents(3);\n'
 		if ob.density != 0:
 			collider += colliderDescName + '.density = ' + str(ob.density) + ';\n'
+		collisionGroupMembership = 0
+		for i, enabled in enumerate(ob.collisionGroupMembership):
+			if enabled:
+				collisionGroupMembership |= (1 << i)
+		collisionGroupFilter = 0
+		for i, enabled in enumerate(ob.collisionGroupFilter):
+			if enabled:
+				collisionGroupFilter |= (1 << i)
+		if collisionGroupMembership != 65535 or collisionGroupFilter != 65535:
+			collider += colliderDescName + '.setCollisionGroups(0x{:04X}{:04X});\n'.format(collisionGroupFilter, collisionGroupMembership)
 		if not ob.colliderEnable:
 			collider += colliderDescName + '.enabled = false;\n'
 		attachTo = []
@@ -787,12 +797,14 @@ def RegisterPhysics (ob):
 			attachTo.append(_attachTo)
 		if attachTo == []:
 			collider += colliderName + ' = world.createCollider(' + colliderDescName +');'
+			if ob.isSensor:
+				collider += colliderName + '.setSensor(true);\n'
 		else:
 			for _attachTo in attachTo:
 				collider += colliderName + GetVarNameFromObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameFromObject(_attachTo) + 'RigidBody);\n'
-		if ob.isSensor:
-			collider += colliderName + '.setSensor(true);\n'
-		if not ob.rigidBodyExists:
+				if ob.isSensor:
+					collider += colliderName + GetVarNameFromObject(_attachTo) + '.setSensor(true);\n'
+		if not ob.rigidBodyExists and ob not in attachTo:
 			collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
 		colliders[ob] = collider
 	if ob.jointExists:
@@ -1061,6 +1073,7 @@ var collidersIds = {};
 RAPIER.init().then(() => {
 	// Gravity
 	world = new RAPIER.World(gravity);
+	// Settings
 	// Rigid Bodies
 	// Colliders
 	// Joints
@@ -1423,6 +1436,10 @@ def GenJsAPI (world):
 		else:
 			gravity = '{x : 0, y : 0}'
 		physics = physics.replace('// Gravity', 'var gravity = ' + gravity + ';')
+		settings = ''
+		if world.unitLen != 1:
+			settings = 'world.lengthUnit = ' + str(world.unitLen) + ';'
+		physics = physics.replace('// Settings', settings)
 		physics = physics.replace('// Colliders', '\n'.join(colliders.values()))
 		physics = physics.replace('// Rigid Bodies', '\n'.join(rigidBodies.values()))
 		physics = physics.replace('// Joints', '\n'.join(joints.values()))
@@ -1791,12 +1808,14 @@ bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project p
 bpy.types.World.minifyMethod = bpy.props.EnumProperty(name = 'Minify using library', items = MINIFY_METHOD_ITEMS)
 bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
+bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Length unit', min = 0, default = 1)
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True)
 bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50])
 bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke')
 bpy.types.Object.strokeWidth = bpy.props.FloatProperty(name = 'Stroke width')
 bpy.types.Object.strokeClr = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
+bpy.types.Object.lightFill = bpy.props.PointerProperty(name = 'Fill with light', type = bpy.types.Light)
 bpy.types.Object.capType = bpy.props.EnumProperty(name = 'Stroke cap type', items = CAP_TYPE_ITEMS)
 bpy.types.Object.joinType = bpy.props.EnumProperty(name = 'Stroke corner type', items = JOIN_TYPE_ITEMS)
 bpy.types.Object.dashLengthsAndSpaces = bpy.props.FloatVectorProperty(name = 'Stroke dash lengths and spaces', size = 5, min = 0)
@@ -1858,6 +1877,8 @@ bpy.types.Object.roundConvexHullBorderRadius = bpy.props.FloatProperty(name = 'B
 bpy.types.Object.heightfieldScale = bpy.props.FloatVectorProperty(name = 'Scale', size = 2)
 bpy.types.Object.isSensor = bpy.props.BoolProperty(name = 'Is sensor')
 bpy.types.Object.density = bpy.props.FloatProperty(name = 'Density', min = 0)
+bpy.types.Object.collisionGroupMembership = bpy.props.BoolVectorProperty(name = 'Collision group membership', size = 16, default = [True] * 16, description = 'Which collision groups this object belongs to')
+bpy.types.Object.collisionGroupFilter = bpy.props.BoolVectorProperty(name = 'Collision group filter', size = 16, default = [True] * 16, description = 'Which collision groups this object can collide with')
 bpy.types.Object.rigidBodyExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.rigidBodyEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
 bpy.types.Object.rigidBodyType = bpy.props.EnumProperty(name = 'Type', items = RIGID_BODY_TYPE_ITEMS)
@@ -1883,7 +1904,6 @@ bpy.types.Object.jointAxis = bpy.props.FloatVectorProperty(name = 'Axis', size =
 bpy.types.Object.jointLen = bpy.props.FloatProperty(name = 'Length', min = 0)
 bpy.types.Object.charControllerExists = bpy.props.BoolProperty(name = 'Exists')
 bpy.types.Object.contactOff = bpy.props.FloatProperty(name = 'Contact offset', min = 0)
-bpy.types.Object.lightFill = bpy.props.PointerProperty(name = 'Fill with light', type = bpy.types.Light)
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -2028,6 +2048,8 @@ class WorldPanel (bpy.types.Panel):
 		row.prop(context.world, 'exportOffsetY')
 		self.layout.prop(context.world, 'exportHtml')
 		self.layout.prop(context.world, 'unityProjPath')
+		if usePhysics:
+			self.layout.prop(context.world, 'unitLen')
 		self.layout.operator('world.html_export', icon = 'CONSOLE')
 		self.layout.operator('world.unity_export', icon = 'CONSOLE')
 
@@ -2290,6 +2312,22 @@ class ColliderPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'heightfieldScale')
 		self.layout.prop(ob, 'isSensor')
 		self.layout.prop(ob, 'density')
+		self.layout.label(text = 'Collision Groups')
+		box = self.layout.box()
+		box.label(text = 'Membership (Object is in these groups)')
+		col = box.column()
+		for i in range(4):
+			row = col.row()
+			for j in range(4):
+				idx = i * 4 + j
+				row.prop(ob, 'collisionGroupMembership', index = idx, text = str(idx + 1))
+		box.label(text = 'Filter (Object collides with these groups)')
+		col = box.column()
+		for i in range(4):
+			row = col.row()
+			for j in range(4):
+				idx = i * 4 + j
+				row.prop(ob, 'collisionGroupFilter', index = idx, text = str(idx + 1))
 		for i in range(MAX_ATTACH_COLLIDER_CNT):
 			row = self.layout.row()
 			row.prop(ob, 'attachTo%s' %i)
