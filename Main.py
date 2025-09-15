@@ -10,7 +10,10 @@ isLinux = False
 POTRACE_PATH = 'potrace-1.16.'
 UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
 DONT_MANGLE_INDCTR = '-no_mangle=['
-NO_PHYSICS_IDCTR = '-no_physics'
+NO_PHYSICS_INDCTR = '-no_physics'
+ON_START_INDCTR = '-on-start='
+ON_PRE_BUILD_INDCTR = '-on-pre-build='
+ON_POST_BUILD_INDCTR = '-on-post-build='
 if sys.platform == 'win32':
 	TMP_DIR = os.path.expanduser('~\\AppData\\Local\\Temp')
 	BLENDER = 'C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe'
@@ -26,13 +29,22 @@ else:
 		isLinux = True
 usePhysics = True
 dontMangleArg = ''
+startScriptPath = ''
+preBuildScriptPath = ''
+postBuildScriptPath = ''
 for arg in sys.argv:
 	if 'blender' in arg:
 		BLENDER = arg
 	elif arg.startswith(DONT_MANGLE_INDCTR):
 		dontMangleArg = arg
-	elif arg == NO_PHYSICS_IDCTR:
+	elif arg == NO_PHYSICS_INDCTR:
 		usePhysics = False
+	elif arg.startswith(ON_START_INDCTR):
+		startScriptPath = arg[len(ON_START_INDCTR) :]
+	elif arg.startswith(ON_PRE_BUILD_INDCTR):
+		preBuildScriptPath = arg[len(ON_PRE_BUILD_INDCTR) :]
+	elif arg.startswith(ON_POST_BUILD_INDCTR):
+		postBuildScriptPath = arg[len(ON_POST_BUILD_INDCTR) :]
 
 try:
 	import bpy, gpu
@@ -47,13 +59,16 @@ if not bpy:
 		if arg.endswith('.blend'):
 			cmd.append(arg)
 	cmd += ['--python-exit-code', '1', '--python', __file__, '--python', os.path.join(_thisDir, 'blender-curve-to-svg', 'curve_to_svg.py')]
-	exArgs = []
+	cmd.append('--')
 	for arg in sys.argv:
 		if arg.startswith('--') or arg.startswith(DONT_MANGLE_INDCTR) or arg == '-minify':
-			exArgs.append(arg)
-	if exArgs:
-		cmd.append('--')
-		cmd += exArgs
+			cmd.append(arg)
+	if startScriptPath != '':
+		cmd += ['--python', startScriptPath]
+	if preBuildScriptPath != '':
+		cmd += [ON_PRE_BUILD_INDCTR + preBuildScriptPath]
+	if postBuildScriptPath != '':
+		cmd += [ON_POST_BUILD_INDCTR + postBuildScriptPath]
 	print(' '.join(cmd))
 	subprocess.check_call(cmd)
 	sys.exit()
@@ -191,9 +206,7 @@ def GetColor (color : list):
 def GetObjectPosition (ob):
 	world = bpy.data.worlds[0]
 	SCALE = world.exportScale
-	offX = world.exportOffsetX
-	offY = world.exportOffsetY
-	off = Vector((offX, offY))
+	off = Vector(world.exportOff)
 	x, y, z = ob.location * SCALE
 	if ob.type == 'LIGHT':
 		radius = ob.data.shadow_soft_size
@@ -224,6 +237,7 @@ colliders = {}
 joints = {}
 charControllers = {}
 pathsDatas = []
+canvasElts = []
 initCode = []
 updateCode = []
 userJS = ''
@@ -236,9 +250,7 @@ def ExportObject (ob):
 	RegisterPhysics (ob)
 	world = bpy.data.worlds[0]
 	SCALE = world.exportScale
-	offX = world.exportOffsetX
-	offY = world.exportOffsetY
-	off = Vector((offX, offY))
+	off = Vector(world.exportOff)
 	sx, sy, sz = ob.scale * SCALE
 	prevFrame = bpy.context.scene.frame_current
 	if ob.type == 'LIGHT':
@@ -662,6 +674,10 @@ def ExportObject (ob):
 				ExportObject (child)
 				childrenNames.append(child.name)
 			datas.append([ob.name, childrenNames])
+		if ob.empty_display_type == 'IMAGE':
+			obData = ob.data
+			image = '<img src=' + obData.filepath + ' width=' + str(obData.size[0]) + ' height=' + str(obData.size[1]) + '>'
+			canvasElts.append(image)
 	exportedObs.append(ob)
 
 def RegisterPhysics (ob):
@@ -1135,22 +1151,30 @@ class api
 		copy.setAttribute('y', pos[1]);
 		copy.style.transform = 'translate(' + pos[0] + ',' + pos[1] + ')rotate(' + rot + 'deg)';
 		document.body.appendChild(copy);
+		var colliders = [];
 		// Physics Section Start
 		var rigidBody = rigidBodiesIds[id];
 		if (rigidBody)
+		{
 			rigidBodiesIds[newId] = world.createRigidBody(new RAPIER.RigidBodyDesc(rigidBody.bodyType()).setAngularDamping(rigidBody.angularDamping()).setCanSleep(rigidBodyDescsIds[id].canSleep).setCcdEnabled(rigidBody.isCcdEnabled()).setDominanceGroup(rigidBody.dominanceGroup()).setEnabled(rigidBody.isEnabled()).setGravityScale(rigidBody.gravityScale()).setLinearDamping(rigidBody.linearDamping()).lockRotations(rigidBody.lockRotations()).setRotation(rot).setTranslation(pos[0], pos[1]));
+			for (var i = 0; i < rigidBody.numColliders(); i ++)
+				colliders.push(rigidBody.collider(i));
+		}
 		var collider = collidersIds[id];
 		if (collider)
 		{
 			var newColliderDesc = new RAPIER.ColliderDesc(collider.shape).setActiveEvents(collider.activeEvents).setCollisionGroups(collider.collisionGroups).setDensity(collider.density).setEnabled(collider.enabled).setRotation(collider.rotation).setTranslation(pos[0], pos[1]);
 			if (rigidBody)
-				var newCollider = world.createCollider(newColliderDesc, rigidBodiesIds[newId]);
+				collider = world.createCollider(newColliderDesc, rigidBodiesIds[newId]);
 			else
-				var newCollider = world.createCollider(newColliderDesc);
-			collidersIds[newId] = newCollider;
+			{
+				collider = world.createCollider(newColliderDesc);
+				collidersIds[newId] = collider;
+			}
+			colliders.push(collider);
 		}
 		// Physics Section End
-		return copy;
+		return [copy, colliders];
 	}
 	add_children (id, childIds)
 	{
@@ -1526,12 +1550,16 @@ def GenJsAPI (world):
 def GenHtml (world, datas, background = ''):
 	global userJS, colors, initCode, updateCode, pathsDatas
 	js = GenJsAPI(world)
+	canvas = ''
+	if canvasElts != []:
+		canvas = '<canvas id="!" ' + ' style="position:absolute">'
 	if background:
 		background = 'background-color:%s;' %background
 	o = [
 		'<!DOCTYPE html>',
 		'<html style="' + background + 'width:9999px;height:9999px;overflow:hidden">',
 		'<body>',
+		canvas,
 		''.join(svgsDatas.values()),
 		'<script type="module">',
 		js,
@@ -1551,16 +1579,12 @@ def GenHtml (world, datas, background = ''):
 SERVER_PROC = None
 
 def PreBuild ():
-	for ob in bpy.data.objects:
-		if '_Clone' in ob.name:
-			for child in ob.children:
-				bpy.data.objects.remove(child, do_unlink = True)
-			bpy.data.objects.remove(ob, do_unlink = True)
+	if preBuildScriptPath != '':
+		exec(open(preBuildScriptPath, 'r').read())
 
 def PostBuild ():
-	if os.path.isfile('SlimeJump.py') and bpy.data.filepath.endswith('SlimeJump.blend'):
-		import SlimeJump as slimeJump
-		slimeJump.GenLevel ()
+	if postBuildScriptPath != '':
+		exec(open(postBuildScriptPath, 'r').read())
 
 def BuildHtml (world):
 	global SERVER_PROC
@@ -1853,8 +1877,7 @@ RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('k
 JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('', '', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
-bpy.types.World.exportOffsetX = bpy.props.IntProperty(name = 'Offset X')
-bpy.types.World.exportOffsetY = bpy.props.IntProperty(name = 'Offset Y')
+bpy.types.World.exportOff = bpy.props.IntVectorProperty(name = 'Offset', size = 2)
 bpy.types.World.exportHtml = bpy.props.StringProperty(name = 'Export .html')
 bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = TMP_DIR + '/TestUnityProject')
@@ -2096,9 +2119,7 @@ class WorldPanel (bpy.types.Panel):
 	def draw (self, context):
 		row = self.layout.row()
 		row.prop(context.world, 'exportScale')
-		row = self.layout.row()
-		row.prop(context.world, 'exportOffsetX')
-		row.prop(context.world, 'exportOffsetY')
+		self.layout.prop(context.world, 'exportOff')
 		self.layout.prop(context.world, 'exportHtml')
 		self.layout.prop(context.world, 'unityProjPath')
 		if usePhysics:
@@ -2500,9 +2521,7 @@ class ConvertSelectedObjectsToCurves (bpy.types.Operator):
 		scene = bpy.context.scene
 		world = bpy.data.worlds[0]
 		SCALE = world.exportScale
-		offX = world.exportOffsetX
-		offY = world.exportOffsetY
-		off = Vector((offX, offY))
+		off = Vector(world.exportOff)
 		renderSettings = scene.render
 		imageSettings = renderSettings.image_settings
 		viewSettings = imageSettings.view_settings
