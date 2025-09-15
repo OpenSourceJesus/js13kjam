@@ -694,8 +694,8 @@ def RegisterPhysics (ob):
 		rigidBody += rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n'
 		if ob.continuousCollideDetect:
 			rigidBody += rigidBodyName + '.enableCcd(true);\n'
-		rigidBody += 'rigidBodyDescsIds["' + ob.name + '"] = ' + rigidBodyDescName + ';\n'
 		rigidBody += 'rigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
+		rigidBody += 'rigidBodyDescsIds["' + ob.name + '"] = ' + rigidBodyDescName + ';'
 		rigidBodies[ob] = rigidBody
 	if ob.colliderExists:
 		colliderName = GetVarNameFromObject(ob) + 'Collider'
@@ -805,7 +805,6 @@ def RegisterPhysics (ob):
 				collider += colliderName + GetVarNameFromObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameFromObject(_attachTo) + 'RigidBody);\n'
 				if ob.isSensor:
 					collider += colliderName + GetVarNameFromObject(_attachTo) + '.setSensor(true);\n'
-		collider += 'colliderDescsIds["' + ob.name + '"] = ' + colliderDescName + ';'
 		if not ob.rigidBodyExists and ob not in attachTo:
 			collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
 		colliders[ob] = collider
@@ -1018,27 +1017,35 @@ function normalize_vec (v)
 }
 function multiply (v, f)
 {
-	return [v[0] * f,  v[1] * f];
+	return [v[0] * f, v[1] * f];
 }
 function multiply_vec (v, f)
 {
-	return {x : v.x * f,  y : v.y * f};
+	return {x : v.x * f, y : v.y * f};
 }
 function divide (v, f)
 {
-	return [v[0] / f,  v[1] / f];
+	return [v[0] / f, v[1] / f];
 }
 function divide_vec (v, f)
 {
-	return {x : v.x / f,  y : v.y / f};
+	return {x : v.x / f, y : v.y / f};
 }
 function add (v, v2)
 {
-	return [v[0] * v2[0],  v[1] * v2[1]];
+	return [v[0] - v2[0], v[1] - v2[1]];
 }
 function add_vec (v, v2)
 {
-	return {x : v.x + v2.x,  y : v.y + v2.y};
+	return {x : v.x + v2.x, y : v.y + v2.y};
+}
+function subtract (v, v2)
+{
+	return [v[0] - v2[0], v[1] - v2[1]];
+}
+function subtract_vec (v, v2)
+{
+	return {x : v.x - v2.x, y : v.y - v2.y};
 }
 function random (min, max)
 {
@@ -1054,14 +1061,14 @@ function add_group (id, pos, txt)
 	document.body.appendChild(group);
 	return group;
 }
-function shuffle (list)
+function shuffle (arr)
 {
-	var currentIdx = list.length;
-	while (currentIdx != 0)
+	var currIdx = arr.length;
+	while (currIdx != 0)
 	{
-		var randIdx = Math.floor(Math.random() * currentIdx);
-		currentIdx --;
-		[list[currentIdx], list[randIdx]] = [list[randIdx], list[currentIdx]];
+		var randIdx = Math.floor(Math.random() * currIdx);
+		currIdx --;
+		[arr[currIdx], arr[randIdx]] = [arr[randIdx], arr[currIdx]];
 	}
 }
 '''
@@ -1071,9 +1078,8 @@ import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
 // Vars
 var world;
 var rigidBodiesIds = {};
-var collidersIds = {};
-var colliderDescsIds = {};
 var rigidBodyDescsIds = {};
+var collidersIds = {};
 RAPIER.init().then(() => {
 	// Gravity
 	world = new RAPIER.World(gravity);
@@ -1121,41 +1127,28 @@ class api
 			output += 'Z';
 		return output;
 	}
-	copy_node (id, newId, pos)
+	copy_node (id, newId, pos, rot = 0)
 	{
 		var copy = document.getElementById(id).cloneNode(true);
 		copy.id = newId;
 		copy.setAttribute('x', pos[0]);
 		copy.setAttribute('y', pos[1]);
-		copy.setAttribute('transform', 'translate(' + pos[0] + ',' + pos[1] + ')');
+		copy.style.transform = 'translate(' + pos[0] + ',' + pos[1] + ')rotate(' + rot + 'deg)';
 		document.body.appendChild(copy);
 		// Physics Section Start
-		if (rigidBodyDescsIds[id])
+		var rigidBody = rigidBodiesIds[id];
+		if (rigidBody)
+			rigidBodiesIds[newId] = world.createRigidBody(new RAPIER.RigidBodyDesc(rigidBody.bodyType()).setAngularDamping(rigidBody.angularDamping()).setCanSleep(rigidBodyDescsIds[id].canSleep).setCcdEnabled(rigidBody.isCcdEnabled()).setDominanceGroup(rigidBody.dominanceGroup()).setEnabled(rigidBody.isEnabled()).setGravityScale(rigidBody.gravityScale()).setLinearDamping(rigidBody.linearDamping()).lockRotations(rigidBody.lockRotations()).setRotation(rot).setTranslation(pos[0], pos[1]));
+		var collider = collidersIds[id];
+		if (collider)
 		{
-			var originalRigidBodyDesc = rigidBodyDescsIds[id];
-			var newRigidBodyDesc = JSON.parse(JSON.stringify(originalRigidBodyDesc));
-			newRigidBodyDesc.setTranslation(pos[0], pos[1]);
-			var newRigidBody = world.createRigidBody(newRigidBodyDesc);
-			rigidBodiesIds[newId] = newRigidBody;
-			rigidBodyDescsIds[newId] = newRigidBodyDesc;
-			if (colliderDescsIds[id])
-			{
-				var originalColliderDesc = colliderDescsIds[id];
-				var newColliderDesc = JSON.parse(JSON.stringify(originalColliderDesc));
-				var newCollider = world.createCollider(newColliderDesc, newRigidBody);
-				collidersIds[newId] = newCollider;
-				colliderDescsIds[newId] = newColliderDesc;
-			}
+			var newColliderDesc = new RAPIER.ColliderDesc(collider.shape).setActiveEvents(collider.activeEvents).setCollisionGroups(collider.collisionGroups).setDensity(collider.density).setEnabled(collider.enabled).setRotation(collider.rotation).setTranslation(pos[0], pos[1]);
+			if (rigidBody)
+				var newCollider = world.createCollider(newColliderDesc, rigidBodiesIds[newId]);
+			else
+				var newCollider = world.createCollider(newColliderDesc);
+			collidersIds[newId] = newCollider;
 		}
-		else if (colliderDescsIds[id])
-		{
-            var originalColliderDesc = colliderDescsIds[id];
-            var newColliderDesc = JSON.parse(JSON.stringify(originalColliderDesc));
-            newColliderDesc.setTranslation(pos[0], pos[1]);
-            var newCollider = world.createCollider(newColliderDesc);
-            collidersIds[newId] = newCollider;
-            colliderDescsIds[newId] = newColliderDesc;
-        }
 		// Physics Section End
 		return copy;
 	}
@@ -1395,6 +1388,7 @@ class api
 			path.style.stroke = 'url(#' + id + ')';
 		svg.innerHTML += path.outerHTML;
 	}
+	// Physics Section Start
 	set_transforms (dict)
 	{
 		for (var [key, value] of Object.entries(dict))
@@ -1411,6 +1405,7 @@ class api
 				node.style.transform = trs.slice(0, idxOfPosStart) + posStr + trs.slice(idxOfPosEnd + 1);
 		}
 	}
+	// Physics Section End
 	main ()
 	{
 		// Init
@@ -1424,11 +1419,13 @@ class api
 			$.prev = ts;
 			window.requestAnimationFrame(f);
 		});
+		// Physics Section Start
 		setInterval(() => {
 			world.step();
 			$.set_transforms (rigidBodiesIds);
 			$.set_transforms (collidersIds);
 		}, 16);
+		// Physics Section End
 	}
 }
 var $ = new api;
