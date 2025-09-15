@@ -1413,6 +1413,14 @@ class api
 			node.style.transform = trs;
 		}
 	}
+	remove (node)
+	{
+		if (rigidBodiesIds[node.id])
+			delete rigidBodiesIds[node.id];
+		else if (collidersIds[node.id])
+			delete collidersIds[node.id];
+		node.remove();
+	}
 	// Physics Section End
 	main ()
 	{
