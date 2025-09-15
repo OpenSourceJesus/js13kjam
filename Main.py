@@ -674,7 +674,7 @@ def RegisterPhysics (ob):
 		prevRotMode = ob.rotation_mode
 		ob.rotation_mode = 'XYZ'
 		if ob.rotation_euler.z != 0:
-			rigidBody += '.setRotation(' + str(ob.location.z) + ')'
+			rigidBody += '.setRotation(' + str(ob.location.z * (math.pi / 180)) + ')'
 		ob.rotation_mode = prevRotMode
 		if not ob.canRotate:
 			rigidBody += '.lockRotations();\n'
@@ -1396,13 +1396,21 @@ class api
 			var node = document.getElementById(key);
 			var trs = node.style.transform;
 			var idxOfPosStart = trs.indexOf('translate(');
-			var idxOfPosEnd = trs.indexOf(')', idxOfPosStart);
+			var idxOfPosEnd = trs.indexOf(')', idxOfPosStart) + 1;
+			var idxOfRotStart = trs.indexOf('rotate(');
+			var idxOfRotEnd = trs.indexOf(')', idxOfRotStart) + 1;
 			var pos = value.translation();
 			var posStr = 'translate(' + (pos.x - node.getAttribute('width') / 2) + 'px,' + (pos.y - node.getAttribute('height') / 2) + 'px)';
-			if (idxOfPosStart == -1)
-				node.style.transform = posStr + trs;
+			var rotStr = 'rotate(' + value.rotation() + 'rad)';
+			if (idxOfRotStart > -1)
+				trs = trs.slice(0, idxOfRotStart) + rotStr + trs.slice(idxOfRotEnd);
 			else
-				node.style.transform = trs.slice(0, idxOfPosStart) + posStr + trs.slice(idxOfPosEnd + 1);
+				trs = rotStr + trs;
+			if (idxOfPosStart > -1)
+				trs = posStr + trs.slice(idxOfPosEnd);
+			else
+				trs = posStr + trs;
+			node.style.transform = trs;
 		}
 	}
 	// Physics Section End
