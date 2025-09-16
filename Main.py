@@ -84,6 +84,9 @@ if not bpy:
 	sys.exit()
 
 MAX_SCRIPTS_PER_OBJECT = 16
+MAX_SHAPE_POINTS = 32
+MAX_ATTACH_COLLIDER_CNT = 64
+MAX_POTRACE_PASSES = 8
 
 def GetScripts (ob, isAPI : bool):
 	scripts = []
@@ -207,16 +210,16 @@ def GetVarNameFromObject (ob):
 		output = output.replace(disallowedChar, '')
 	return output
 
-def GetColor (color : list):
-	_color = ClampComponents(Round(Multiply(color, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-	idxOfColor = IndexOfValue(_color, colors)
-	keyOfColor = ''
-	if idxOfColor == -1:
-		keyOfColor = string.ascii_letters[len(colors)]
-		colors[keyOfColor] = _color
+def GetColor (clr : list):
+	_clr = ClampComponents(Round(Multiply(clr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+	idxOfClr = IndexOfValue(_clr, clrs)
+	keyOfClr = ''
+	if idxOfClr == -1:
+		keyOfClr = string.ascii_letters[len(clrs)]
+		clrs[keyOfClr] = _clr
 	else:
-		keyOfColor = string.ascii_letters[idxOfColor]
-	return keyOfColor
+		keyOfClr = string.ascii_letters[idxOfClr]
+	return keyOfClr
 
 def GetObjectPosition (ob):
 	world = bpy.data.worlds[0]
@@ -233,10 +236,10 @@ def GetObjectPosition (ob):
 	y += offY
 	return Round(Vector((x, y)))
 
-DEFAULT_COLOR = [0, 0, 0, 0]
+DEFAULT_CLR = [0, 0, 0, 0]
 exportedObs = []
 datas = []
-colors = {}
+clrs = {}
 rigidBodies = {}
 colliders = {}
 joints = {}
@@ -270,12 +273,12 @@ def ExportObject (ob):
 		data.append(int(pos[1]))
 		data.append(int(round(ob.location.z)))
 		data.append(int(round(radius * 2)))
-		alpha = round(ob.color1Alpha * 255)
-		color = Round(Multiply(ob.data.color, [255, 255, 255]))
-		data.append(GetColor([color[0], color[1], color[2], alpha]))
-		data.append(GetColor(ob.color2))
-		data.append(GetColor(ob.color3))
-		data.append(list(ob.colorPositions))
+		alpha = round(ob.clr1Alpha * 255)
+		clr = Round(Multiply(ob.data.clr, [255, 255, 255]))
+		data.append(GetColor([clr[0], clr[1], clr[2], alpha]))
+		data.append(GetColor(ob.clr2))
+		data.append(GetColor(ob.clr3))
+		data.append(list(ob.clrPositions))
 		data.append(ob.subtractive)
 		datas.append(data)
 	elif ob.type == 'CURVE':
@@ -369,10 +372,10 @@ def ExportObject (ob):
 				data.append(ob.posPingPong)
 				data.append(TryChangeToInt(size.x))
 				data.append(TryChangeToInt(size.y))
-				materialColor = DEFAULT_COLOR
+				materialClr = DEFAULT_CLR
 				if ob.active_material:
-					materialColor = ob.active_material.diffuse_color
-				data.append(GetColor(materialColor))
+					materialClr = ob.active_material.diffuse_color
+				data.append(GetColor(materialClr))
 				data.append(round(strokeWidth))
 				data.append(GetColor(ob.strokeClr))
 				data.append(ob.name)
@@ -453,6 +456,18 @@ def ExportObject (ob):
 		newMeshData = bpy.data.meshes.new(name='TempExportMesh')
 		newOb = bpy.data.objects.new(name = 'TempExportObject', object_data = newMeshData)
 		tempCollection.objects.link(newOb)
+		visibleClrValues = []
+		tints = []
+		minVisibleClrValue = 1
+		minVisibleClrValueIdx = 0
+		for i in range(MAX_POTRACE_PASSES):
+			if i == 0 or getattr(ob, 'useVisibleClrValue%i' %i):
+				visibleClrValue = getattr(ob, 'visibleClrValue%i' %i)
+				if visibleClrValue < minVisibleClrValue:
+					visibleClrValues.insert(minVisibleClrValueIdx, visibleClrValue)
+					tints.insert(minVisibleClrValueIdx, getattr(ob, 'tintOutput%i' %i))
+					minVisibleClrValueIdx = i
+					minVisibleClrValue = visibleClrValue
 		for matSlotIdx, matSlot in enumerate(ob.material_slots):
 			mat = matSlot.material
 			if mat:
@@ -480,9 +495,9 @@ def ExportObject (ob):
 					prevExposure = viewSettings.exposure
 					prevGamma = viewSettings.gamma
 					prevRenderFormat = imageSettings.file_format
-					prevColorMode = imageSettings.color_mode
+					prevClrMode = imageSettings.color_mode
 					renderSettings.film_transparent = True
-					prevColorManagement = imageSettings.color_management
+					prevClrManagement = imageSettings.color_management
 					prevExposure = viewSettings.exposure
 					prevGamma = viewSettings.gamma
 					if len(bpy.data.lights) == 0:
@@ -496,12 +511,12 @@ def ExportObject (ob):
 					for ob2 in bpy.data.objects:
 						prevHideObsInRender[ob2] = ob2.hide_render
 						ob2.hide_render = ob2 != newOb
-					prevMatColors = {}
+					prevMatClrs = {}
 					for matSlot in ob.material_slots:
 						mat2 = matSlot.material
 						if mat2 and mat != mat2:
-							prevMatColors[mat2] = mat2.diffuse_color
-							mat2.diffuse_color = DEFAULT_COLOR
+							prevMatClrs[mat2] = mat2.diffuse_color
+							mat2.diffuse_color = DEFAULT_CLR
 					# renderResScale = renderSettings.resolution_percentage / 100
 					# minHitDists = {}
 					cam = scene.camera
@@ -530,53 +545,58 @@ def ExportObject (ob):
 					# 				pass
 					renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
 					bpy.ops.render.render(write_still = True)
-					cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(.01), '-i']
-					print(' '.join(cmd))
-					subprocess.check_call(cmd)
-					svgTxt = open(renderSettings.filepath.replace('.bmp', '.svg'), 'r').read()
-					svgTxt = svgTxt.replace('\n', ' ')
-					svgIndctr = '<svg '
-					svgTxt = svgTxt[svgTxt.find(svgIndctr) :]
-					svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
-					metadataEndIndctr = '/metadata>'
-					svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
-					svgTxt = svgTxt.replace('00000', '')
-					svgTxt = svgTxt.replace('.000000', '')
-					camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
-					camToOb = newOb.location - cam.location
-					projectedVec = camToOb.project(camForward)
-					addToSvgTxt = 'id="' + newName + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"'
-					if frame > 0:
-						addToSvgTxt += ' opacity=0'
-					svgTxt = svgTxt[: len(svgIndctr)] + addToSvgTxt + svgTxt[len(svgIndctr) :]
-					fillIndctr = 'fill="'
-					idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
-					idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
-					materialColor = mat.diffuse_color
-					fillClr = ClampComponents(Round(Multiply(materialColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-					if ob.gradientFill:
-						svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.gradientFill.name + ')' + svgTxt[idxOfFillEnd :]
-					else:
-						svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillClr[0]) + ' ' + str(fillClr[1]) + ' ' + str(fillClr[2]) + ')' + svgTxt[idxOfFillEnd :]
-					if ob.useStroke:
-						strokeClr = ClampComponents(Round(Multiply(ob.strokeClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-						svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeClr[0]) + ' ' + str(strokeClr[1]) + ' ' + str(strokeClr[2]) + ')" stroke-width=' + str(ob.strokeWidth))
+					for i, tint in enumerate(tints):
+						prevName = newName
+						if i > 0:
+							newName += '_' + str(i)
+						cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(visibleClrValues[i]), '-i']
+						print(' '.join(cmd))
+						subprocess.check_call(cmd)
+						svgTxt = open(renderSettings.filepath.replace('.bmp', '.svg'), 'r').read()
+						svgTxt = svgTxt.replace('\n', ' ')
+						svgIndctr = '<svg '
+						svgTxt = svgTxt[svgTxt.find(svgIndctr) :]
+						svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
+						metadataEndIndctr = '/metadata>'
+						svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
+						svgTxt = svgTxt.replace('00000', '')
+						svgTxt = svgTxt.replace('.000000', '')
+						camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
+						camToOb = newOb.location - cam.location
+						projectedVec = camToOb.project(camForward)
+						addToSvgTxt = 'id="' + newName + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"'
+						if frame > 0:
+							addToSvgTxt += ' opacity=0'
+						svgTxt = svgTxt[: len(svgIndctr)] + addToSvgTxt + svgTxt[len(svgIndctr) :]
+						fillIndctr = 'fill="'
+						idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
+						idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
+						materialClr = mat.diffuse_color
+						fillClr = ClampComponents(Round(Multiply(materialClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+						if ob.gradientFill:
+							svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.gradientFill.name + ')' + svgTxt[idxOfFillEnd :]
+						else:
+							svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillClr[0] * tint[0]) + ' ' + str(fillClr[1] * tint[1]) + ' ' + str(fillClr[2] * tint[2]) + ')' + svgTxt[idxOfFillEnd :]
+						if ob.useStroke:
+							strokeClr = ClampComponents(Round(Multiply(ob.strokeClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+							svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeClr[0]) + ' ' + str(strokeClr[1]) + ' ' + str(strokeClr[2]) + ')" stroke-width=' + str(ob.strokeWidth))
+						svgsDatas[newName] = svgTxt
+						newName = prevName
 					for ob in bpy.data.objects:
 						ob.hide_render = prevHideObsInRender[ob]
 					for matSlot in ob.material_slots:
 						mat2 = matSlot.material
-						if mat2 in prevMatColors:
-							mat2.diffuse_color = prevMatColors[mat2]
+						if mat2 in prevMatClrs:
+							mat2.diffuse_color = prevMatClrs[mat2]
 					renderSettings.filepath = prevRenderPath
 					renderSettings.film_transparent = prevTransparentFilm
 					viewSettings.exposure = prevExposure
 					viewSettings.gamma = prevGamma
 					imageSettings.file_format = prevRenderFormat
-					imageSettings.color_mode = prevColorMode
-					imageSettings.color_management = prevColorManagement
+					imageSettings.color_mode = prevClrMode
+					imageSettings.color_management = prevClrManagement
 					viewSettings.exposure = prevExposure
 					viewSettings.gamma = prevGamma
-					svgsDatas[newName] = svgTxt
 		tempCollection.objects.unlink(newOb)
 		bpy.data.objects.remove(newOb)
 		bpy.data.meshes.remove(newMeshData)
@@ -599,9 +619,9 @@ def ExportObject (ob):
 		prevExposure = viewSettings.exposure
 		prevGamma = viewSettings.gamma
 		prevRenderFormat = imageSettings.file_format
-		prevColorMode = imageSettings.color_mode
+		prevClrMode = imageSettings.color_mode
 		renderSettings.film_transparent = True
-		prevColorManagement = imageSettings.color_management
+		prevClrManagement = imageSettings.color_management
 		prevExposure = viewSettings.exposure
 		prevGamma = viewSettings.gamma
 		if len(bpy.data.lights) == 0:
@@ -612,20 +632,20 @@ def ExportObject (ob):
 		imageSettings.color_mode = 'BW'
 		renderPaths = []
 		world = bpy.data.worlds[0]
-		worldColor = world.color
-		prevWorldColor = list(worldColor)
+		worldClr = world.color
+		prevWorldClr = list(worldClr)
 		prevMatAlpha = ob.active_material.grease_pencil.color[3]
 		ob.active_material.grease_pencil.color = Subtract([1, 1, 1, 1], ob.active_material.grease_pencil.color)
 		ob.active_material.grease_pencil.color[3] = prevMatAlpha
 		world.color = [0, 0, 0]
-		prevObsColors = {}
+		prevObsClrs = {}
 		for ob2 in bpy.data.objects:
 			if ob2 != ob:
 				mat = ob2.active_material
 				if mat:
 					matClr = mat.diffuse_color
-					prevObsColors[ob2] = list(matClr)
-					mat.diffuse_color = DEFAULT_COLOR
+					prevObsClrs[ob2] = list(matClr)
+					mat.diffuse_color = DEFAULT_CLR
 		cam = scene.camera
 		renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
 		bpy.ops.render.render(write_still = True)
@@ -646,11 +666,11 @@ def ExportObject (ob):
 		fillIndctr = 'fill="'
 		idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
 		idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
-		materialColor = DEFAULT_COLOR
+		materialClr = DEFAULT_CLR
 		if ob.active_material:
-			materialColor = ob.active_material.diffuse_color
-		prevMatAlpha = materialColor[3]
-		fillClr = Subtract([1, 1, 1, 1], materialColor)
+			materialClr = ob.active_material.diffuse_color
+		prevMatAlpha = materialClr[3]
+		fillClr = Subtract([1, 1, 1, 1], materialClr)
 		fillClr[3] = prevMatAlpha
 		fillClr = ClampComponents(Round(Multiply(fillClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
 		svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillClr[0]) + ' ' + str(fillClr[1]) + ' ' + str(fillClr[2]) + ')' + svgTxt[idxOfFillEnd :]
@@ -659,17 +679,17 @@ def ExportObject (ob):
 			svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeClr[0]) + ' ' + str(strokeClr[1]) + ' ' + str(strokeClr[2]) + ')" stroke-width=' + str(ob.strokeWidth))
 		ob.active_material.grease_pencil.color = Subtract([1, 1, 1, 1], ob.active_material.grease_pencil.color)
 		ob.active_material.grease_pencil.color[3] = prevMatAlpha
-		world.color = prevWorldColor
+		world.color = prevWorldClr
 		for ob2 in bpy.data.objects:
-			if ob2 in prevObsColors:
-				ob2.active_material.diffuse_color = prevObsColors[ob2]
+			if ob2 in prevObsClrs:
+				ob2.active_material.diffuse_color = prevObsClrs[ob2]
 		renderSettings.filepath = prevRenderPath
 		renderSettings.film_transparent = prevTransparentFilm
 		viewSettings.exposure = prevExposure
 		viewSettings.gamma = prevGamma
 		imageSettings.file_format = prevRenderFormat
-		imageSettings.color_mode = prevColorMode
-		imageSettings.color_management = prevColorManagement
+		imageSettings.color_mode = prevClrMode
+		imageSettings.color_management = prevClrManagement
 		viewSettings.exposure = prevExposure
 		viewSettings.gamma = prevGamma
 		svgsDatas[ob.name] = svgTxt
@@ -904,11 +924,11 @@ def GetPathDelta (fromPathData, toPathData):
 	return output
 
 def GetBlenderData ():
-	global datas, colors, userJS, initCode, pathsDatas, updateCode, exportedObs, svgsDatas
+	global datas, clrs, userJS, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, rigidBodies, colliders, joints, charControllers
 	exportedObs = []
 	userJS = ''
 	datas = []
-	colors = {}
+	clrs = {}
 	pathsDatas = []
 	imgs = {}
 	imgsPaths = []
@@ -1209,7 +1229,7 @@ class api
 			document.getElementById(id).appendChild(node);
 		}
 	}
-	add_radial_gradient (id, pos, zIdx, diameter, color, color2, color3, colorPositions, subtractive)
+	add_radial_gradient (id, pos, zIdx, diameter, clr, clr2, clr3, clrPositions, subtractive)
 	{
 		var group = document.createElementNS(svgNS, 'g');
 		group.id = id;
@@ -1218,7 +1238,7 @@ class api
 		var mixMode = 'lighter';
 		if (subtractive)
 			mixMode = 'darker';
-		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + color[3] + ') ' + colorPositions[0] + '%, rgba(' + color2[0] + ',' + color2[1] + ',' + color2[2] + ',' + color2[3] + ') ' + colorPositions[1] + '%, rgba(' + color3[0] + ',' + color3[1] + ',' + color3[2] + ',' + color3[3] + ') ' + colorPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
+		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ',' + clr[1] + ',' + clr[2] + ',' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ',' + clr2[1] + ',' + clr2[2] + ',' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ',' + clr3[1] + ',' + clr3[2] + ',' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
 	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
@@ -1405,9 +1425,9 @@ class api
 			pathRect = childRect;
 		}
 	}
-	hatch (id, color, useFIll, svg, path, density, randDensity, ang, width)
+	hatch (id, clr, useFIll, svg, path, density, randDensity, ang, width)
 	{
-		var luminance = (.2126 * color[0] + .7152 * color[1] + .0722 * color[2]) / 255;
+		var luminance = (.2126 * clr[0] + .7152 * clr[1] + .0722 * clr[2]) / 255;
 		var pattern = document.createElementNS(svgNS, 'pattern');
 		pattern.id = id;
 		pattern.style = 'transform:rotate(' + ang + 'deg)';
@@ -1495,7 +1515,7 @@ var $ = new api;
 '''
 
 def GenJsAPI (world):
-	global datas, userJS, colors
+	global datas, userJS, clrs
 	jsApi = JS_API
 	if not usePhysics:
 		while True:
@@ -1551,10 +1571,10 @@ def GenJsAPI (world):
 	js = js.replace('// Init', '\n'.join(initCode))
 	js = js.replace('// Update', '\n'.join(updateCode))
 	datas = json.dumps(datas).replace(', ', ',')
-	colors = json.dumps(colors).replace(' ', '')
+	clrs = json.dumps(clrs).replace(' ', '')
 	if world.minifyMethod == 'terser':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
-		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + colors + '`\n' + JS_SUFFIX
+		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-no_compress', dontMangleArg]
 		print(' '.join(cmd))
@@ -1562,18 +1582,18 @@ def GenJsAPI (world):
 		js = open(jsTmp, 'r').read()
 	elif world.minifyMethod == 'roadroller':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
-		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + colors + '`\n' + JS_SUFFIX
+		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['npx', 'roadroller', jsTmp, '-o', jsTmp]
 		print(' '.join(cmd))
 		subprocess.check_call(cmd)
 		js = open(jsTmp, 'r').read()
 	else:
-		js += '\nvar D=`' + datas + '`;\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + colors + '`\n' + JS_SUFFIX.replace('\t', '')
+		js += '\nvar D=`' + datas + '`;\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\n' + JS_SUFFIX.replace('\t', '')
 	return js
 
 def GenHtml (world, datas, background = ''):
-	global userJS, colors, initCode, updateCode, pathsDatas
+	global userJS, clrs, initCode, updateCode, pathsDatas
 	js = GenJsAPI(world)
 	if background:
 		background = 'background-color:%s;' %background
@@ -1718,8 +1738,8 @@ def OnDrawColliders (self, ctx):
 		rot.x = 0
 		rot.y = 0
 		matrix = Matrix.LocRotScale(pos, rot, Vector((1, 1, 1)))
-		color = (0.2, 1.0, 0.2, 0.8)
-		shader.uniform_float('color', color)
+		clr = (0.2, 1.0, 0.2, 0.8)
+		shader.uniform_float('color', clr)
 		if ob.shapeType == 'ball':
 			radius = ob.radius
 			segments = 32
@@ -1944,10 +1964,10 @@ bpy.types.Object.scaleDur = bpy.props.FloatProperty(name = 'Scale duration', min
 bpy.types.Object.scaleHaltDurAtMin = bpy.props.FloatProperty(name = 'Halt duration at min', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scaleHaltDurAtMin'))
 bpy.types.Object.scaleHaltDurAtMax = bpy.props.FloatProperty(name = 'Halt duration at max', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scaleHaltDurAtMax'))
 bpy.types.Object.cycleDur = bpy.props.FloatProperty(name = 'Cycle stroke duration', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'cycleDur'))
-bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'color2'))
-bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'color3'))
-bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'color1Alpha'))
-bpy.types.Object.colorPositions = bpy.props.IntVectorProperty(name = 'Color Positions', size = 3, min = 0, max = 100, default = [0, 50, 100], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'colorPositions'))
+bpy.types.Object.clr2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'clr2'))
+bpy.types.Object.clr3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'clr3'))
+bpy.types.Object.clr1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'clr1Alpha'))
+bpy.types.Object.clrPositions = bpy.props.IntVectorProperty(name = 'Color Positions', size = 3, min = 0, max = 100, default = [0, 50, 100], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'clrPositions'))
 bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'subtractive'))
 bpy.types.Object.useFillHatch = bpy.props.BoolVectorProperty(name = 'Use fill hatch', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useFilLHatch'))
 bpy.types.Object.fillHatchDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch density', size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'fillHatchDensity'))
@@ -2037,7 +2057,6 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 		'initScript%s' %i,
 		bpy.props.BoolProperty(name = 'Is init', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'initScript%s' %i))
 	)
-MAX_SHAPE_POINTS = 32
 for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
@@ -2047,7 +2066,7 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'usePolylinePoint%s' %i,
-		bpy.props.BoolProperty(name = 'Include%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'usePolylinePoint%s' %i))
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'usePolylinePoint%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
@@ -2062,7 +2081,7 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'useTrimeshPoint%s' %i,
-		bpy.props.BoolProperty(name = 'Include%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useTrimeshPoint%s' %i))
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useTrimeshPoint%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
@@ -2077,30 +2096,46 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'useConvexHullPoint%s' %i,
-		bpy.props.BoolProperty(name = 'Include%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useConvexHullPoint%s' %i))
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useConvexHullPoint%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'height%s' %i,
-		bpy.props.FloatProperty(name = 'Point%s' %i)
+		bpy.props.FloatProperty(name = 'Point%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'height%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'useHeight%s' %i,
-		bpy.props.BoolProperty(name = 'Include%s' %i)
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useHeight%s' %i))
 	)
-MAX_ATTACH_COLLIDER_CNT = 64
 for i in range(MAX_ATTACH_COLLIDER_CNT):
 	setattr(
 		bpy.types.Object,
 		'attachTo%s' %i,
-		bpy.props.PointerProperty(name = 'Rigid body%s' %i, type = bpy.types.Object)
+		bpy.props.PointerProperty(name = 'Rigid body%s' %i, type = bpy.types.Object, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'attachTo%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'attach%s' %i,
-		bpy.props.BoolProperty(name = 'Attach to rigid body%s' %i)
+		bpy.props.BoolProperty(name = 'Attach to rigid body%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'attach%s' %i))
 	)
+for i in range(MAX_POTRACE_PASSES):
+	setattr(
+		bpy.types.Object,
+		'visibleClrValue%i' %i,
+		bpy.props.FloatProperty(name = 'Visible color value threshold', min = 0, max = 1, default = .01, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'visibleClrValue%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'tintOutput%i' %i,
+		bpy.props.FloatVectorProperty(name = 'Tint output', subtype = 'COLOR', size = 4, default = [1, 1, 1, 1], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'tintOutput%s' %i))
+	)
+	if i > 0:
+		setattr(
+			bpy.types.Object,
+			'useVisibleClrValue%i' %i,
+			bpy.props.BoolProperty(name = 'Use', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useVisibleClrValue%s' %i))
+		)
 
 @bpy.utils.register_class
 class HTMLExport (bpy.types.Operator):
@@ -2245,6 +2280,15 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'minPosFrame')
 			self.layout.prop(ob, 'maxPosFrame')
 			self.layout.prop(ob, 'posPingPong')
+		if ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
+			for i in range(MAX_POTRACE_PASSES):
+				row = self.layout.row()
+				row.prop(ob, 'visibleClrValue%s' %i)
+				row.prop(ob, 'tintOutput%s' %i)
+				if i > 0:
+					row.prop(ob, 'useVisibleClrValue%s' %i)
+					if not getattr(ob, 'useVisibleClrValue%s' %i):
+						return
 		self.layout.label(text = 'Scripts')
 		foundUnassignedScript = False
 		for i in range(MAX_SCRIPTS_PER_OBJECT):
@@ -2278,10 +2322,10 @@ class LightPanel (bpy.types.Panel):
 		ob = ctx.active_object
 		if not ob or ob.type != 'LIGHT':
 			return
-		self.layout.prop(ob, 'color2')
-		self.layout.prop(ob, 'color3')
-		self.layout.prop(ob, 'color1Alpha')
-		self.layout.prop(ob, 'colorPositions')
+		self.layout.prop(ob, 'clr2')
+		self.layout.prop(ob, 'clr3')
+		self.layout.prop(ob, 'clr1Alpha')
+		self.layout.prop(ob, 'clrPositions')
 		self.layout.prop(ob, 'subtractive')
 
 @bpy.utils.register_class
@@ -2549,7 +2593,7 @@ class ConvertSelectedObjectsToCurves (bpy.types.Operator):
 		prevExposure = viewSettings.exposure
 		prevGamma = viewSettings.gamma
 		prevRenderFormat = imageSettings.file_format
-		prevColorMode = imageSettings.color_mode
+		prevClrMode = imageSettings.color_mode
 		renderSettings.film_transparent = True
 		if len(bpy.data.lights) == 0:
 			imageSettings.color_management = 'OVERRIDE'
@@ -2599,7 +2643,7 @@ class ConvertSelectedObjectsToCurves (bpy.types.Operator):
 		viewSettings.exposure = prevExposure
 		viewSettings.gamma = prevGamma
 		imageSettings.file_format = prevRenderFormat
-		imageSettings.color_mode = prevColorMode
+		imageSettings.color_mode = prevClrMode
 		cmd = [POTRACE_PATH, '-o ' + os.path.join(TMP_DIR, 'Render.svg'), '-s']
 		cmd += renderPaths
 		print(' '.join(cmd))
