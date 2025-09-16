@@ -1,4 +1,5 @@
 import os, sys, json, string, atexit, webbrowser, subprocess, math
+from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
 EXTENSIONS_SCRIPTS_PATH = os.path.join(_thisDir, 'Extensions')
@@ -192,6 +193,20 @@ def ToByteString (n, delimeters = '\\`', escapeQuotes : bool = True):
 		byteStr = '\\' + byteStr
 	return byteStr
 
+def ToVector2String (prop : bpy.props.FloatVectorProperty):
+	return '{x : ' + str(prop[0]) + ', y : ' + str(-prop[1]) + '}'
+
+def GetFileName (filePath : str):
+	filePath = filePath.replace('\\', '/')
+	return filePath[filePath.rfind('/') + 1 :]
+
+def GetVarNameFromObject (ob):
+	output = '_' + ob.name
+	disallowedChars = '/\\`~?|!@#$%^&*()[]{}<>=+-;:",.' + "'"
+	for disallowedChar in disallowedChars:
+		output = output.replace(disallowedChar, '')
+	return output
+
 def GetColor (color : list):
 	_color = ClampComponents(Round(Multiply(color, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
 	idxOfColor = IndexOfValue(_color, colors)
@@ -218,16 +233,6 @@ def GetObjectPosition (ob):
 	y += offY
 	return Round(Vector((x, y)))
 
-def GetVarNameFromObject (ob):
-	output = '_' + ob.name
-	disallowedChars = '/\\`~?|!@#$%^&*()[]{}<>=+-;:",.' + "'"
-	for disallowedChar in disallowedChars:
-		output = output.replace(disallowedChar, '')
-	return output
-
-def ToVector2String (prop : bpy.props.FloatVectorProperty):
-	return '{x : ' + str(prop[0]) + ', y : ' + str(-prop[1]) + '}'
-
 DEFAULT_COLOR = [0, 0, 0, 0]
 exportedObs = []
 datas = []
@@ -237,7 +242,8 @@ colliders = {}
 joints = {}
 charControllers = {}
 pathsDatas = []
-canvasElts = []
+imgs = {}
+imgsPaths = []
 initCode = []
 updateCode = []
 userJS = ''
@@ -378,7 +384,7 @@ def ExportObject (ob):
 				data.append(ob.jiggleFrames * int(ob.useJiggle))
 				data.append(TryChangeToInt(ob.rotAngRange[0]))
 				data.append(TryChangeToInt(ob.rotAngRange[1]))
-				data.append(TryChangeToInt(ob.rotDur * int(ob.useRotate)))
+				data.append(TryChangeToInt(ob.rotDur * int(ob.useRot)))
 				data.append(ob.rotPingPong)
 				data.append(TryChangeToInt(ob.scaleXRange[0]))
 				data.append(TryChangeToInt(ob.scaleXRange[1]))
@@ -548,8 +554,8 @@ def ExportObject (ob):
 					idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
 					materialColor = mat.diffuse_color
 					fillClr = ClampComponents(Round(Multiply(materialColor, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-					if ob.lightFill:
-						svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.lightFill.name + ')' + svgTxt[idxOfFillEnd :]
+					if ob.gradientFill:
+						svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.gradientFill.name + ')' + svgTxt[idxOfFillEnd :]
 					else:
 						svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillClr[0]) + ' ' + str(fillClr[1]) + ' ' + str(fillClr[2]) + ')' + svgTxt[idxOfFillEnd :]
 					if ob.useStroke:
@@ -676,8 +682,12 @@ def ExportObject (ob):
 			datas.append([ob.name, childrenNames])
 		if ob.empty_display_type == 'IMAGE':
 			obData = ob.data
-			image = '<img src=' + obData.filepath + ' width=' + str(obData.size[0]) + ' height=' + str(obData.size[1]) + '>'
-			canvasElts.append(image)
+			imgName = GetFileName(obData.filepath)
+			img = '<img id="' + ob.name + '" src="' + imgName + '" width=' + str(obData.size[0]) + ' height=' + str(obData.size[1]) + '" style="position:absolute">'
+			imgPath = TMP_DIR + '/' + imgName
+			ob.data.save(filepath = imgPath)
+			imgs[ob.name] = img
+			imgsPaths.append(imgPath)
 	exportedObs.append(ob)
 
 def RegisterPhysics (ob):
@@ -692,7 +702,7 @@ def RegisterPhysics (ob):
 		if ob.rotation_euler.z != 0:
 			rigidBody += '.setRotation(' + str(ob.location.z * (math.pi / 180)) + ')'
 		ob.rotation_mode = prevRotMode
-		if not ob.canRotate:
+		if not ob.canRot:
 			rigidBody += '.lockRotations();\n'
 		rigidBody += ';\n'
 		if not ob.rigidBodyEnable:
@@ -894,6 +904,8 @@ def GetBlenderData ():
 	datas = []
 	colors = {}
 	pathsDatas = []
+	imgs = {}
+	imgsPaths = []
 	rigidBodies = {}
 	colliders = {}
 	joints = {}
@@ -946,7 +958,7 @@ for (var e of d)
 }
 for (var e of g)
 {
-	var newGroup = document.createElement('g');
+	var newGroup = document.createElementNS(svgNS, 'g');
 	newGroup.id = e[0];
 	document.body.appendChild(newGroup);
 	$.add_children (e[0], e[1]);
@@ -954,6 +966,7 @@ for (var e of g)
 $.main ()
 '''
 JS = '''
+var svgNS = "http://www.w3.org/2000/svg";
 function dot (from, to)
 {
 	return from[0] * to[0] + from[1] * to[1];
@@ -1069,7 +1082,7 @@ function random (min, max)
 }
 function add_group (id, pos, txt)
 {
-	var group = document.createElement('g');
+	var group = document.createElementNS(svgNS, 'g');
 	group.id = id;
 	group.setAttribute('x', pos[0]);
 	group.setAttribute('y', pos[1]);
@@ -1086,6 +1099,10 @@ function shuffle (arr)
 		currIdx --;
 		[arr[currIdx], arr[randIdx]] = [arr[randIdx], arr[currIdx]];
 	}
+}
+function draw_img (img, x, y, width, height)
+{
+	ctx.drawImage(img, x, y, width, height);
 }
 '''
 PHYSICS = '''
@@ -1105,6 +1122,10 @@ RAPIER.init().then(() => {
 	// Joints
 	// Char Controllers
 });
+'''
+CANVAS = '''
+var canvas = document.getElementById("!");
+var ctx = canvas.getContext("2d");
 '''
 JS_API = '''
 class api
@@ -1188,7 +1209,7 @@ class api
 	}
 	add_radial_gradient (id, pos, zIdx, diameter, color, color2, color3, colorPositions, subtractive)
 	{
-		var group = document.createElement('g');
+		var group = document.createElementNS(svgNS, 'g');
 		group.id = id;
 		group.setAttribute('x', pos[0]);
 		group.setAttribute('y', pos[1]);
@@ -1203,7 +1224,7 @@ class api
 		var fillClrTxt = 'rgb(' + fillClr[0] + ' ' + fillClr[1] + ' ' + fillClr[2] + ')';
 		var lineClrTxt = 'rgb(' + lineClr[0] + ' ' + lineClr[1] + ' ' + lineClr[2] + ')';
 		var pos = positions[0];
-		var svg = document.createElement('svg');
+		var svg = document.createElementNS(svgNS, 'svg');
 		svg.setAttribute('fill-opacity', fillClr[3] / 255);
 		svg.id = id;
 		svg.style = 'z-index:' + zIdx + ';position:absolute';
@@ -1221,7 +1242,7 @@ class api
 		var firstFrame = '';
 		for (var pathVals of pathsValsAndStrings[0])
 		{
-			var path = document.createElement('path');
+			var path = document.createElementNS(svgNS, 'path');
 			path.id = id + ' ';
 			if (i > 0)
 				path.setAttribute('opacity', 0);
@@ -1229,7 +1250,7 @@ class api
 			path.setAttribute('d', pathVals);
 			if (jiggleFrames > 0)
 			{
-				anim = document.createElement('animate');
+				anim = document.createElementNS(svgNS, 'animate');
 				anim.setAttribute('attributename', 'd');
 				anim.setAttribute('repeatcount', 'indefinite');
 				anim.setAttribute('dur', jiggleDur + 's');
@@ -1258,7 +1279,7 @@ class api
 			svg.appendChild(path);
 			i ++;
 		}
-		document.body.innerHTML += svg.outerHTML;
+		document.body.appendChild(svg);
 		var off = lineWidth / 2 + jiggleDist;
 		var min = 32 - off;
 		svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
@@ -1269,7 +1290,7 @@ class api
 		path.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
 		if (rotDur > 0)
 		{
-			anim = document.createElement('animatetransform');
+			anim = document.createElementNS(svgNS, 'animatetransform');
 			anim.setAttribute('attributename', 'transform');
 			anim.setAttribute('type', 'rotate');
 			anim.setAttribute('repeatcount', 'indefinite');
@@ -1291,7 +1312,7 @@ class api
 		var totalScaleDur = scaleDur + scaleHaltDurAtMin + scaleHaltDurAtMax;
 		if (totalScaleDur > 0)
 		{
-			anim = document.createElement('animatetransform');
+			anim = document.createElementNS(svgNS, 'animatetransform');
 			anim.setAttribute('attributename', 'transform');
 			anim.setAttribute('type', 'scale');
 			anim.setAttribute('repeatcount', 'indefinite');
@@ -1323,7 +1344,7 @@ class api
 		}
 		if (cycleDur != 0)
 		{
-			anim = document.createElement('animate');
+			anim = document.createElementNS(svgNS, 'animate');
 			anim.setAttribute('attributename', 'stroke-dashoffset');
 			anim.setAttribute('repeatcount', 'indefinite');
 			var pathLen = path.getTotalLength();
@@ -1385,7 +1406,7 @@ class api
 	hatch (id, color, useFIll, svg, path, density, randDensity, ang, width)
 	{
 		var luminance = (.2126 * color[0] + .7152 * color[1] + .0722 * color[2]) / 255;
-		var pattern = document.createElement('pattern');
+		var pattern = document.createElementNS(svgNS, 'pattern');
 		pattern.id = id;
 		pattern.style = 'transform:rotate(' + ang + 'deg)';
 		pattern.setAttribute('width', '100%');
@@ -1476,12 +1497,24 @@ def GenJsAPI (world):
 	jsApi = JS_API
 	if not usePhysics:
 		while True:
-			idxOfPhysicsSectionStart = jsApi.find('// Physics Section Start')
+			physicsSectionStartIndctr = '// Physics Section Start'
+			idxOfPhysicsSectionStart = jsApi.find(physicsSectionStartIndctr) + len(physicsSectionStartIndctr)
 			if idxOfPhysicsSectionStart == -1:
 				break
-			idxOfPhysicsSectionEnd = jsApi.find('// Physics Section End')
+			physicsSectionEndIndctr = '// Physics Section End'
+			idxOfPhysicsSectionEnd = jsApi.find(physicsSectionEndIndctr) + len(physicsSectionEndIndctr)
 			jsApi = jsAp[: idxOfPhysicsSectionStart] + jsAp[idxOfPhysicsSectionEnd :]
 	js = [JS, jsApi, userJS]
+	if imgs != {}:
+		js += [CANVAS]
+		for key in imgs.keys():
+			img = 'var img = document.getElementById("' + key + '''");
+if (img.complete)
+	draw_img (img, 0, 0, 100, 100);
+else
+	img.addEventListener("load", () => { draw_img (img, 0, 0, 100, 100); });
+'''
+			js += [img]
 	if usePhysics:
 		physics = PHYSICS
 		vars = ''
@@ -1551,8 +1584,8 @@ def GenHtml (world, datas, background = ''):
 	global userJS, colors, initCode, updateCode, pathsDatas
 	js = GenJsAPI(world)
 	canvas = ''
-	if canvasElts != []:
-		canvas = '<canvas id="!" ' + ' style="position:absolute">'
+	if imgs != {}:
+		canvas = '<canvas id="!" ' + ' style="position:absolute;width:100%;height:100%">'
 	if background:
 		background = 'background-color:%s;' %background
 	o = [
@@ -1560,6 +1593,7 @@ def GenHtml (world, datas, background = ''):
 		'<html style="' + background + 'width:9999px;height:9999px;overflow:hidden">',
 		'<body>',
 		canvas,
+		''.join(imgs.values()),
 		''.join(svgsDatas.values()),
 		'<script type="module">',
 		js,
@@ -1597,38 +1631,37 @@ def BuildHtml (world):
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
 	html = GenHtml(world, datas)
-	open(TMP_DIR + '/index.html', 'w').write(html)
-	if world.js13kbjam:
-		if os.path.isfile('/usr/bin/zip'):
-			cmd = ['zip', '-9', 'index.html.zip', 'index.html']
-			print(' '.join(cmd))
-			subprocess.check_call(cmd, cwd = TMP_DIR)
+	htmlPath = os.path.expanduser(world.htmlPath)
+	htmlPath = htmlPath.replace('\\', '/')
+	if not htmlPath:
+		htmlPath = TMP_DIR + '/index.html'
+	if not htmlPath.endswith('.html'):
+		htmlPath += '.html'
+	print('Saving:', htmlPath)
+	open(htmlPath, 'w').write(html)
+	zipPath = os.path.expanduser(world.zipPath)
+	zipPath = zipPath.replace('\\', '/')
+	if not zipPath.endswith('.zip'):
+		zipPath += '.zip'
+	print('Saving:', zipPath)
+	with ZipFile(zipPath, 'w') as zip:
+		zip.write(htmlPath, GetFileName(htmlPath))
+		for imgPath in imgsPaths:
+			zip.write(imgPath, GetFileName(imgPath))
+		zip.extractall(zipPath.replace('.zip', ''))
+	zip = open(zipPath, 'rb').read()
+	buildInfo['zip'] = zipPath
+	buildInfo['zip-size'] = len(zip)
+	if world.js13kbjam and len(html.encode('utf-8')) > 1024 * 13:
+		raise SyntaxError('HTML is over 13kb')
+	webbrowser.open(zipPath.replace('.zip', '/index.html'))
 
-			zip = open(TMP_DIR + '/index.html.zip', 'rb').read()
-			buildInfo['zip-size'] = len(zip)
-			if world.exportZip:
-				out = os.path.expanduser(world.exportZip)
-				if not out.endswith('.zip'):
-					out += '.zip'
-				buildInfo['zip'] = out
-				print('Saving:', out)
-				open(out, 'wb').write(zip)
-			else:
-				buildInfo['zip'] = TMP_DIR + '/index.html.zip'
-		elif len(html.encode('utf-8')) > 1024 * 13:
-			raise SyntaxError('HTML is over 13kb')
-	if world.exportHtml:
-		out = os.path.expanduser(world.exportHtml)
-		print('Saving:', out)
-		open(out,'w').write(html)
-		webbrowser.open(out)
+	# cmd = ['python', '-m', 'http.setAttributerver', '6969']
+	# print(' '.join(cmd))
+	# SERVER_PROC = subprocess.Popen(cmd, cwd = TMP_DIR)
 
-	else:
-		cmd = ['python', '-m', 'http.setAttributerver', '6969']
-		SERVER_PROC = subprocess.Popen(cmd, cwd = TMP_DIR)
-
-		atexit.register(lambda: SERVER_PROC.kill())
-		webbrowser.open('http://localhost:6969')
+	# atexit.register(lambda : SERVER_PROC.kill())
+	# webbrowser.open('http://localhost:6969')
 	PostBuild ()
 	bpy.ops.object.mode_set(mode = prevMode)
 	return html
@@ -1683,7 +1716,7 @@ def BuildUnity (world):
 	# print(scene.entry.anchor)
 	PostBuild ()
 
-def DrawCollidersCallback (self, context):
+def OnDrawColliders (self, ctx):
 	gpu.state.blend_set('ALPHA')
 	gpu.state.line_width_set(2)
 	shader = gpu.shader.from_builtin('UNIFORM_COLOR')
@@ -1841,7 +1874,18 @@ def DrawCollidersCallback (self, context):
 		# 	batch.draw(shader)
 	gpu.state.blend_set('NONE')
 
+canUpdateProps = True
+def OnUpdateProperty (self, ctx, propName):
+	global canUpdateProps
+	if not canUpdateProps:
+		return
+	canUpdateProps = False
+	for ob in ctx.selected_objects:
+		if ob != self:
+			setattr(ob, propName, getattr(self, propName))
+
 def Update ():
+	canUpdateProps = True
 	for ob in bpy.data.objects:
 		for matSlot in ob.material_slots:
 			mat = matSlot.material
@@ -1878,186 +1922,174 @@ JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('', '', ''), ('spring', 'spring', '
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOff = bpy.props.IntVectorProperty(name = 'Offset', size = 2)
-bpy.types.World.exportHtml = bpy.props.StringProperty(name = 'Export .html')
-bpy.types.World.exportZip = bpy.props.StringProperty(name = 'Export .zip')
+bpy.types.World.htmlPath = bpy.props.StringProperty(name = 'Export .html')
+bpy.types.World.zipPath = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = TMP_DIR + '/TestUnityProject')
 bpy.types.World.minifyMethod = bpy.props.EnumProperty(name = 'Minify using library', items = MINIFY_METHOD_ITEMS)
 bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Length unit', min = 0, default = 1)
-bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True)
-bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50])
-bpy.types.Object.collide = bpy.props.BoolProperty(name = 'Collide')
-bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke')
-bpy.types.Object.strokeWidth = bpy.props.FloatProperty(name = 'Stroke width')
+bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundPosAndSize'))
+bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'origin'))
+bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStroke'))
+bpy.types.Object.strokeWidth = bpy.props.FloatProperty(name = 'Stroke width', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeWidth'))
 bpy.types.Object.strokeClr = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
-bpy.types.Object.lightFill = bpy.props.PointerProperty(name = 'Fill with light', type = bpy.types.Light)
-bpy.types.Object.capType = bpy.props.EnumProperty(name = 'Stroke cap type', items = CAP_TYPE_ITEMS)
-bpy.types.Object.joinType = bpy.props.EnumProperty(name = 'Stroke corner type', items = JOIN_TYPE_ITEMS)
-bpy.types.Object.dashLengthsAndSpaces = bpy.props.FloatVectorProperty(name = 'Stroke dash lengths and spaces', size = 5, min = 0)
-bpy.types.Object.mirrorX = bpy.props.BoolProperty(name = 'Mirror on x-axis')
-bpy.types.Object.mirrorY = bpy.props.BoolProperty(name = 'Mirror on y-axis')
-bpy.types.Object.useJiggle = bpy.props.BoolProperty(name = 'Use jiggle')
-bpy.types.Object.jiggleDist = bpy.props.FloatProperty(name = 'Jiggle distance', min = 0)
-bpy.types.Object.jiggleDur = bpy.props.FloatProperty(name = 'Jiggle duration', min = 0)
-bpy.types.Object.jiggleFrames = bpy.props.IntProperty(name = 'Jiggle frames', min = 0)
-bpy.types.Object.useRotate = bpy.props.BoolProperty(name = 'Use rotate')
-bpy.types.Object.rotPingPong = bpy.props.BoolProperty(name = 'Ping pong rotate')
-bpy.types.Object.rotAngRange = bpy.props.FloatVectorProperty(name = 'Rotate ang range', size = 2)
-bpy.types.Object.rotDur = bpy.props.FloatProperty(name = 'Rotate duration', min = 0)
-bpy.types.Object.useScale = bpy.props.BoolProperty(name = 'Use scale')
-bpy.types.Object.scalePingPong = bpy.props.BoolProperty(name = 'Ping pong scale')
-bpy.types.Object.scaleXRange = bpy.props.FloatVectorProperty(name = 'X scale range', size = 2)
-bpy.types.Object.scaleYRange = bpy.props.FloatVectorProperty(name = 'Y scale range', size = 2)
-bpy.types.Object.scaleDur = bpy.props.FloatProperty(name = 'Scale duration', min = 0)
-bpy.types.Object.scaleHaltDurAtMin = bpy.props.FloatProperty(name = 'Halt duration at min', min = 0)
-bpy.types.Object.scaleHaltDurAtMax = bpy.props.FloatProperty(name = 'Halt duration at max', min = 0)
-bpy.types.Object.cycleDur = bpy.props.FloatProperty(name = 'Cycle stroke duration')
-bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
-bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
-bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1)
-bpy.types.Object.colorPositions = bpy.props.IntVectorProperty(name = 'Color Positions', size = 3, min = 0, max = 100, default = [0, 50, 100])
-bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive')
-bpy.types.Object.useFillHatch = bpy.props.BoolVectorProperty(name = 'Use fill hatch', size = 2)
-bpy.types.Object.fillHatchDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch density', size = 2, min = 0)
-bpy.types.Object.fillHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch randomize density percent', size = 2, min = 0)
-bpy.types.Object.fillHatchAng = bpy.props.FloatVectorProperty(name = 'Fill hatch ang', size = 2, min = -360, max = 360)
-bpy.types.Object.fillHatchWidth = bpy.props.FloatVectorProperty(name = 'Fill hatch width', size = 2, min = 0)
-bpy.types.Object.useStrokeHatch = bpy.props.BoolVectorProperty(name = 'Use stroke hatch', size = 2)
-bpy.types.Object.strokeHatchDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch density', size = 2, min = 0)
-bpy.types.Object.strokeHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch randomize density percent', size = 2, min = 0)
-bpy.types.Object.strokeHatchAng = bpy.props.FloatVectorProperty(name = 'Stroke hatch ang', size = 2, min = -360, max = 360)
-bpy.types.Object.strokeHatchWidth = bpy.props.FloatVectorProperty(name = 'Stroke hatch width', size = 2, min = 0)
-bpy.types.Object.minPathFrame = bpy.props.IntProperty(name = 'Min frame for shape animation')
-bpy.types.Object.maxPathFrame = bpy.props.IntProperty(name = 'Max frame for shape animation')
-bpy.types.Object.minPosFrame = bpy.props.IntProperty(name = 'Min frame for position animation')
-bpy.types.Object.maxPosFrame = bpy.props.IntProperty(name = 'Max frame for position animation')
-bpy.types.Object.posPingPong = bpy.props.BoolProperty(name = 'Ping pong position animation')
-bpy.types.Object.colliderExists = bpy.props.BoolProperty(name = 'Exists')
-bpy.types.Object.colliderEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
-bpy.types.Object.shapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPE_ITEMS)
-bpy.types.Object.radius = bpy.props.FloatProperty(name = 'Radius', min = 0)
-bpy.types.Object.normal = bpy.props.FloatVectorProperty(name = 'Normal', size = 2)
-bpy.types.Object.size = bpy.props.FloatVectorProperty(name = 'Size', size = 2, min = 0)
-bpy.types.Object.cuboidBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0)
-bpy.types.Object.capsuleHeight = bpy.props.FloatProperty(name = 'Height', min = 0)
-bpy.types.Object.capsuleRadius = bpy.props.FloatProperty(name = 'Radius', min = 0)
-bpy.types.Object.segmentPos1 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2)
-bpy.types.Object.segmentPos2 = bpy.props.FloatVectorProperty(name = 'Position 2', size = 2)
-bpy.types.Object.segmentPos1 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2)
-bpy.types.Object.trianglePos1 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2)
-bpy.types.Object.trianglePos2 = bpy.props.FloatVectorProperty(name = 'Position 2', size = 2)
-bpy.types.Object.trianglePos3 = bpy.props.FloatVectorProperty(name = 'Position 3', size = 2)
-bpy.types.Object.triangleBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0)
-bpy.types.Object.roundConvexHullBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0)
-bpy.types.Object.heightfieldScale = bpy.props.FloatVectorProperty(name = 'Scale', size = 2)
-bpy.types.Object.isSensor = bpy.props.BoolProperty(name = 'Is sensor')
-bpy.types.Object.density = bpy.props.FloatProperty(name = 'Density', min = 0)
-bpy.types.Object.collisionGroupMembership = bpy.props.BoolVectorProperty(name = 'Collision group membership', size = 16, default = [True] * 16, description = 'Which collision groups this object belongs to')
-bpy.types.Object.collisionGroupFilter = bpy.props.BoolVectorProperty(name = 'Collision group filter', size = 16, default = [True] * 16, description = 'Which collision groups this object can collide with')
-bpy.types.Object.rigidBodyExists = bpy.props.BoolProperty(name = 'Exists')
-bpy.types.Object.rigidBodyEnable = bpy.props.BoolProperty(name = 'Enable', default = True)
-bpy.types.Object.rigidBodyType = bpy.props.EnumProperty(name = 'Type', items = RIGID_BODY_TYPE_ITEMS)
-bpy.types.Object.linearDrag = bpy.props.FloatProperty(name = 'Linear drag', min = 0)
-bpy.types.Object.angDrag = bpy.props.FloatProperty(name = 'Angular drag', min = 0)
-bpy.types.Object.dominance = bpy.props.IntProperty(name = 'Dominance', min = -127, max = 127)
-bpy.types.Object.continuousCollideDetect = bpy.props.BoolProperty(name = 'Continuous collision detection')
-bpy.types.Object.gravityScale = bpy.props.FloatProperty(name = 'Gravity scale', default = 1)
-bpy.types.Object.canSleep = bpy.props.BoolProperty(name = 'Can sleep', default = True)
-bpy.types.Object.canRotate = bpy.props.BoolProperty(name = 'Can rotate', default = True)
-bpy.types.Object.jointExists = bpy.props.BoolProperty(name = 'Exists')
-bpy.types.Object.jointType = bpy.props.EnumProperty(name = 'Type', items = JOINT_TYPE_ITEMS)
-bpy.types.Object.anchorPos1 = bpy.props.FloatVectorProperty(name = 'Anchor position 1', size = 2)
-bpy.types.Object.anchorPos2 = bpy.props.FloatVectorProperty(name = 'Anchor position 2', size = 2)
-bpy.types.Object.anchorRot1 = bpy.props.FloatProperty(name = 'Anchor rotation 1', min = 0, max = 360)
-bpy.types.Object.anchorRot2 = bpy.props.FloatProperty(name = 'Anchor rotation 2', min = 0, max = 360)
-bpy.types.Object.anchorRigidBody1 = bpy.props.PointerProperty(name = 'Anchor rigid body 1', type = bpy.types.Object)
-bpy.types.Object.anchorRigidBody2 = bpy.props.PointerProperty(name = 'Anchor rigid body 2', type = bpy.types.Object)
-bpy.types.Object.restLen = bpy.props.FloatProperty(name = 'Rest length', min = 0)
-bpy.types.Object.stiffness = bpy.props.FloatProperty(name = 'Stiffness', min = 0)
-bpy.types.Object.damping = bpy.props.FloatProperty(name = 'Damping', min = 0)
-bpy.types.Object.jointAxis = bpy.props.FloatVectorProperty(name = 'Axis', size = 2)
-bpy.types.Object.jointLen = bpy.props.FloatProperty(name = 'Length', min = 0)
-bpy.types.Object.charControllerExists = bpy.props.BoolProperty(name = 'Exists')
-bpy.types.Object.contactOff = bpy.props.FloatProperty(name = 'Contact offset', min = 0)
+bpy.types.Object.gradientFill = bpy.props.PointerProperty(name = 'Fill with light', type = bpy.types.Light, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'gradientFill'))
+bpy.types.Object.capType = bpy.props.EnumProperty(name = 'Stroke cap type', items = CAP_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'capType'))
+bpy.types.Object.joinType = bpy.props.EnumProperty(name = 'Stroke corner type', items = JOIN_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'joinType'))
+bpy.types.Object.dashLengthsAndSpaces = bpy.props.FloatVectorProperty(name = 'Stroke dash lengths and spaces', size = 5, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'dashLengthsAndSpaces'))
+bpy.types.Object.mirrorX = bpy.props.BoolProperty(name = 'Mirror on x-axis', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'mirrorX'))
+bpy.types.Object.mirrorY = bpy.props.BoolProperty(name = 'Mirror on y-axis', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'mirrorY'))
+bpy.types.Object.useJiggle = bpy.props.BoolProperty(name = 'Use jiggle', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useJiggle'))
+bpy.types.Object.jiggleDist = bpy.props.FloatProperty(name = 'Jiggle distance', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'jiggleDist'))
+bpy.types.Object.jiggleDur = bpy.props.FloatProperty(name = 'Jiggle duration', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'jiggleDur'))
+bpy.types.Object.jiggleFrames = bpy.props.IntProperty(name = 'Jiggle frames', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'jiggleFrames'))
+bpy.types.Object.useRot = bpy.props.BoolProperty(name = 'Use rotate', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useRot'))
+bpy.types.Object.rotPingPong = bpy.props.BoolProperty(name = 'Ping pong rotate', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'rotPingPong'))
+bpy.types.Object.rotAngRange = bpy.props.FloatVectorProperty(name = 'Rotate ang range', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'rotAngRange'))
+bpy.types.Object.rotDur = bpy.props.FloatProperty(name = 'Rotate duration', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'rotDur'))
+bpy.types.Object.useScale = bpy.props.BoolProperty(name = 'Use scale', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useScale'))
+bpy.types.Object.scalePingPong = bpy.props.BoolProperty(name = 'Ping pong scale', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scalePingPong'))
+bpy.types.Object.scaleXRange = bpy.props.FloatVectorProperty(name = 'X scale range', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scaleXRange'))
+bpy.types.Object.scaleYRange = bpy.props.FloatVectorProperty(name = 'Y scale range', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scaleYRange'))
+bpy.types.Object.scaleDur = bpy.props.FloatProperty(name = 'Scale duration', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scaleDur'))
+bpy.types.Object.scaleHaltDurAtMin = bpy.props.FloatProperty(name = 'Halt duration at min', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scaleHaltDurAtMin'))
+bpy.types.Object.scaleHaltDurAtMax = bpy.props.FloatProperty(name = 'Halt duration at max', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scaleHaltDurAtMax'))
+bpy.types.Object.cycleDur = bpy.props.FloatProperty(name = 'Cycle stroke duration', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'cycleDur'))
+bpy.types.Object.color2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'color2'))
+bpy.types.Object.color3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'color3'))
+bpy.types.Object.color1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'color1Alpha'))
+bpy.types.Object.colorPositions = bpy.props.IntVectorProperty(name = 'Color Positions', size = 3, min = 0, max = 100, default = [0, 50, 100], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'colorPositions'))
+bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'subtractive'))
+bpy.types.Object.useFillHatch = bpy.props.BoolVectorProperty(name = 'Use fill hatch', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useFilLHatch'))
+bpy.types.Object.fillHatchDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch density', size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'fillHatchDensity'))
+bpy.types.Object.fillHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Fill hatch randomize density percent', size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'fillHatchRandDensity'))
+bpy.types.Object.fillHatchAng = bpy.props.FloatVectorProperty(name = 'Fill hatch ang', size = 2, min = -360, max = 360, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'fillHatchAng'))
+bpy.types.Object.fillHatchWidth = bpy.props.FloatVectorProperty(name = 'Fill hatch width', size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'fillHatchWidth'))
+bpy.types.Object.useStrokeHatch = bpy.props.BoolVectorProperty(name = 'Use stroke hatch', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStrokeHatch'))
+bpy.types.Object.strokeHatchDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch density', size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeHatchDensity'))
+bpy.types.Object.strokeHatchRandDensity = bpy.props.FloatVectorProperty(name = 'Stroke hatch randomize density percent', size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeHatchRandDenstiy'))
+bpy.types.Object.strokeHatchAng = bpy.props.FloatVectorProperty(name = 'Stroke hatch ang', size = 2, min = -360, max = 360, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeHatchAng'))
+bpy.types.Object.strokeHatchWidth = bpy.props.FloatVectorProperty(name = 'Stroke hatch width', size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeHatchWidth'))
+bpy.types.Object.minPathFrame = bpy.props.IntProperty(name = 'Min frame for shape animation', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minPathFrame'))
+bpy.types.Object.maxPathFrame = bpy.props.IntProperty(name = 'Max frame for shape animation', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxPathFrame'))
+bpy.types.Object.minPosFrame = bpy.props.IntProperty(name = 'Min frame for position animation', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minPosFrame'))
+bpy.types.Object.maxPosFrame = bpy.props.IntProperty(name = 'Max frame for position animation', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxPosFrame'))
+bpy.types.Object.posPingPong = bpy.props.BoolProperty(name = 'Ping pong position animation', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'posPingPong'))
+bpy.types.Object.colliderExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'colliderExists'))
+bpy.types.Object.colliderEnable = bpy.props.BoolProperty(name = 'Enable', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'colliderEnable'))
+bpy.types.Object.shapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'shapeType'))
+bpy.types.Object.radius = bpy.props.FloatProperty(name = 'Radius', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'radius'))
+bpy.types.Object.normal = bpy.props.FloatVectorProperty(name = 'Normal', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'normal'))
+bpy.types.Object.size = bpy.props.FloatVectorProperty(name = 'Size', size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'size'))
+bpy.types.Object.cuboidBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'cuboidBorderRadius'))
+bpy.types.Object.capsuleHeight = bpy.props.FloatProperty(name = 'Height', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'capsuleHeight'))
+bpy.types.Object.capsuleRadius = bpy.props.FloatProperty(name = 'Radius', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'capsuleRadius'))
+bpy.types.Object.segmentPos1 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'segmentPos1'))
+bpy.types.Object.segmentPos2 = bpy.props.FloatVectorProperty(name = 'Position 2', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'segmentPos2'))
+bpy.types.Object.trianglePos1 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trianglePos1'))
+bpy.types.Object.trianglePos2 = bpy.props.FloatVectorProperty(name = 'Position 2', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trianglePos2'))
+bpy.types.Object.trianglePos3 = bpy.props.FloatVectorProperty(name = 'Position 3', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trianglePos3'))
+bpy.types.Object.triangleBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'triangleBorderRadius'))
+bpy.types.Object.roundConvexHullBorderRadius = bpy.props.FloatProperty(name = 'Border radius', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundConvexHullBorderRadius'))
+bpy.types.Object.heightfieldScale = bpy.props.FloatVectorProperty(name = 'Scale', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'heightfieldScale'))
+bpy.types.Object.isSensor = bpy.props.BoolProperty(name = 'Is sensor', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'isSensor'))
+bpy.types.Object.density = bpy.props.FloatProperty(name = 'Density', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'density'))
+bpy.types.Object.collisionGroupMembership = bpy.props.BoolVectorProperty(name = 'Collision group membership', size = 16, default = [True] * 16, description = 'Which collision groups this object belongs to', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'collisionGroupMembership'))
+bpy.types.Object.collisionGroupFilter = bpy.props.BoolVectorProperty(name = 'Collision group filter', size = 16, default = [True] * 16, description = 'Which collision groups this object can collide with', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'collisionGroupFilter'))
+bpy.types.Object.rigidBodyExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'rigidBodyExists'))
+bpy.types.Object.rigidBodyEnable = bpy.props.BoolProperty(name = 'Enable', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'rigidBodyEnable'))
+bpy.types.Object.rigidBodyType = bpy.props.EnumProperty(name = 'Type', items = RIGID_BODY_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'rigidBodyType'))
+bpy.types.Object.linearDrag = bpy.props.FloatProperty(name = 'Linear drag', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'linearDrag'))
+bpy.types.Object.angDrag = bpy.props.FloatProperty(name = 'Angular drag', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'angDrag'))
+bpy.types.Object.dominance = bpy.props.IntProperty(name = 'Dominance', min = -127, max = 127, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'dominance'))
+bpy.types.Object.continuousCollideDetect = bpy.props.BoolProperty(name = 'Continuous collision detection', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'continuousCollideDetect'))
+bpy.types.Object.gravityScale = bpy.props.FloatProperty(name = 'Gravity scale', default = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'gravityScale'))
+bpy.types.Object.canSleep = bpy.props.BoolProperty(name = 'Can sleep', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'canSleep'))
+bpy.types.Object.canRot = bpy.props.BoolProperty(name = 'Can rotate', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'canRot'))
+bpy.types.Object.jointExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'jointExists'))
+bpy.types.Object.jointType = bpy.props.EnumProperty(name = 'Type', items = JOINT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'jointType'))
+bpy.types.Object.anchorPos1 = bpy.props.FloatVectorProperty(name = 'Anchor position 1', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'anchorPos1'))
+bpy.types.Object.anchorPos2 = bpy.props.FloatVectorProperty(name = 'Anchor position 2', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'anchorPos2'))
+bpy.types.Object.anchorRot1 = bpy.props.FloatProperty(name = 'Anchor rotation 1', min = 0, max = 360, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'anchorRot1'))
+bpy.types.Object.anchorRot2 = bpy.props.FloatProperty(name = 'Anchor rotation 2', min = 0, max = 360, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'anchorRot2'))
+bpy.types.Object.anchorRigidBody1 = bpy.props.PointerProperty(name = 'Anchor rigid body 1', type = bpy.types.Object, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'anchorRigidBody1'))
+bpy.types.Object.anchorRigidBody2 = bpy.props.PointerProperty(name = 'Anchor rigid body 2', type = bpy.types.Object, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'anchorRigidBody2'))
+bpy.types.Object.restLen = bpy.props.FloatProperty(name = 'Rest length', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'restLen'))
+bpy.types.Object.stiffness = bpy.props.FloatProperty(name = 'Stiffness', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'stiffness'))
+bpy.types.Object.damping = bpy.props.FloatProperty(name = 'Damping', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'damping'))
+bpy.types.Object.jointAxis = bpy.props.FloatVectorProperty(name = 'Axis', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'jointAxis'))
+bpy.types.Object.jointLen = bpy.props.FloatProperty(name = 'Length', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'joinLen'))
+bpy.types.Object.charControllerExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'charControllerExists'))
+bpy.types.Object.contactOff = bpy.props.FloatProperty(name = 'Contact offset', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'contactOff'))
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
 		bpy.types.Object,
 		'apiScript%s' %i,
-		bpy.props.PointerProperty(name = 'API script%s' %i, type = bpy.types.Text)
+		bpy.props.PointerProperty(name = 'API script%s' %i, type = bpy.types.Text, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'API script%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'apiScript%sDisable' %i,
-		bpy.props.BoolProperty(name = 'Disable')
+		bpy.props.BoolProperty(name = 'Disable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'apiScript%sDisable' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'runtimeScript%s' %i,
-		bpy.props.PointerProperty(name = 'Runtime script%s' %i, type = bpy.types.Text)
+		bpy.props.PointerProperty(name = 'Runtime script%s' %i, type = bpy.types.Text, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScript%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'runtimeScript%sDisable' %i,
-		bpy.props.BoolProperty(name = 'Disable')
+		bpy.props.BoolProperty(name = 'Disable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScript%sDisable' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'initScript%s' %i,
-		bpy.props.BoolProperty(name = 'Is init')
+		bpy.props.BoolProperty(name = 'Is init', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'initScript%s' %i))
 	)
 MAX_SHAPE_POINTS = 32
 for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'polylinePoint%s' %i,
-		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2)
+		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'polylinePoint%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'usePolylinePoint%s' %i,
-		bpy.props.BoolProperty(name = 'Include%s' %i)
+		bpy.props.BoolProperty(name = 'Include%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'usePolylinePoint%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'polylineIdx%s' %i,
-		bpy.props.IntProperty(name = 'Index%s' %i, min = -1, default = -1)
+		bpy.props.IntProperty(name = 'Index%s' %i, min = -1, default = -1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'polylineIdx%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'trimeshPoint%s' %i,
-		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2)
+		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trimeshPoint%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'useTrimeshPoint%s' %i,
-		bpy.props.BoolProperty(name = 'Include%s' %i)
+		bpy.props.BoolProperty(name = 'Include%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useTrimeshPoint%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'trimeshIdx%s' %i,
-		bpy.props.IntProperty(name = 'Index%s' %i, min = -1, default = -1)
+		bpy.props.IntProperty(name = 'Index%s' %i, min = -1, default = -1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trimeshIdx%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'convexHullPoint%s' %i,
-		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2)
+		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'convexHullPoint%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'useConvexHullPoint%s' %i,
-		bpy.props.BoolProperty(name = 'Include%s' %i)
-	)
-	setattr(
-		bpy.types.Object,
-		'roundConvexHullPoint%s' %i,
-		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2)
-	)
-	setattr(
-		bpy.types.Object,
-		'useRoundConvexHullPoint%s' %i,
-		bpy.props.BoolProperty(name = 'Include%s' %i)
+		bpy.props.BoolProperty(name = 'Include%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useConvexHullPoint%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
@@ -2088,11 +2120,11 @@ class HTMLExport (bpy.types.Operator):
 	bl_label = 'Export to HTML'
 
 	@classmethod
-	def poll (cls, context):
+	def poll (cls, ctx):
 		return True
 
-	def execute (self, context):
-		BuildHtml (context.world)
+	def execute (self, ctx):
+		BuildHtml (ctx.world)
 		return {'FINISHED'}
 
 @bpy.utils.register_class
@@ -2101,11 +2133,11 @@ class UnityExport (bpy.types.Operator):
 	bl_label = 'Export to Unity'
 
 	@classmethod
-	def poll (cls, context):
+	def poll (cls, ctx):
 		return True
 
-	def execute (self, context):
-		BuildUnity (context.world)
+	def execute (self, ctx):
+		BuildUnity (ctx.world)
 		return {'FINISHED'}
 
 @bpy.utils.register_class
@@ -2116,14 +2148,15 @@ class WorldPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'world'
 
-	def draw (self, context):
+	def draw (self, ctx):
 		row = self.layout.row()
-		row.prop(context.world, 'exportScale')
-		self.layout.prop(context.world, 'exportOff')
-		self.layout.prop(context.world, 'exportHtml')
-		self.layout.prop(context.world, 'unityProjPath')
+		row.prop(ctx.world, 'exportScale')
+		self.layout.prop(ctx.world, 'exportOff')
+		self.layout.prop(ctx.world, 'htmlPath')
+		self.layout.prop(ctx.world, 'zipPath')
+		self.layout.prop(ctx.world, 'unityProjPath')
 		if usePhysics:
-			self.layout.prop(context.world, 'unitLen')
+			self.layout.prop(ctx.world, 'unitLen')
 		self.layout.operator('world.html_export', icon = 'CONSOLE')
 		self.layout.operator('world.unity_export', icon = 'CONSOLE')
 
@@ -2135,22 +2168,20 @@ class JS13KBPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'world'
 
-	def draw (self, context):
-		self.layout.prop(context.world, 'js13kbjam')
+	def draw (self, ctx):
+		self.layout.prop(ctx.world, 'js13kbjam')
 		row = self.layout.row()
-		row.prop(context.world, 'minifyMethod')
-		row.prop(context.world, 'invalidHtml')
-		if context.world.js13kbjam:
-			self.layout.prop(context.world, 'exportZip')
-			if buildInfo['zip-size']:
-				self.layout.label(text = buildInfo['zip'])
-				if buildInfo['zip-size'] <= 1024*13:
-					self.layout.label(text = 'zip bytes=%s' %( buildInfo['zip-size'] ))
-				else:
-					self.layout.label(text = 'zip KB=%s' %( buildInfo['zip-size'] / 1024 ))
-				self.layout.label(text = 'html-size=%s' %buildInfo['html-size'])
-				self.layout.label(text = 'js-size=%s' %buildInfo['js-size'])
-				self.layout.label(text = 'js-gz-size=%s' %buildInfo['js-gz-size'])
+		row.prop(ctx.world, 'minifyMethod')
+		row.prop(ctx.world, 'invalidHtml')
+		if buildInfo['zip-size']:
+			self.layout.label(text = buildInfo['zip'])
+			if buildInfo['zip-size'] <= 1024*13:
+				self.layout.label(text = 'zip bytes=%s' %( buildInfo['zip-size'] ))
+			else:
+				self.layout.label(text = 'zip KB=%s' %( buildInfo['zip-size'] / 1024 ))
+			self.layout.label(text = 'html-size=%s' %buildInfo['html-size'])
+			self.layout.label(text = 'js-size=%s' %buildInfo['js-size'])
+			self.layout.label(text = 'js-gz-size=%s' %buildInfo['js-gz-size'])
 		if buildInfo['html-size']:
 			self.layout.label(text = buildInfo['html'])
 			if buildInfo['html-size'] < 1024*16:
@@ -2166,8 +2197,8 @@ class ObjectPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'object'
 
-	def draw (self, context):
-		ob = context.active_object
+	def draw (self, ctx):
+		ob = ctx.active_object
 		if not ob:
 			return
 		if ob.type == 'CURVE' or ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
@@ -2180,7 +2211,7 @@ class ObjectPanel (bpy.types.Panel):
 				self.layout.prop(ob, 'capType')
 				self.layout.prop(ob, 'joinType')
 				self.layout.prop(ob, 'dashLengthsAndSpaces')
-			self.layout.prop(ob, 'lightFill')
+			self.layout.prop(ob, 'gradientFill')
 			self.layout.prop(ob, 'useFillHatch')
 			if ob.useFillHatch:
 				self.layout.prop(ob, 'fillHatchDensity')
@@ -2203,8 +2234,8 @@ class ObjectPanel (bpy.types.Panel):
 				self.layout.prop(ob, 'jiggleDur')
 				self.layout.prop(ob, 'jiggleFrames')
 			self.layout.label(text = 'Rotate')
-			self.layout.prop(ob, 'useRotate')
-			if ob.useRotate:
+			self.layout.prop(ob, 'useRot')
+			if ob.useRot:
 				self.layout.prop(ob, 'rotPingPong')
 				self.layout.prop(ob, 'rotAngRange')
 				self.layout.prop(ob, 'rotDur')
@@ -2255,8 +2286,8 @@ class LightPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'data'
 
-	def draw (self, context):
-		ob = context.active_object
+	def draw (self, ctx):
+		ob = ctx.active_object
 		if not ob or ob.type != 'LIGHT':
 			return
 		self.layout.prop(ob, 'color2')
@@ -2273,8 +2304,8 @@ class RigidBodyPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'physics'
 
-	def draw (self, context):
-		ob = context.active_object
+	def draw (self, ctx):
+		ob = ctx.active_object
 		if not ob:
 			return
 		self.layout.prop(ob, 'rigidBodyExists')
@@ -2288,7 +2319,7 @@ class RigidBodyPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'continuousCollideDetect')
 		self.layout.prop(ob, 'gravityScale')
 		self.layout.prop(ob, 'canSleep')
-		self.layout.prop(ob, 'canRotate')
+		self.layout.prop(ob, 'canRot')
 
 @bpy.utils.register_class
 class ColliderPanel (bpy.types.Panel):
@@ -2298,8 +2329,8 @@ class ColliderPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'physics'
 
-	def draw (self, context):
-		ob = context.active_object
+	def draw (self, ctx):
+		ob = ctx.active_object
 		if not ob:
 			return
 		self.layout.prop(ob, 'colliderExists')
@@ -2371,11 +2402,11 @@ class ColliderPanel (bpy.types.Panel):
 		elif ob.shapeType == 'roundConvexHull':
 			for i in range(MAX_SHAPE_POINTS):
 				row = self.layout.row()
-				row.prop(ob, 'roundConvexHullPoint%s' %i)
-				row.prop(ob, 'useRoundConvexHullPoint%s' %i)
-				if not getattr(ob, 'useRoundConvexHullPoint%s' %i):
+				row.prop(ob, 'convexHullPoint%s' %i)
+				row.prop(ob, 'useConvexHullPoint%s' %i)
+				if not getattr(ob, 'useConvexHullPoint%s' %i):
 					break
-			self.layout.prop(ob, 'roundConvexHullBorderRadius')
+			self.layout.prop(ob, 'convexHullBorderRadius')
 		elif ob.shapeType == 'heightfield':
 			for i in range(MAX_SHAPE_POINTS):
 				row = self.layout.row()
@@ -2417,8 +2448,8 @@ class JointPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'physics'
 
-	def draw (self, context):
-		ob = context.active_object
+	def draw (self, ctx):
+		ob = ctx.active_object
 		if not ob:
 			return
 		self.layout.prop(ob, 'jointExists')
@@ -2449,8 +2480,8 @@ class CharacterControllerPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'physics'
 
-	def draw (self, context):
-		ob = context.active_object
+	def draw (self, ctx):
+		ob = ctx.active_object
 		if not ob:
 			return
 		self.layout.prop(ob, 'charControllerExists')
@@ -2464,31 +2495,31 @@ class DrawColliders (bpy.types.Operator):
 	handle = None
 	isRunning = False
 
-	def modal (self, context, event):
+	def modal (self, ctx, event):
 		if not DrawColliders.isRunning:
 			bpy.types.SpaceView3D.draw_handler_remove(DrawColliders.handle, 'WINDOW')
 			DrawColliders.handle = None
-			context.area.tag_redraw()
+			ctx.area.tag_redraw()
 			return {'CANCELLED'}
-		context.area.tag_redraw()
+		ctx.area.tag_redraw()
 		if event.type in {'RIGHTMOUSE', 'ESC'}:
 			DrawColliders.isRunning = False
 			return {'PASS_THROUGH'}
 		return {'PASS_THROUGH'}
 
-	def invoke (self, context, event):
-		if context.area.type == 'VIEW_3D':
+	def invoke (self, ctx, event):
+		if ctx.area.type == 'VIEW_3D':
 			if DrawColliders.handle:
 				DrawColliders.isRunning = False
 				return {'FINISHED'}
-			self.objects = context.selected_objects
+			self.objects = ctx.selected_objects
 			if not self.objects:
 				self.report({'INFO'}, 'No objects selected.')
 				return {'CANCELLED'}
-			args = (self, context)
-			DrawColliders.handle = bpy.types.SpaceView3D.draw_handler_add(DrawCollidersCallback, args, 'WINDOW', 'POST_VIEW')
+			args = (self, ctx)
+			DrawColliders.handle = bpy.types.SpaceView3D.draw_handler_add(OnDrawColliders, args, 'WINDOW', 'POST_VIEW')
 			DrawColliders.isRunning = True
-			context.window_manager.modal_handler_add(self)
+			ctx.window_manager.modal_handler_add(self)
 			return {'RUNNING_MODAL'}
 		else:
 			self.report({'WARNING'}, 'View3D not found, cannot run operator')
@@ -2501,7 +2532,7 @@ class DrawCollidersPanel (bpy.types.Panel):
 	bl_region_type = 'UI'
 	bl_category = 'Tool'
 
-	def draw (self, context):
+	def draw (self, ctx):
 		layout = self.layout
 		if DrawColliders.isRunning:
 			layout.operator('view3d.draw_colliders', text = 'Stop Visualizing', depress = True)
@@ -2514,10 +2545,10 @@ class ConvertSelectedObjectsToCurves (bpy.types.Operator):
 	bl_label = 'Convert Selected Objects To Curves'
 
 	@classmethod
-	def poll (cls, context):
+	def poll (cls, ctx):
 		return True
 
-	def execute (self, context):
+	def execute (self, ctx):
 		scene = bpy.context.scene
 		world = bpy.data.worlds[0]
 		SCALE = world.exportScale
@@ -2621,7 +2652,7 @@ class ConvertToCurvesPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'render'
 
-	def draw (self, context):
+	def draw (self, ctx):
 		self.layout.operator('render.convert_to_curves', icon = 'CONSOLE')
 
 classes = (
@@ -2648,7 +2679,7 @@ if __name__ == '__main__':
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
-		bpy.data.worlds[0].exportHtml = arg.split('=')[-1]
+		bpy.data.worlds[0].htmlPath = arg.split('=')[-1]
 	elif arg == '-minify':
 		bpy.data.worlds[0].minifyMethod = 'terser'
 	elif arg == '-js13kjam':
