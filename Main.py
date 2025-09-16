@@ -683,7 +683,10 @@ def ExportObject (ob):
 		if ob.empty_display_type == 'IMAGE':
 			obData = ob.data
 			imgName = GetFileName(obData.filepath)
-			img = '<img id="' + ob.name + '" src="' + imgName + '" width=' + str(obData.size[0]) + ' height=' + str(obData.size[1]) + '" style="position:absolute">'
+			prevRotMode = ob.rotation_mode
+			ob.rotation_mode = 'XYZ'
+			img = '<img id="' + ob.name + '" src="' + imgName + '" width=' + str(obData.size[0]) + ' height=' + str(obData.size[1]) + ' style="z-index:' + str(ob.location.z) + ';position:absolute;transform:translate(' + str(ob.location.x - obData.size[0] / 2) + 'px,' + str(-ob.location.y - obData.size[1] / 2) + 'px)rotate(' + str(ob.rotation_euler.z) + 'rad)">'
+			ob.rotation_mode = prevRotMode
 			imgPath = TMP_DIR + '/' + imgName
 			ob.data.save(filepath = imgPath)
 			imgs[ob.name] = img
@@ -700,7 +703,7 @@ def RegisterPhysics (ob):
 		prevRotMode = ob.rotation_mode
 		ob.rotation_mode = 'XYZ'
 		if ob.rotation_euler.z != 0:
-			rigidBody += '.setRotation(' + str(ob.location.z * (math.pi / 180)) + ')'
+			rigidBody += '.setRotation(' + str(ob.rotation_euler.z) + ')'
 		ob.rotation_mode = prevRotMode
 		if not ob.canRot:
 			rigidBody += '.lockRotations();\n'
@@ -799,7 +802,7 @@ def RegisterPhysics (ob):
 		prevRotMode = ob.rotation_mode
 		ob.rotation_mode = 'XYZ'
 		if ob.rotation_euler.z != 0:
-			collider += '.setRotation(' + str(ob.location.z) + ')'
+			collider += '.setRotation(' + str(ob.rotation_euler.z) + ')'
 		ob.rotation_mode = prevRotMode
 		collider += '.setActiveEvents(3);\n'
 		if ob.density != 0:
@@ -1122,10 +1125,6 @@ RAPIER.init().then(() => {
 	// Joints
 	// Char Controllers
 });
-'''
-CANVAS = '''
-var canvas = document.getElementById("!");
-var ctx = canvas.getContext("2d");
 '''
 JS_API = '''
 class api
@@ -1505,16 +1504,6 @@ def GenJsAPI (world):
 			idxOfPhysicsSectionEnd = jsApi.find(physicsSectionEndIndctr) + len(physicsSectionEndIndctr)
 			jsApi = jsAp[: idxOfPhysicsSectionStart] + jsAp[idxOfPhysicsSectionEnd :]
 	js = [JS, jsApi, userJS]
-	if imgs != {}:
-		js += [CANVAS]
-		for key in imgs.keys():
-			img = 'var img = document.getElementById("' + key + '''");
-if (img.complete)
-	draw_img (img, 0, 0, 100, 100);
-else
-	img.addEventListener("load", () => { draw_img (img, 0, 0, 100, 100); });
-'''
-			js += [img]
 	if usePhysics:
 		physics = PHYSICS
 		vars = ''
@@ -1583,16 +1572,12 @@ else
 def GenHtml (world, datas, background = ''):
 	global userJS, colors, initCode, updateCode, pathsDatas
 	js = GenJsAPI(world)
-	canvas = ''
-	if imgs != {}:
-		canvas = '<canvas id="!" ' + ' style="position:absolute;width:100%;height:100%">'
 	if background:
 		background = 'background-color:%s;' %background
 	o = [
 		'<!DOCTYPE html>',
 		'<html style="' + background + 'width:9999px;height:9999px;overflow:hidden">',
 		'<body>',
-		canvas,
 		''.join(imgs.values()),
 		''.join(svgsDatas.values()),
 		'<script type="module">',
