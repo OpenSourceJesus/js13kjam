@@ -293,7 +293,7 @@ def ExportObject (ob):
 			bpy.context.scene.frame_set(frame)
 			depsgraph = bpy.context.evaluated_depsgraph_get()
 			evaluatedOb = ob.evaluated_get(depsgraph)
-			curveData = evaluatedOb.to_curve(depsgraph, apply_modifiers = True).copy()
+			curveData = evaluatedOb.to_curve(depsgraph, apply_modifiers = True)
 			ob.data = curveData.copy()
 			if frame > ob.minPosFrame:
 				posFrames.append([TryChangeToInt(ob.location.x - prevPos.x), TryChangeToInt(ob.location.y - prevPos.y)])
@@ -302,7 +302,7 @@ def ExportObject (ob):
 			bpy.context.scene.frame_set(frame)
 			depsgraph = bpy.context.evaluated_depsgraph_get()
 			evaluatedOb = ob.evaluated_get(depsgraph)
-			curveData = evaluatedOb.to_curve(depsgraph, apply_modifiers = True).copy()
+			curveData = evaluatedOb.to_curve(depsgraph, apply_modifiers = True)
 			ob.data = curveData.copy()
 			bpy.ops.object.select_all(action = 'DESELECT')
 			ob.select_set(True)
@@ -317,12 +317,12 @@ def ExportObject (ob):
 			idxOfParentGroupStart = svgTxt.find(parentGroupIndctr)
 			idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndctr))
 			idxOfParentGroupEnd = svgTxt.rfind('</g')
-			min, max = GetRectMinMax(ob)
+			_min, _max = GetRectMinMax(ob)
 			scale = Vector((sx, sy))
-			min *= scale
-			min += off
-			max *= scale
-			max += off
+			_min *= scale
+			_min += off
+			_max *= scale
+			_max += off
 			svgTxt = svgTxt[: idxOfParentGroupContents] + group + svgTxt[idxOfParentGroupEnd :]
 			pathDataIndctr = ' d="'
 			idxOfPathDataStart = svgTxt.find(pathDataIndctr) + len(pathDataIndctr)
@@ -349,16 +349,16 @@ def ExportObject (ob):
 			offset = -minPathVector + Vector((32, 32))
 			for i, pathValue in enumerate(pathData):
 				if i % 2 == 1:
-					pathData[i] = ToByteString((maxPathVector[1] - pathValue + minPathVector[1]) + offset[1])
+					pathData[i] = ToByteString(maxPathVector[1] - pathValue + 32)
 				else:
 					pathData[i] = ToByteString(pathValue + offset[0])
 			strokeWidth = 0
 			if ob.useStroke:
 				strokeWidth = ob.strokeWidth
 			jiggleDist = ob.jiggleDist * int(ob.useJiggle)
-			x = min.x - strokeWidth / 2 - jiggleDist
-			y = -max.y + strokeWidth / 2 + jiggleDist
-			size = max - min
+			x = _min.x - strokeWidth / 2 - jiggleDist
+			y = -_max.y + strokeWidth / 2 + jiggleDist
+			size = _max - _min
 			size += Vector((1, 1)) * (strokeWidth + jiggleDist * 2)
 			if ob.roundPosAndSize:
 				x = int(round(x))
@@ -485,8 +485,8 @@ def ExportObject (ob):
 					newMeshData.from_pydata(geoData['verts'], [], geoData['faces'])
 					newMeshData.update()
 					newOb.matrix_world = geoData['matrix']
-					min, max = GetRectMinMax(ob)
-					if frame == ob.minPathFrame and HandleCopyObject(newOb, [min.x, min.y]):
+					_min, _max = GetRectMinMax(ob)
+					if frame == ob.minPathFrame and HandleCopyObject(newOb, list(_min)):
 						break
 					scene = bpy.context.scene
 					renderSettings = scene.render
@@ -584,8 +584,8 @@ def ExportObject (ob):
 			if mesh.users == 0:
 				bpy.data.meshes.remove(mesh)
 	elif ob.type == 'GREASEPENCIL':
-		min, max = GetRectMinMax(ob)
-		if HandleCopyObject(ob, [min.x, min.y]):
+		_min, _max = GetRectMinMax(ob)
+		if HandleCopyObject(ob, list(_min)):
 			return
 		scene = bpy.context.scene
 		renderSettings = scene.render
@@ -2731,13 +2731,13 @@ class ConvertSelectedObjectsToCurves (bpy.types.Operator):
 			# pathData = pathData.replace('.0', '')
 			# vectors = pathData.split(' ')
 			# pathData = []
-			# for vector in vectors:
-			# 	if len(vector) == 1:
+			# for vec in vectors:
+			# 	if len(vec) == 1:
 			# 		continue
-			# 	components = vector.split(' ')
+			# 	components = vec.split(' ')
 			# 	x = float(components[0])
 			# 	y = float(components[1])
-			# 	vector = ob.matrix_world @ Vector((x, y, 0))
+			# 	vec = ob.matrix_world @ Vector((x, y, 0))
 			# 	pathData.append(x)
 			# 	pathData.append(y)
 		return {'FINISHED'}
