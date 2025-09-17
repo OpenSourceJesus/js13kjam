@@ -420,17 +420,6 @@ def ExportObject (ob):
 				data.append(ob.mirrorY)
 				data.append(CAP_TYPES.index(ob.capType))
 				data.append(JOIN_TYPES.index(ob.joinType))
-				attributes = {}
-				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
-					if getattr(ob, 'useInt%i' %i):
-						attributes[getattr(ob, 'intName%s' %i)] = getattr(ob, 'intVal%s' %i)
-				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
-					if getattr(ob, 'useFloat%i' %i):
-						attributes[getattr(ob, 'floatName%s' %i)] = getattr(ob, 'floatVal%s' %i)
-				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
-					if getattr(ob, 'useString%i' %i):
-						attributes[getattr(ob, 'stringName%s' %i)] = getattr(ob, 'stringVal%s' %i)
-				data.append(attributes)
 				dashArr = []
 				for value in ob.dashLengthsAndSpaces:
 					if value == 0:
@@ -438,6 +427,7 @@ def ExportObject (ob):
 					dashArr.append(value)
 				data.append(dashArr)
 				data.append(TryChangeToInt(ob.cycleDur))
+				data.append(GetAttributes(ob))
 				pathDataFrames.append(pathDataStr)
 			else:
 				pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
@@ -529,32 +519,7 @@ def ExportObject (ob):
 						if mat2 and mat != mat2:
 							prevMatClrs[mat2] = mat2.diffuse_color
 							mat2.diffuse_color = DEFAULT_CLR
-					# renderResScale = renderSettings.resolution_percentage / 100
-					# minHitDists = {}
 					cam = scene.camera
-					# camData = cam.data
-					# viewFrame = camData.view_frame(scene = scene)
-					# viewFrameTopLeft = viewFrame[0]
-					# viewFrameTopRight = viewFrame[1]
-					# viewFrameBottLeft = viewFrame[2]
-					# viewFrameXRange = viewFrameTopRight - viewFrameTopLeft
-					# viewFrameYRange = viewFrameBottLeft - viewFrameTopLeft
-					# camWorldMatrix = cam.matrix_world
-					# camPos = camWorldMatrix.translation
-					# renderResolutionX = int(renderSettings.resolution_x * renderResScale)
-					# renderResolutionY = int(renderSettings.resolution_y * renderResScale)
-					# for ob in bpy.context.selected_objects:
-					# 	bvhTree = bvhtree.BVHTree(ob, depsgraph, render = True)
-					# 	for x in range(renderResolutionX):
-					# 		for y in range(renderResolutionY):
-					# 			xNormalized = x / (renderResolutionX - 1)
-					# 			yNormalized = y / (renderResolutionY - 1)
-					# 			pointOnNearClipPlane = viewFrameTopLeft + viewFrameXRange * xNormalized + viewFrameYRange * yNormalized
-					# 			worldPointOnNearClipPlane = camWorldMatrix @ pointOnNearClipPlane
-					# 			rayDir = (worldPointOnNearClipPlane - camPos).normalized()
-					# 			hitDist = bvhTree.ray_cast(worldPointOnNearClipPlane, rayDir)[3]
-					# 			if hitDist:
-					# 				pass
 					renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
 					bpy.ops.render.render(write_still = True)
 					for i, tint in enumerate(tints):
@@ -706,12 +671,6 @@ def ExportObject (ob):
 		viewSettings.gamma = prevGamma
 		svgsDatas[ob.name] = svgTxt
 	elif ob.type == 'EMPTY':
-		if len(ob.children) > 0:
-			childrenNames = []
-			for child in ob.children:
-				ExportObject (child)
-				childrenNames.append(child.name)
-			datas.append([ob.name, childrenNames])
 		if ob.empty_display_type == 'IMAGE':
 			obData = ob.data
 			imgName = GetFileName(obData.filepath)
@@ -726,6 +685,12 @@ def ExportObject (ob):
 			ob.data.save(filepath = imgPath)
 			imgs[ob.name] = img
 			imgsPaths.append(imgPath)
+		else:
+			childrenNames = []
+			for child in ob.children:
+				ExportObject (child)
+				childrenNames.append(child.name)
+			datas.append([ob.name, TryChangeToInt(ob.location.x), TryChangeToInt(-ob.location.y), childrenNames, GetAttributes(ob)])
 	exportedObs.append(ob)
 
 def RegisterPhysics (ob):
@@ -921,23 +886,26 @@ def HandleCopyObject (ob, pos):
 			if obNameWithoutPeriod == exportedObNameWithoutPeriod:
 				prevRotMode = ob.rotation_mode
 				ob.rotation_mode = 'XYZ'
-				attributes = {}
-				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
-					if getattr(ob, 'useInt%i' %i):
-						attributes[getattr(ob, 'intName%s' %i)] = getattr(ob, 'intVal%s' %i)
-				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
-					if getattr(ob, 'useFloat%i' %i):
-						attributes[getattr(ob, 'floatName%s' %i)] = getattr(ob, 'floatVal%s' %i)
-				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
-					if getattr(ob, 'useString%i' %i):
-						attributes[getattr(ob, 'stringName%s' %i)] = getattr(ob, 'stringVal%s' %i)
-				datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1]), TryChangeToInt(ob.rotation_euler.z), attributes])
+				datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1]), TryChangeToInt(math.degrees(ob.rotation_euler.z)), GetAttributes(ob)])
 				exportedObs.append(ob)
 				ob.rotation_mode = prevRotMode
 				return True
 	except:
 		return False
 	return False
+
+def GetAttributes (ob):
+	output = {}
+	for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		if getattr(ob, 'useInt%i' %i):
+			output[getattr(ob, 'intName%s' %i)] = getattr(ob, 'intVal%s' %i)
+	for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		if getattr(ob, 'useFloat%i' %i):
+			output[getattr(ob, 'floatName%s' %i)] = getattr(ob, 'floatVal%s' %i)
+	for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		if getattr(ob, 'useString%i' %i):
+			output[getattr(ob, 'stringName%s' %i)] = getattr(ob, 'stringVal%s' %i)
+	return output
 
 def GetPathDelta (fromPathData, toPathData):
 	output = ''
@@ -1002,22 +970,17 @@ for (var e of d)
 	}
 	else if (l > 6)
 		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
-	else if (l > 2)
+	else if (l > 5)
 		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5]);
 	else
 		g.push(e);
 }
 for (var e of g)
-{
-	var newGroup = document.createElementNS(svgNS, 'g');
-	newGroup.id = e[0];
-	document.body.appendChild(newGroup);
-	$.add_children (e[0], e[1]);
-}
+	add_group (e[0], [e[1], e[2]], e[3], e[4]);
 $.main ()
 '''
 JS = '''
-var svgNS = "http://www.w3.org/2000/svg";
+var svgNS = 'http://www.w3.org/2000/svg';
 function dot (from, to)
 {
 	return from[0] * to[0] + from[1] * to[1];
@@ -1131,13 +1094,21 @@ function random (min, max)
 {
 	return Math.random() * (max - min) + min;
 }
-function add_group (id, pos, txt)
+function add_group (id, pos, childIds = [], attributes = {}, txt = '')
 {
 	var group = document.createElementNS(svgNS, 'g');
 	group.id = id;
 	group.setAttribute('x', pos[0]);
 	group.setAttribute('y', pos[1]);
 	group.innerHTML = txt;
+	for (var [key, val] of Object.entries(attributes))
+		group.setAttribute(key, val);
+	for (var childId of childIds)
+	{
+		var node = document.getElementById(childId);
+		node.style.position = 'fixed';
+		group.appendChild(node);
+	}
 	document.body.appendChild(group);
 	return group;
 }
@@ -1150,10 +1121,6 @@ function shuffle (arr)
 		currIdx --;
 		[arr[currIdx], arr[randIdx]] = [arr[randIdx], arr[currIdx]];
 	}
-}
-function draw_img (img, x, y, width, height)
-{
-	ctx.drawImage(img, x, y, width, height);
 }
 '''
 PHYSICS = '''
@@ -1245,16 +1212,6 @@ class api
 		}
 		// Physics Section End
 		return [copy, colliders];
-	}
-	add_children (id, childIds)
-	{
-		var foundFirstChild = false;
-		for (var childId of childIds)
-		{
-			var node = document.getElementById(childId);
-			node.style.position = 'fixed';
-			document.getElementById(id).appendChild(node);
-		}
 	}
 	add_radial_gradient (id, pos, zIdx, diameter, clr, clr2, clr3, clrPositions, subtractive)
 	{
