@@ -86,7 +86,8 @@ if not bpy:
 MAX_SCRIPTS_PER_OBJECT = 16
 MAX_SHAPE_POINTS = 32
 MAX_ATTACH_COLLIDER_CNT = 64
-MAX_POTRACE_PASSES = 8
+MAX_POTRACE_PASSES_PER_OBJECT_MAT = 8
+MAX_ATTRIBUTES_PER_OBJECT = 16
 
 def GetScripts (ob, isAPI : bool):
 	scripts = []
@@ -419,6 +420,17 @@ def ExportObject (ob):
 				data.append(ob.mirrorY)
 				data.append(CAP_TYPES.index(ob.capType))
 				data.append(JOIN_TYPES.index(ob.joinType))
+				attributes = {}
+				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+					if getattr(ob, 'useInt%i' %i):
+						attributes[getattr(ob, 'intName%s' %i)] = getattr(ob, 'intVal%s' %i)
+				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+					if getattr(ob, 'useFloat%i' %i):
+						attributes[getattr(ob, 'floatName%s' %i)] = getattr(ob, 'floatVal%s' %i)
+				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+					if getattr(ob, 'useString%i' %i):
+						attributes[getattr(ob, 'stringName%s' %i)] = getattr(ob, 'stringVal%s' %i)
+				data.append(attributes)
 				dashArr = []
 				for value in ob.dashLengthsAndSpaces:
 					if value == 0:
@@ -460,9 +472,9 @@ def ExportObject (ob):
 		tints = []
 		minVisibleClrValue = 1
 		minVisibleClrValueIdx = 0
-		for i in range(MAX_POTRACE_PASSES):
-			if i == 0 or getattr(ob, 'useVisibleClrValue%i' %i):
-				visibleClrValue = getattr(ob, 'visibleClrValue%i' %i)
+		for i in range(MAX_POTRACE_PASSES_PER_OBJECT_MAT):
+			if i == 0 or getattr(ob, 'useMinVisibleClrValue%i' %i):
+				visibleClrValue = getattr(ob, 'minVisibleClrValue%i' %i)
 				if visibleClrValue < minVisibleClrValue:
 					visibleClrValues.insert(minVisibleClrValueIdx, visibleClrValue)
 					tints.insert(minVisibleClrValueIdx, getattr(ob, 'tintOutput%i' %i))
@@ -907,8 +919,21 @@ def HandleCopyObject (ob, pos):
 			else:
 				exportedObNameWithoutPeriod = exportedOb.name[: idxOfPeriod]
 			if obNameWithoutPeriod == exportedObNameWithoutPeriod:
-				datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1])])
+				prevRotMode = ob.rotation_mode
+				ob.rotation_mode = 'XYZ'
+				attributes = {}
+				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+					if getattr(ob, 'useInt%i' %i):
+						attributes[getattr(ob, 'intName%s' %i)] = getattr(ob, 'intVal%s' %i)
+				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+					if getattr(ob, 'useFloat%i' %i):
+						attributes[getattr(ob, 'floatName%s' %i)] = getattr(ob, 'floatVal%s' %i)
+				for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+					if getattr(ob, 'useString%i' %i):
+						attributes[getattr(ob, 'stringName%s' %i)] = getattr(ob, 'stringVal%s' %i)
+				datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1]), TryChangeToInt(ob.rotation_euler.z), attributes])
 				exportedObs.append(ob)
+				ob.rotation_mode = prevRotMode
 				return True
 	except:
 		return False
@@ -972,13 +997,13 @@ for (var e of d)
 	var l = e.length;
 	if (l > 10)
 	{
-		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
+		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50], e[51]);
 		i ++;
 	}
-	else if (l > 4)
+	else if (l > 6)
 		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
-	else if (l > 3)
-		$.copy_node (e[0], e[1], [e[2], e[3]]);
+	else if (l > 2)
+		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5]);
 	else
 		g.push(e);
 }
@@ -1186,13 +1211,15 @@ class api
 			output += 'Z';
 		return output;
 	}
-	copy_node (id, newId, pos, rot = 0)
+	copy_node (id, newId, pos, rot = 0, attributes = {})
 	{
 		var copy = document.getElementById(id).cloneNode(true);
 		copy.id = newId;
 		copy.setAttribute('x', pos[0]);
 		copy.setAttribute('y', pos[1]);
 		copy.style.transform = 'translate(' + pos[0] + ',' + pos[1] + ')rotate(' + rot + 'deg)';
+		for (var [key, val] of Object.entries(attributes))
+			copy.setAttribute(key, val);
 		document.body.appendChild(copy);
 		var colliders = [];
 		// Physics Section Start
@@ -1241,7 +1268,7 @@ class api
 		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ',' + clr[1] + ',' + clr[2] + ',' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ',' + clr2[1] + ',' + clr2[2] + ',' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ',' + clr3[1] + ',' + clr3[2] + ',' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
+	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur, attributes)
 	{
 		var fillClrTxt = 'rgb(' + fillClr[0] + ' ' + fillClr[1] + ' ' + fillClr[2] + ')';
 		var lineClrTxt = 'rgb(' + lineClr[0] + ' ' + lineClr[1] + ' ' + lineClr[2] + ')';
@@ -1301,6 +1328,8 @@ class api
 			svg.appendChild(path);
 			i ++;
 		}
+		for (var [key, val] of Object.entries(attributes))
+			svg.setAttribute(key, val);
 		document.body.appendChild(svg);
 		var off = lineWidth / 2 + jiggleDist;
 		var min = 32 - off;
@@ -1458,7 +1487,7 @@ class api
 	// Physics Section Start
 	set_transforms (dict)
 	{
-		for (var [key, value] of Object.entries(dict))
+		for (var [key, val] of Object.entries(dict))
 		{
 			var node = document.getElementById(key);
 			var trs = node.style.transform;
@@ -1466,9 +1495,9 @@ class api
 			var idxOfPosEnd = trs.indexOf(')', idxOfPosStart) + 1;
 			var idxOfRotStart = trs.indexOf('rotate(');
 			var idxOfRotEnd = trs.indexOf(')', idxOfRotStart) + 1;
-			var pos = value.translation();
+			var pos = val.translation();
 			var posStr = 'translate(' + (pos.x - node.getAttribute('width') / 2) + 'px,' + (pos.y - node.getAttribute('height') / 2) + 'px)';
-			var rotStr = 'rotate(' + value.rotation() + 'rad)';
+			var rotStr = 'rotate(' + val.rotation() + 'rad)';
 			if (idxOfRotStart > -1)
 				trs = trs.slice(0, idxOfRotStart) + rotStr + trs.slice(idxOfRotEnd);
 			else
@@ -1941,7 +1970,7 @@ bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position
 bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'origin'))
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStroke'))
 bpy.types.Object.strokeWidth = bpy.props.FloatProperty(name = 'Stroke width', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeWidth'))
-bpy.types.Object.strokeClr = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0])
+bpy.types.Object.strokeClr = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, min = 0, max = 1, default = [0, 0, 0, 1])
 bpy.types.Object.gradientFill = bpy.props.PointerProperty(name = 'Fill with light', type = bpy.types.Light, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'gradientFill'))
 bpy.types.Object.capType = bpy.props.EnumProperty(name = 'Stroke cap type', items = CAP_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'capType'))
 bpy.types.Object.joinType = bpy.props.EnumProperty(name = 'Stroke corner type', items = JOIN_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'joinType'))
@@ -1964,8 +1993,8 @@ bpy.types.Object.scaleDur = bpy.props.FloatProperty(name = 'Scale duration', min
 bpy.types.Object.scaleHaltDurAtMin = bpy.props.FloatProperty(name = 'Halt duration at min', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scaleHaltDurAtMin'))
 bpy.types.Object.scaleHaltDurAtMax = bpy.props.FloatProperty(name = 'Halt duration at max', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scaleHaltDurAtMax'))
 bpy.types.Object.cycleDur = bpy.props.FloatProperty(name = 'Cycle stroke duration', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'cycleDur'))
-bpy.types.Object.clr2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'clr2'))
-bpy.types.Object.clr3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, default = [0, 0, 0, 0], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'clr3'))
+bpy.types.Object.clr2 = bpy.props.FloatVectorProperty(name = 'Color 2', subtype = 'COLOR', size = 4, min = 0, max = 1, default = [0, 0, 0, 0], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'clr2'))
+bpy.types.Object.clr3 = bpy.props.FloatVectorProperty(name = 'Color 3', subtype = 'COLOR', size = 4, min = 0, max = 1, default = [0, 0, 0, 0], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'clr3'))
 bpy.types.Object.clr1Alpha = bpy.props.FloatProperty(name = 'Color 1 alpha', min = 0, max = 1, default = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'clr1Alpha'))
 bpy.types.Object.clrPositions = bpy.props.IntVectorProperty(name = 'Color Positions', size = 3, min = 0, max = 100, default = [0, 50, 100], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'clrPositions'))
 bpy.types.Object.subtractive = bpy.props.BoolProperty(name = 'Is subtractive', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'subtractive'))
@@ -2119,11 +2148,11 @@ for i in range(MAX_ATTACH_COLLIDER_CNT):
 		'attach%s' %i,
 		bpy.props.BoolProperty(name = 'Attach to rigid body%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'attach%s' %i))
 	)
-for i in range(MAX_POTRACE_PASSES):
+for i in range(MAX_POTRACE_PASSES_PER_OBJECT_MAT):
 	setattr(
 		bpy.types.Object,
-		'visibleClrValue%i' %i,
-		bpy.props.FloatProperty(name = 'Visible color value threshold', min = 0, max = 1, default = .01, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'visibleClrValue%s' %i))
+		'minVisibleClrValue%i' %i,
+		bpy.props.FloatProperty(name = 'Min visible color value', min = 0, max = 1, default = .01, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minVisibleClrValue%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
@@ -2133,9 +2162,55 @@ for i in range(MAX_POTRACE_PASSES):
 	if i > 0:
 		setattr(
 			bpy.types.Object,
-			'useVisibleClrValue%i' %i,
-			bpy.props.BoolProperty(name = 'Use', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useVisibleClrValue%s' %i))
+			'useMinVisibleClrValue%i' %i,
+			bpy.props.BoolProperty(name = 'Use', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinVisibleClrValue%s' %i))
 		)
+for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+	setattr(
+		bpy.types.Object,
+		'intName%i' %i,
+		bpy.props.StringProperty(name = 'Int name%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'intName%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'intVal%i' %i,
+		bpy.props.IntProperty(name = 'Int value%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'intVal%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'useInt%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useInt%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'floatName%i' %i,
+		bpy.props.StringProperty(name = 'Float name%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'floatName%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'floatVal%i' %i,
+		bpy.props.FloatProperty(name = 'Float value%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'floatVal%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'useFloat%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useFloat%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'stringName%i' %i,
+		bpy.props.StringProperty(name = 'String name%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'stringName%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'stringVal%i' %i,
+		bpy.props.StringProperty(name = 'String value%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'stringVal%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'useString%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useString%s' %i))
+	)
 
 @bpy.utils.register_class
 class HTMLExport (bpy.types.Operator):
@@ -2281,14 +2356,14 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'maxPosFrame')
 			self.layout.prop(ob, 'posPingPong')
 		if ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
-			for i in range(MAX_POTRACE_PASSES):
+			for i in range(MAX_POTRACE_PASSES_PER_OBJECT_MAT):
 				row = self.layout.row()
-				row.prop(ob, 'visibleClrValue%s' %i)
+				row.prop(ob, 'minVisibleClrValue%s' %i)
 				row.prop(ob, 'tintOutput%s' %i)
 				if i > 0:
-					row.prop(ob, 'useVisibleClrValue%s' %i)
-					if not getattr(ob, 'useVisibleClrValue%s' %i):
-						return
+					row.prop(ob, 'useMinVisibleClrValue%s' %i)
+					if not getattr(ob, 'useMinVisibleClrValue%s' %i):
+						break
 		self.layout.label(text = 'Scripts')
 		foundUnassignedScript = False
 		for i in range(MAX_SCRIPTS_PER_OBJECT):
@@ -2309,6 +2384,40 @@ class ObjectPanel (bpy.types.Panel):
 				row.prop(ob, 'runtimeScript%sDisable' %i)
 			if not foundUnassignedScript:
 				foundUnassignedScript = not hasProp
+
+@bpy.utils.register_class
+class AttributesPanel (bpy.types.Panel):
+	bl_idname = 'OBJECT_PT_Attributes_Panel'
+	bl_label = 'Attributes'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'object'
+
+	def draw (self, ctx):
+		ob = ctx.active_object
+		if not ob:
+			return
+		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+			row = self.layout.row()
+			row.prop(ob, 'intName%s' %i)
+			row.prop(ob, 'intVal%s' %i)
+			row.prop(ob, 'useInt%s' %i)
+			if not getattr(ob, 'useInt%s' %i):
+				break
+		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+			row = self.layout.row()
+			row.prop(ob, 'floatName%s' %i)
+			row.prop(ob, 'floatVal%s' %i)
+			row.prop(ob, 'useFloat%s' %i)
+			if not getattr(ob, 'useFloat%s' %i):
+				break
+		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+			row = self.layout.row()
+			row.prop(ob, 'stringName%s' %i)
+			row.prop(ob, 'stringVal%s' %i)
+			row.prop(ob, 'useString%s' %i)
+			if not getattr(ob, 'useString%s' %i):
+				break
 
 @bpy.utils.register_class
 class LightPanel (bpy.types.Panel):
