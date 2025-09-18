@@ -283,32 +283,53 @@ def ExportObject (ob):
 		data.append(ob.subtractive)
 		datas.append(data)
 	elif ob.type == 'CURVE':
-		prevData = ob.data
-		pathDataFrames = []
-		prevPathData = ''
-		posFrames = []
-		data = []
-		prevPos = None
-		for frame in range(ob.minPosFrame, ob.maxPosFrame + 1):
-			bpy.context.scene.frame_set(frame)
-			depsgraph = bpy.context.evaluated_depsgraph_get()
-			evaluatedOb = ob.evaluated_get(depsgraph)
-			curveData = evaluatedOb.to_curve(depsgraph, apply_modifiers = True)
-			ob.data = curveData.copy()
-			if frame > ob.minPosFrame:
-				posFrames.append([TryChangeToInt(ob.location.x - prevPos.x), TryChangeToInt(ob.location.y - prevPos.y)])
-			prevPos = ob.location
+		prevObName = ob.name
+		ob.name += '_'
+		geoDatas = []
 		for frame in range(ob.minPathFrame, ob.maxPathFrame + 1):
 			bpy.context.scene.frame_set(frame)
 			depsgraph = bpy.context.evaluated_depsgraph_get()
 			evaluatedOb = ob.evaluated_get(depsgraph)
 			curveData = evaluatedOb.to_curve(depsgraph, apply_modifiers = True)
-			ob.data = curveData.copy()
+			spline = curveData.splines[0]
+			pnts = spline.bezier_points
+			controlPnts = [pnt.co.copy() for pnt in pnts]
+			leftHandles = [pnt.handle_left.copy() for pnt in pnts]
+			rightHandles = [pnt.handle_right.copy() for pnt in pnts]
+			worldMatrix = evaluatedOb.matrix_world.copy()
+			geoDatas.append({'controlPnts' : controlPnts, 'leftHandles' : leftHandles, 'rightHandles' : rightHandles, 'cyclic' : spline.use_cyclic_u, 'matrix' : worldMatrix})
+		bpy.context.scene.frame_set(prevFrame)
+		tempCollection = bpy.data.collections.new('Temp')
+		bpy.context.scene.collection.children.link(tempCollection)
+		newCurveData = bpy.data.curves.new(name = 'Temp', type = 'CURVE')
+		newOb = bpy.data.objects.new(name = 'Temp', object_data = newCurveData)
+		tempCollection.objects.link(newOb)
+		pathDataFrames = []
+		prevPathData = ''
+		posFrames = []
+		data = []
+		prevPos = None
+		for frame, geoData in enumerate(geoDatas):
+			if frame > 0:
+				pos = geoData['matrix'].translation()
+				posFrames.append([TryChangeToInt(pos.x - prevPos.x), TryChangeToInt(pos.y - prevPos.y)])
+			prevPos = ob.location
+		for frame, geoData in enumerate(geoDatas):
+			newCurveData.splines.clear()
+			newCurveData.splines.new('BEZIER')
+			newCurveData.splines[0].bezier_points.add(len(geoData['controlPnts']) - 1)
+			for i, pnt in enumerate(geoData['controlPnts']):
+				spline = newCurveData.splines[0]
+				spline.bezier_points[i].co = pnt
+				spline.bezier_points[i].handle_left = geoData['leftHandles'][i]
+				spline.bezier_points[i].handle_right = geoData['rightHandles'][i]
+			spline.use_cyclic_u = geoData['cyclic']
+			newOb.matrix_world = geoData['matrix']
 			bpy.ops.object.select_all(action = 'DESELECT')
-			ob.select_set(True)
+			newOb.select_set(True)
 			bpy.ops.curve.export_svg()
 			svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
-			idxOfName = svgTxt.find('"' + ob.name + '"') + 1
+			idxOfName = svgTxt.find('"' + newOb.name + '"') + 1
 			idxOfGroupStart = svgTxt.rfind('\n', 0, idxOfName)
 			groupEndIndctr = '</g>'
 			idxOfGroupEnd = svgTxt.find(groupEndIndctr, idxOfGroupStart) + len(groupEndIndctr)
@@ -317,7 +338,7 @@ def ExportObject (ob):
 			idxOfParentGroupStart = svgTxt.find(parentGroupIndctr)
 			idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndctr))
 			idxOfParentGroupEnd = svgTxt.rfind('</g')
-			_min, _max = GetRectMinMax(ob)
+			_min, _max = GetRectMinMax(newOb)
 			scale = Vector((sx, sy))
 			_min *= scale
 			_min += off
@@ -339,19 +360,19 @@ def ExportObject (ob):
 				components = vector.split(',')
 				x = int(round(float(components[0])))
 				y = int(round(float(components[1])))
-				vector = ob.matrix_world @ Vector((x, y, 0))
+				vector = newOb.matrix_world @ Vector((x, y, 0))
 				x = vector.x
 				y = vector.y
 				minPathVector = GetMinComponents(minPathVector, vector, True)
 				maxPathVector = GetMaxComponents(maxPathVector, vector, True)
 				pathData.append(x)
 				pathData.append(y)
-			offset = -minPathVector + Vector((32, 32))
+			_off = -minPathVector + Vector((32, 32))
 			for i, pathValue in enumerate(pathData):
 				if i % 2 == 1:
 					pathData[i] = ToByteString(maxPathVector[1] - pathValue + 32)
 				else:
-					pathData[i] = ToByteString(pathValue + offset[0])
+					pathData[i] = ToByteString(pathValue + _off[0])
 			strokeWidth = 0
 			if ob.useStroke:
 				strokeWidth = ob.strokeWidth
@@ -365,9 +386,9 @@ def ExportObject (ob):
 				y = int(round(y))
 				size = Vector(Round(size))
 			pathDataStr = ''.join(pathData)
-			if frame == ob.minPathFrame:
-				if HandleCopyObject(ob, [x, y]):
-					return
+			if frame == 0:
+				if HandleCopyObject(newOb, [x, y]):
+					break
 				posFrames.insert(0, [TryChangeToInt(x), TryChangeToInt(y)])
 				data.append(posFrames)
 				data.append(ob.posPingPong)
@@ -379,10 +400,10 @@ def ExportObject (ob):
 				data.append(GetColor(materialClr))
 				data.append(round(strokeWidth))
 				data.append(GetColor(ob.strokeClr))
-				data.append(ob.name)
-				data.append(ob.data.splines[0].use_cyclic_u)
+				data.append(prevObName)
+				data.append(spline.use_cyclic_u)
 				data.append(round(ob.location.z))
-				data.append(False)
+				data.append(GetAttributes(ob))
 				data.append(TryChangeToInt(ob.jiggleDist * int(ob.useJiggle)))
 				data.append(TryChangeToInt(ob.jiggleDur))
 				data.append(ob.jiggleFrames * int(ob.useJiggle))
@@ -427,22 +448,22 @@ def ExportObject (ob):
 					dashArr.append(value)
 				data.append(dashArr)
 				data.append(TryChangeToInt(ob.cycleDur))
-				data.append(GetAttributes(ob))
 				pathDataFrames.append(pathDataStr)
 			else:
 				pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
 			prevPathData = pathDataStr
 		datas.append(data)
-		bpy.context.scene.frame_set(prevFrame)
-		ob.data = prevData
-		for curve in bpy.data.curves:
-			if curve.users == 0:
-				bpy.data.curves.remove(curve)
+		tempCollection.objects.unlink(newOb)
+		bpy.data.objects.remove(newOb)
+		bpy.data.curves.remove(newCurveData)
+		bpy.context.scene.collection.children.unlink(tempCollection)
+		bpy.data.collections.remove(tempCollection)
+		bpy.data.objects[prevObName + '_'].name = prevObName
 		pathsDatas.append(chr(1).join(pathDataFrames))
 	elif ob.type == 'MESH':
 		prevObName = ob.name
 		ob.name += '_'
-		geosDatas = []
+		geoDatas = []
 		for frame in range(ob.minPathFrame, ob.maxPathFrame + 1):
 			bpy.context.scene.frame_set(frame)
 			depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -451,12 +472,12 @@ def ExportObject (ob):
 			verts = [v.co.copy() for v in meshData.vertices]
 			faces = [p.vertices[:] for p in meshData.polygons]
 			worldMatrix = evaluatedOb.matrix_world.copy()
-			geosDatas.append({'verts' : verts, 'faces' : faces, 'matrix' : worldMatrix})
+			geoDatas.append({'verts' : verts, 'faces' : faces, 'matrix' : worldMatrix})
 		bpy.context.scene.frame_set(prevFrame)
-		tempCollection = bpy.data.collections.new('TempExportCollection')
+		tempCollection = bpy.data.collections.new('Temp')
 		bpy.context.scene.collection.children.link(tempCollection)
-		newMeshData = bpy.data.meshes.new(name='TempExportMesh')
-		newOb = bpy.data.objects.new(name = 'TempExportObject', object_data = newMeshData)
+		newMeshData = bpy.data.meshes.new(name = 'Temp')
+		newOb = bpy.data.objects.new(name = 'Temp', object_data = newMeshData)
 		tempCollection.objects.link(newOb)
 		visibleClrValues = []
 		tints = []
@@ -477,16 +498,16 @@ def ExportObject (ob):
 				if matSlotIdx > 0:
 					newName += '_' + mat.name
 				newOb.active_material = mat
-				for frame, geoData in enumerate(geosDatas):
-					if frame > ob.minPathFrame:
-						newName = newName.replace('_' + str(frame - 1), '')
-						newName += '_' + str(frame)
+				for frame, geoData in enumerate(geoDatas):
 					newMeshData.clear_geometry()
 					newMeshData.from_pydata(geoData['verts'], [], geoData['faces'])
 					newMeshData.update()
 					newOb.matrix_world = geoData['matrix']
 					_min, _max = GetRectMinMax(ob)
-					if frame == ob.minPathFrame and HandleCopyObject(newOb, list(_min)):
+					if frame > 0:
+						newName = newName.replace('_' + str(frame - 1), '')
+						newName += '_' + str(frame)
+					elif frame == 0 and HandleCopyObject(newOb, list(_min)):
 						break
 					scene = bpy.context.scene
 					renderSettings = scene.render
@@ -580,9 +601,6 @@ def ExportObject (ob):
 		bpy.context.scene.collection.children.unlink(tempCollection)
 		bpy.data.collections.remove(tempCollection)
 		bpy.data.objects[prevObName + '_'].name = prevObName
-		for mesh in bpy.data.meshes:
-			if mesh.users == 0:
-				bpy.data.meshes.remove(mesh)
 	elif ob.type == 'GREASEPENCIL':
 		_min, _max = GetRectMinMax(ob)
 		if HandleCopyObject(ob, list(_min)):
@@ -965,7 +983,7 @@ for (var e of d)
 	var l = e.length;
 	if (l > 10)
 	{
-		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50], e[51]);
+		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
 		i ++;
 	}
 	else if (l > 6)
@@ -1225,7 +1243,7 @@ class api
 		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ',' + clr[1] + ',' + clr[2] + ',' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ',' + clr2[1] + ',' + clr2[2] + ',' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ',' + clr3[1] + ',' + clr3[2] + ',' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, unused, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur, attributes)
+	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, attributes, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
 	{
 		var fillClrTxt = 'rgb(' + fillClr[0] + ' ' + fillClr[1] + ' ' + fillClr[2] + ')';
 		var lineClrTxt = 'rgb(' + lineClr[0] + ' ' + lineClr[1] + ' ' + lineClr[2] + ')';
@@ -1556,7 +1574,7 @@ def GenJsAPI (world):
 	js = '\n'.join(js)
 	js = js.replace('// Init', '\n'.join(initCode))
 	js = js.replace('// Update', '\n'.join(updateCode))
-	datas = json.dumps(datas).replace(', ', ',')
+	datas = json.dumps(datas).replace(', ', ',').replace(': ', ':')
 	clrs = json.dumps(clrs).replace(' ', '')
 	if world.minifyMethod == 'terser':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
@@ -1619,8 +1637,9 @@ def BuildHtml (world):
 	if SERVER_PROC:
 		SERVER_PROC.kill()
 	PreBuild ()
-	prevMode = current_mode = bpy.context.active_object.mode
-	bpy.ops.object.mode_set(mode = 'OBJECT')
+	if bpy.context.active_object:
+		prevMode = bpy.context.active_object.mode
+		bpy.ops.object.mode_set(mode = 'OBJECT')
 	bpy.context.scene.export_svg_output = TMP_DIR + '/Output.svg'
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
@@ -1657,7 +1676,8 @@ def BuildHtml (world):
 	# atexit.register(lambda : SERVER_PROC.kill())
 	# webbrowser.open('http://localhost:6969')
 	PostBuild ()
-	bpy.ops.object.mode_set(mode = prevMode)
+	if bpy.context.active_object:
+		bpy.ops.object.mode_set(mode = prevMode)
 	return html
 
 def BuildUnity (world):
@@ -1922,7 +1942,7 @@ bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project p
 bpy.types.World.minifyMethod = bpy.props.EnumProperty(name = 'Minify using library', items = MINIFY_METHOD_ITEMS)
 bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
-bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Length unit', min = 0, default = 1)
+bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Unit length', min = 0, default = 1)
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundPosAndSize'))
 bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'origin'))
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStroke'))
