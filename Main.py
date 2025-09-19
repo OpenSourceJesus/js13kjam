@@ -694,10 +694,17 @@ def ExportObject (ob):
 			imgName = GetFileName(obData.filepath)
 			prevRotMode = ob.rotation_mode
 			ob.rotation_mode = 'XYZ'
-			img = '<img id="' + ob.name + '" src="' + imgName + '" width=' + str(obData.size[0]) + ' height=' + str(obData.size[1]) + ' style="z-index:' + str(round(ob.location.z)) + ';position:absolute;transform:translate(' + str(TryChangeToInt(ob.location.x - obData.size[0] / 2)) + 'px,' + str(TryChangeToInt(-ob.location.y - obData.size[1] / 2)) + 'px)'
+			size = ob.scale * ob.empty_display_size
+			pos = ob.location.copy()
+			pos += size * Vector((ob.empty_image_offset[0], ob.empty_image_offset[1], 0)) + size * Vector((0, 1, 0))
+			pos.y *= -1
+			img = '<img id="' + ob.name + '" src="' + imgName + '" width=' + str(size[0]) + ' height=' + str(size[1]) + ' style="z-index:' + str(round(ob.location.z)) + ';position:absolute;transform:translate(' + str(TryChangeToInt(pos.x)) + 'px,' + str(TryChangeToInt(pos.y)) + 'px)'
 			if ob.rotation_euler.z != 0:
 				img += 'rotate(' + str(ob.rotation_euler.z) + 'rad)'
-			img += ';user-drag:none;-webkit-user-drag:none;user-select:none;-moz-user-select:none;-webkit-user-select:none;-ms-user-select:none">'
+			img += ';user-drag:none;-webkit-user-drag:none;user-select:none;-moz-user-select:none;-webkit-user-select:none;-ms-user-select:none'
+			if ob.use_empty_image_alpha and ob.color[3] != 1:
+				img += ';opacity:' + str(ob.color[3])
+			img += '">'
 			ob.rotation_mode = prevRotMode
 			imgPath = TMP_DIR + '/' + imgName
 			ob.data.save(filepath = imgPath)
@@ -2134,7 +2141,7 @@ for i in range(MAX_POTRACE_PASSES_PER_OBJECT_MAT):
 	setattr(
 		bpy.types.Object,
 		'tintOutput%i' %i,
-		bpy.props.FloatVectorProperty(name = 'Tint output', subtype = 'COLOR', size = 4, default = [1, 1, 1, 1], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'tintOutput%s' %i))
+		bpy.props.FloatVectorProperty(name = 'Tint output', subtype = 'COLOR', size = 4, min = 0, default = [1, 1, 1, 1], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'tintOutput%s' %i))
 	)
 	if i > 0:
 		setattr(
