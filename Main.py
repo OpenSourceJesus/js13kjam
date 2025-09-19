@@ -88,6 +88,7 @@ MAX_SHAPE_POINTS = 32
 MAX_ATTACH_COLLIDER_CNT = 64
 MAX_POTRACE_PASSES_PER_OBJECT_MAT = 8
 MAX_ATTRIBUTES_PER_OBJECT = 16
+MAX_RENDER_CAMS_PER_OBJECT = 64
 
 def GetScripts (ob, isAPI : bool):
 	scripts = []
@@ -491,6 +492,14 @@ def ExportObject (ob):
 					tints.insert(minVisibleClrValueIdx, getattr(ob, 'tintOutput%i' %i))
 					minVisibleClrValueIdx = i
 					minVisibleClrValue = visibleClrValue
+		renderCams = []
+		for i in range(MAX_RENDER_CAMS_PER_OBJECT):
+			renderCam = getattr(ob, 'renderCam%s' %i)
+			if renderCam:
+				renderCams.append(renderCam)
+		scene = bpy.context.scene
+		if renderCams == []:
+			renderCams = [scene.camera]
 		for matSlotIdx, matSlot in enumerate(ob.material_slots):
 			mat = matSlot.material
 			if mat:
@@ -509,7 +518,6 @@ def ExportObject (ob):
 						newName += '_' + str(frame)
 					elif frame == 0 and HandleCopyObject(newOb, list(_min)):
 						break
-					scene = bpy.context.scene
 					renderSettings = scene.render
 					imageSettings = renderSettings.image_settings
 					viewSettings = imageSettings.view_settings
@@ -529,6 +537,7 @@ def ExportObject (ob):
 						viewSettings.gamma = 5
 					imageSettings.file_format = 'BMP'
 					imageSettings.color_mode = 'BW'
+					renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
 					renderPaths = []
 					prevHideObsInRender = {}
 					for ob2 in bpy.data.objects:
@@ -540,52 +549,56 @@ def ExportObject (ob):
 						if mat2 and mat != mat2:
 							prevMatClrs[mat2] = mat2.diffuse_color
 							mat2.diffuse_color = DEFAULT_CLR
-					cam = scene.camera
-					renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
-					bpy.ops.render.render(write_still = True)
-					for i, tint in enumerate(tints):
+					for cam in renderCams:
 						prevName = newName
 						if i > 0:
 							newName += '_' + str(i)
-						cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(visibleClrValues[i]), '-i']
-						print(' '.join(cmd))
-						subprocess.check_call(cmd)
-						svgTxt = open(renderSettings.filepath.replace('.bmp', '.svg'), 'r').read()
-						svgTxt = svgTxt.replace('\n', ' ')
-						svgIndctr = '<svg '
-						svgTxt = svgTxt[svgTxt.find(svgIndctr) :]
-						svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
-						metadataEndIndctr = '/metadata>'
-						svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
-						svgTxt = svgTxt.replace('00000', '')
-						svgTxt = svgTxt.replace('.000000', '')
-						camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
-						camToOb = newOb.location - cam.location
-						projectedVec = camToOb.project(camForward)
-						addToSvgTxt = 'id="' + newName + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"'
-						if frame > 0:
-							addToSvgTxt += ' opacity=0'
-						svgTxt = svgTxt[: len(svgIndctr)] + addToSvgTxt + svgTxt[len(svgIndctr) :]
-						fillIndctr = 'fill="'
-						idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
-						idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
-						materialClr = mat.diffuse_color
-						fillClr = ClampComponents(Round(Multiply(materialClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-						if ob.gradientFill:
-							svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.gradientFill.name + ')' + svgTxt[idxOfFillEnd :]
-						else:
-							svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillClr[0] * tint[0]) + ' ' + str(fillClr[1] * tint[1]) + ' ' + str(fillClr[2] * tint[2]) + ')' + svgTxt[idxOfFillEnd :]
-						if ob.useStroke:
-							strokeClr = ClampComponents(Round(Multiply(ob.strokeClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-							svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeClr[0]) + ' ' + str(strokeClr[1]) + ' ' + str(strokeClr[2]) + ')" stroke-width=' + str(ob.strokeWidth))
-						svgsDatas[newName] = svgTxt
+						scene.camera = cam
+						bpy.ops.render.render(write_still = True)
+						for i, tint in enumerate(tints):
+							prevName2 = newName
+							if i > 0:
+								newName += '_' + str(i)
+							cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(visibleClrValues[i]), '-i']
+							print(' '.join(cmd))
+							subprocess.check_call(cmd)
+							svgTxt = open(renderSettings.filepath.replace('.bmp', '.svg'), 'r').read()
+							svgTxt = svgTxt.replace('\n', ' ')
+							svgIndctr = '<svg '
+							svgTxt = svgTxt[svgTxt.find(svgIndctr) :]
+							svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
+							metadataEndIndctr = '/metadata>'
+							svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
+							svgTxt = svgTxt.replace('00000', '')
+							svgTxt = svgTxt.replace('.000000', '')
+							camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
+							camToOb = newOb.location - cam.location
+							projectedVec = camToOb.project(camForward)
+							addToSvgTxt = 'id="' + newName + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"'
+							if frame > 0:
+								addToSvgTxt += ' opacity=0'
+							svgTxt = svgTxt[: len(svgIndctr)] + addToSvgTxt + svgTxt[len(svgIndctr) :]
+							fillIndctr = 'fill="'
+							idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
+							idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
+							materialClr = mat.diffuse_color
+							fillClr = ClampComponents(Round(Multiply(materialClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+							if ob.gradientFill:
+								svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.gradientFill.name + ')' + svgTxt[idxOfFillEnd :]
+							else:
+								svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillClr[0] * tint[0]) + ' ' + str(fillClr[1] * tint[1]) + ' ' + str(fillClr[2] * tint[2]) + ')' + svgTxt[idxOfFillEnd :]
+							if ob.useStroke:
+								strokeClr = ClampComponents(Round(Multiply(ob.strokeClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+								svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeClr[0]) + ' ' + str(strokeClr[1]) + ' ' + str(strokeClr[2]) + ')" stroke-width=' + str(ob.strokeWidth))
+							svgsDatas[newName] = svgTxt
+							newName = prevName2
 						newName = prevName
-					for ob in bpy.data.objects:
-						ob.hide_render = prevHideObsInRender[ob]
-					for matSlot in ob.material_slots:
-						mat2 = matSlot.material
-						if mat2 in prevMatClrs:
-							mat2.diffuse_color = prevMatClrs[mat2]
+						for ob in bpy.data.objects:
+							ob.hide_render = prevHideObsInRender[ob]
+						for matSlot in ob.material_slots:
+							mat2 = matSlot.material
+							if mat2 in prevMatClrs:
+								mat2.diffuse_color = prevMatClrs[mat2]
 					renderSettings.filepath = prevRenderPath
 					renderSettings.film_transparent = prevTransparentFilm
 					viewSettings.exposure = prevExposure
@@ -696,7 +709,7 @@ def ExportObject (ob):
 			ob.rotation_mode = 'XYZ'
 			size = ob.scale * ob.empty_display_size
 			pos = ob.location.copy()
-			pos += size * Vector((ob.empty_image_offset[0], ob.empty_image_offset[1], 0)) + size * Vector((0, 1, 0))
+			pos += size * Vector((ob.empty_image_offset[0], ob.empty_image_offset[1] + 1, 0))
 			pos.y *= -1
 			img = '<img id="' + ob.name + '" src="' + imgName + '" width=' + str(size[0]) + ' height=' + str(size[1]) + ' style="z-index:' + str(round(ob.location.z)) + ';position:absolute;transform:translate(' + str(TryChangeToInt(pos.x)) + 'px,' + str(TryChangeToInt(pos.y)) + 'px)'
 			if ob.rotation_euler.z != 0:
@@ -2195,6 +2208,12 @@ for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 		'useString%i' %i,
 		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useString%s' %i))
 	)
+for i in range(MAX_RENDER_CAMS_PER_OBJECT):
+	setattr(
+		bpy.types.Object,
+		'renderCam%s' %i,
+		bpy.props.PointerProperty(name = 'Render camera%s' %i, type = bpy.types.Camera, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'renderCam%s' %i))
+	)
 
 @bpy.utils.register_class
 class HTMLExport (bpy.types.Operator):
@@ -2348,6 +2367,13 @@ class ObjectPanel (bpy.types.Panel):
 					row.prop(ob, 'useMinVisibleClrValue%s' %i)
 					if not getattr(ob, 'useMinVisibleClrValue%s' %i):
 						break
+			foundUnassignedCam = False
+			for i in range(MAX_RENDER_CAMS_PER_OBJECT):
+				hasProp = getattr(ob, 'renderCam%s' %i)
+				if hasProp or not foundUnassignedCam:
+					self.layout.prop(ob, 'renderCam%s' %i)
+				if not foundUnassignedCam:
+					foundUnassignedCam = not hasProp
 		self.layout.label(text = 'Scripts')
 		foundUnassignedScript = False
 		for i in range(MAX_SCRIPTS_PER_OBJECT):
