@@ -28,7 +28,6 @@ else:
 		BLENDER = 'blender'
 		POTRACE_PATH += 'linux-x86_64/potrace'
 		isLinux = True
-POTRACE_PATH = os.path.join(_thisDir, POTRACE_PATH)
 usePhysics = True
 dontMangleArg = ''
 startScriptPath = ''
@@ -1649,7 +1648,7 @@ def GenPython (world, datas, background = ''):
 	if background:
 		background = 'background-color:%s;' %background
 	o = [
-		'''import pygame
+		'''from python import pygame
 
 class GameEngine:
 	def __init__ (self, width : int = 800, height : int = 600, title : str = "Python Game Engine"):
@@ -1754,14 +1753,18 @@ def BuildExe (world):
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
 	python = GenPython(world, datas)
+	pythonPath = TMP_DIR + '/Temp.py'
+	open(pythonPath, 'w').write(python)
 	exePath = os.path.expanduser(world.exePath)
 	exePath = exePath.replace('\\', '/')
 	if not exePath:
-		exePath = TMP_DIR + '/index.exe'
-	if not exePath.endswith('.exe'):
-		exePath += '.exe'
-	print('Saving:', exePath)
-	open(exePath, 'w').write(python)
+		exePath = TMP_DIR + '/' + bpy.path.basename(bpy.data.filepath).replace('.blend', '')
+	# if not exePath.endswith('.exe'):
+	# 	exePath += '.exe'
+	cmd = 'python3 CodonBuild.py ' + pythonPath + ' ' + exePath
+	print(cmd)
+	os.system(cmd)
+	# subprocess.check_call(cmd.split())
 	zipPath = os.path.expanduser(world.zipPath)
 	zipPath = zipPath.replace('\\', '/')
 	if not zipPath.endswith('.zip'):
@@ -1771,7 +1774,7 @@ def BuildExe (world):
 		zip.write(exePath, GetFileName(exePath))
 		for imgPath in imgsPaths:
 			zip.write(imgPath, GetFileName(imgPath))
-		zip.extractall(zipPath.replace('.zip', ''))
+		# zip.extractall(zipPath.replace('.zip', ''))
 	zip = open(zipPath, 'rb').read()
 	buildInfo['zip'] = zipPath
 	buildInfo['zip-size'] = len(zip)
