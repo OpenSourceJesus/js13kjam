@@ -28,6 +28,7 @@ else:
 		BLENDER = 'blender'
 		POTRACE_PATH += 'linux-x86_64/potrace'
 		isLinux = True
+POTRACE_PATH = os.path.join(_thisDir, POTRACE_PATH)
 usePhysics = True
 dontMangleArg = ''
 startScriptPath = ''
@@ -78,7 +79,7 @@ if not bpy:
 	if isLinux:
 		if not os.path.isfile('/usr/bin/blender'):
 			print('Did you install blender 4.5?')
-			print('snap install blender')
+			print('snap install blender --classic')
 	else:
 		print('Download blender 4.5 from: https://blender.org')
 	sys.exit()
@@ -234,8 +235,8 @@ def GetObjectPosition (ob):
 		y -= radius
 	else:
 		y = -y
-	x += offX
-	y += offY
+	x += off.x
+	y += off.y
 	return Round(Vector((x, y)))
 
 DEFAULT_CLR = [0, 0, 0, 0]
@@ -276,7 +277,7 @@ def ExportObject (ob):
 		data.append(int(round(ob.location.z)))
 		data.append(int(round(radius * 2)))
 		alpha = round(ob.clr1Alpha * 255)
-		clr = Round(Multiply(ob.data.clr, [255, 255, 255]))
+		clr = Round(Multiply(ob.data.color, [255, 255, 255]))
 		data.append(GetColor([clr[0], clr[1], clr[2], alpha]))
 		data.append(GetColor(ob.clr2))
 		data.append(GetColor(ob.clr3))
@@ -1642,25 +1643,75 @@ def GenHtml (world, datas, background = ''):
 	buildInfo['html-size'] = htmlSize
 	return '\n'.join(o)
 
+def GenPython (world, datas, background = ''):
+	global userJS, clrs, initCode, updateCode, pathsDatas
+	js = GenJsAPI(world)
+	if background:
+		background = 'background-color:%s;' %background
+	o = [
+		'''import pygame
+
+class GameEngine:
+	def __init__ (self, width : int = 800, height : int = 600, title : str = "Python Game Engine"):
+		self.screen = pygame.display.set_mode((width, height))
+		pygame.display.set_caption(title)
+		self.clock = pygame.time.Clock()
+		self.running = True
+
+	def run (self):
+		while self.running:
+			self.handle_events()
+			self.update()
+			self.render()
+			self.clock.tick(60)
+
+	def handle_events (self):
+		for event in pygame.event.get():
+			if event.type == pygame.QUIT:
+				self.running = False
+
+	def update (self):
+		pass
+
+	def render (self):
+		self.screen.fill((0, 0, 0))
+		pygame.display.flip()
+
+pygame.init()
+engine = GameEngine()
+engine.run()
+pygame.quit()'''
+	]
+	buildInfo['exe-size'] = len('\n'.join(o))
+	return '\n'.join(o)
+
 SERVER_PROC = None
+prevObMode = None
+prevSvgExportPath = None
 
 def PreBuild ():
+	global prevObMode, prevSvgExportPath
 	if preBuildScriptPath != '':
 		exec(open(preBuildScriptPath, 'r').read())
+	if bpy.context.active_object:
+		prevObMode = bpy.context.active_object.mode
+		bpy.ops.object.mode_set(mode = 'OBJECT')
+	prevSvgExportPath = bpy.context.scene.export_svg_output
+	bpy.context.scene.export_svg_output = TMP_DIR + '/Output.svg'
 
 def PostBuild ():
+	global prevObMode, prevSvgExportPath
 	if postBuildScriptPath != '':
 		exec(open(postBuildScriptPath, 'r').read())
+	if bpy.context.active_object:
+		bpy.ops.object.mode_set(mode = prevObMode)
+	bpy.context.scene.export_svg_output = prevSvgExportPath
 
 def BuildHtml (world):
 	global SERVER_PROC
 	if SERVER_PROC:
 		SERVER_PROC.kill()
 	PreBuild ()
-	if bpy.context.active_object:
-		prevMode = bpy.context.active_object.mode
-		bpy.ops.object.mode_set(mode = 'OBJECT')
-	bpy.context.scene.export_svg_output = TMP_DIR + '/Output.svg'
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
 	html = GenHtml(world, datas)
@@ -1696,9 +1747,35 @@ def BuildHtml (world):
 	# atexit.register(lambda : SERVER_PROC.kill())
 	# webbrowser.open('http://localhost:6969')
 	PostBuild ()
-	if bpy.context.active_object:
-		bpy.ops.object.mode_set(mode = prevMode)
 	return html
+
+def BuildExe (world):
+	PreBuild ()
+	blenderInfo = GetBlenderData()
+	datas = blenderInfo[0]
+	python = GenPython(world, datas)
+	exePath = os.path.expanduser(world.exePath)
+	exePath = exePath.replace('\\', '/')
+	if not exePath:
+		exePath = TMP_DIR + '/index.exe'
+	if not exePath.endswith('.exe'):
+		exePath += '.exe'
+	print('Saving:', exePath)
+	open(exePath, 'w').write(python)
+	zipPath = os.path.expanduser(world.zipPath)
+	zipPath = zipPath.replace('\\', '/')
+	if not zipPath.endswith('.zip'):
+		zipPath += '.zip'
+	print('Saving:', zipPath)
+	with ZipFile(zipPath, 'w') as zip:
+		zip.write(exePath, GetFileName(exePath))
+		for imgPath in imgsPaths:
+			zip.write(imgPath, GetFileName(imgPath))
+		zip.extractall(zipPath.replace('.zip', ''))
+	zip = open(zipPath, 'rb').read()
+	buildInfo['zip'] = zipPath
+	buildInfo['zip-size'] = len(zip)
+	PostBuild ()
 
 def BuildUnity (world):
 	PreBuild ()
@@ -1957,6 +2034,7 @@ JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('', '', ''), ('spring', 'spring', '
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOff = bpy.props.IntVectorProperty(name = 'Offset', size = 2)
 bpy.types.World.htmlPath = bpy.props.StringProperty(name = 'Export .html')
+bpy.types.World.exePath = bpy.props.StringProperty(name = 'Export .exe')
 bpy.types.World.zipPath = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = TMP_DIR + '/TestUnityProject')
 bpy.types.World.minifyMethod = bpy.props.EnumProperty(name = 'Minify using library', items = MINIFY_METHOD_ITEMS)
@@ -2229,6 +2307,19 @@ class HTMLExport (bpy.types.Operator):
 		return {'FINISHED'}
 
 @bpy.utils.register_class
+class ExeExport (bpy.types.Operator):
+	bl_idname = 'world.exe_export'
+	bl_label = 'Export to Exe'
+
+	@classmethod
+	def poll (cls, ctx):
+		return True
+
+	def execute (self, ctx):
+		BuildExe (ctx.world)
+		return {'FINISHED'}
+
+@bpy.utils.register_class
 class UnityExport (bpy.types.Operator):
 	bl_idname = 'world.unity_export'
 	bl_label = 'Export to Unity'
@@ -2254,11 +2345,13 @@ class WorldPanel (bpy.types.Panel):
 		row.prop(ctx.world, 'exportScale')
 		self.layout.prop(ctx.world, 'exportOff')
 		self.layout.prop(ctx.world, 'htmlPath')
+		self.layout.prop(ctx.world, 'exePath')
 		self.layout.prop(ctx.world, 'zipPath')
 		self.layout.prop(ctx.world, 'unityProjPath')
 		if usePhysics:
 			self.layout.prop(ctx.world, 'unitLen')
 		self.layout.operator('world.html_export', icon = 'CONSOLE')
+		self.layout.operator('world.exe_export', icon = 'CONSOLE')
 		self.layout.operator('world.unity_export', icon = 'CONSOLE')
 
 @bpy.utils.register_class
