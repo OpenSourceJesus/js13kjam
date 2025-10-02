@@ -205,7 +205,7 @@ def GetFileName (filePath : str):
 	filePath = filePath.replace('\\', '/')
 	return filePath[filePath.rfind('/') + 1 :]
 
-def GetVarNameFromObject (ob):
+def GetVarNameForObject (ob):
 	output = '_' + ob.name
 	disallowedChars = '/\\`~?|!@#$%^&*()[]{}<>=+-;:",.' + "'"
 	for disallowedChar in disallowedChars:
@@ -253,6 +253,7 @@ initCode = []
 updateCode = []
 apiCode = ''
 svgsDatas = {}
+exportType = None
 
 def ExportObject (ob):
 	global svgsDatas
@@ -705,21 +706,32 @@ def ExportObject (ob):
 		if ob.empty_display_type == 'IMAGE':
 			obData = ob.data
 			imgName = GetFileName(obData.filepath)
+			imgPath = TMP_DIR + '/' + imgName
 			prevRotMode = ob.rotation_mode
 			ob.rotation_mode = 'XYZ'
 			size = ob.scale * ob.empty_display_size
 			pos = ob.location.copy()
 			pos += size * Vector((ob.empty_image_offset[0], ob.empty_image_offset[1] + 1, 0))
 			pos.y *= -1
-			img = '<img id="' + ob.name + '" src="' + imgName + '" width=' + str(size[0]) + ' height=' + str(size[1]) + ' style="z-index:' + str(round(ob.location.z)) + ';position:absolute;transform:translate(' + str(TryChangeToInt(pos.x)) + 'px,' + str(TryChangeToInt(pos.y)) + 'px)'
-			if ob.rotation_euler.z != 0:
-				img += 'rotate(' + str(ob.rotation_euler.z) + 'rad)'
-			img += ';user-drag:none;-webkit-user-drag:none;user-select:none;-moz-user-select:none;-webkit-user-select:none;-ms-user-select:none'
-			if ob.use_empty_image_alpha and ob.color[3] != 1:
-				img += ';opacity:' + str(ob.color[3])
-			img += '">'
+			img = ''
+			if exportType == 'html':
+				img = '<img id="' + ob.name + '" src="' + imgName + '" width=' + str(size[0]) + ' height=' + str(size[1]) + ' style="z-index:' + str(round(ob.location.z)) + ';position:absolute;transform:translate(' + str(TryChangeToInt(pos.x)) + 'px,' + str(TryChangeToInt(pos.y)) + 'px)'
+				if ob.rotation_euler.z != 0:
+					img += 'rotate(' + str(ob.rotation_euler.z) + 'rad)'
+				img += ';user-drag:none;-webkit-user-drag:none;user-select:none;-moz-user-select:none;-webkit-user-select:none;-ms-user-select:none'
+				if ob.use_empty_image_alpha and ob.color[3] != 1:
+					img += ';opacity:' + str(ob.color[3])
+				img += '">'
+			elif exportType == 'exe':
+				surface = GetVarNameForObject(ob)
+				surfaceRect = surface + 'Rect'
+				imgSize = Vector(list(ob.data.size) + [0])
+				if imgSize.x > imgSize.y:
+					size.x *= imgSize.x / imgSize.y
+				else:
+					size.y *= imgSize.y / imgSize.x
+				img = '		' + surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n		' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n		' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ',' + str(TryChangeToInt(pos.y)) + ')\n		self.screen.blit(' + surface + ', ' + surfaceRect + ')'
 			ob.rotation_mode = prevRotMode
-			imgPath = TMP_DIR + '/' + imgName
 			ob.data.save(filepath = imgPath)
 			imgs[ob.name] = img
 			imgsPaths.append(imgPath)
@@ -732,7 +744,7 @@ def ExportObject (ob):
 	exportedObs.append(ob)
 
 def RegisterPhysics (ob):
-	rigidBodyName = GetVarNameFromObject(ob) + 'RigidBody'
+	rigidBodyName = GetVarNameForObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	if ob.rigidBodyExists:
 		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '()'
@@ -765,7 +777,7 @@ def RegisterPhysics (ob):
 		rigidBody += 'rigidBodyDescsIds["' + ob.name + '"] = ' + rigidBodyDescName + ';'
 		rigidBodies[ob] = rigidBody
 	if ob.colliderExists:
-		colliderName = GetVarNameFromObject(ob) + 'Collider'
+		colliderName = GetVarNameForObject(ob) + 'Collider'
 		colliderDescName = colliderName + 'Desc'
 		collider = 'var ' + colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
 		if ob.shapeType == 'ball':
@@ -869,14 +881,14 @@ def RegisterPhysics (ob):
 				collider += colliderName + '.setSensor(true);\n'
 		else:
 			for _attachTo in attachTo:
-				collider += colliderName + GetVarNameFromObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameFromObject(_attachTo) + 'RigidBody);\n'
+				collider += colliderName + GetVarNameForObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameForObject(_attachTo) + 'RigidBody);\n'
 				if ob.isSensor:
-					collider += colliderName + GetVarNameFromObject(_attachTo) + '.setSensor(true);\n'
+					collider += colliderName + GetVarNameForObject(_attachTo) + '.setSensor(true);\n'
 		if not ob.rigidBodyExists and ob not in attachTo:
 			collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
 		colliders[ob] = collider
 	if ob.jointExists:
-		jointName = GetVarNameFromObject(ob) + 'Joint'
+		jointName = GetVarNameForObject(ob) + 'Joint'
 		jointDataName = jointName + 'Data'
 		joint = 'var ' + jointDataName + ' = RAPIER.JointData.' + ob.jointType + '('
 		if ob.jointType == 'fixed':
@@ -901,10 +913,10 @@ def RegisterPhysics (ob):
 			joint += str(ob.jointLen) + ', '
 			joint += ToVector2String(ob.anchorPos1) + ', '
 			joint += ToVector2String(ob.anchorPos2)
-		joint += ');\n' + jointName + ' = world.createImpulseJoint(' + jointDataName + ', ' + GetVarNameFromObject(ob.anchorRigidBody1) + 'RigidBody, ' + GetVarNameFromObject(ob.anchorRigidBody2) + 'RigidBody, true);'
+		joint += ');\n' + jointName + ' = world.createImpulseJoint(' + jointDataName + ', ' + GetVarNameForObject(ob.anchorRigidBody1) + 'RigidBody, ' + GetVarNameForObject(ob.anchorRigidBody2) + 'RigidBody, true);'
 		joints[ob] = joint
 	if ob.charControllerExists:
-		charControllerName = GetVarNameFromObject(ob) + 'CharController'
+		charControllerName = GetVarNameForObject(ob) + 'CharController'
 		charController = 'var ' + charControllerName + ' = new RAPIER.KinematicCharacterController(' + str(ob.contactOff) + ', new RAPIER.IntegrationParameters(), '
 		charControllers[ob] = charController
 
@@ -999,7 +1011,7 @@ PYTHON = '''from python import pygame
 
 class GameEngine:
 	def __init__ (self, width : int = 800, height : int = 600, title : str = 'Python Game'):
-		self.screen = pygame.display.set_mode((width, height))
+		self.screen = pygame.display.set_mode((width, height), pygame.FULLSCREEN)
 		pygame.display.set_caption(title)
 		self.clock = pygame.time.Clock()
 		self.running = True
@@ -1023,6 +1035,7 @@ class GameEngine:
 
 	def render (self):
 		self.screen.fill((0, 0, 0))
+# Render
 		pygame.display.flip()
 
 # Init
@@ -1591,10 +1604,10 @@ def GenJs (world):
 		physics = PHYSICS
 		vars = ''
 		for key in rigidBodies.keys():
-			rigidBodyName = GetVarNameFromObject(key) + 'RigidBody'
+			rigidBodyName = GetVarNameForObject(key) + 'RigidBody'
 			vars += 'var ' + rigidBodyName + ';\n'
 		for key in colliders.keys():
-			colliderName = GetVarNameFromObject(key) + 'Collider'
+			colliderName = GetVarNameForObject(key) + 'Collider'
 			attachTo = []
 			for i in range(MAX_ATTACH_COLLIDER_CNT):
 				_attachTo = getattr(key, 'attachTo%s' %i)
@@ -1605,12 +1618,12 @@ def GenJs (world):
 				vars += 'var ' + colliderName + ';\n'
 			else:
 				for _attachTo in attachTo:
-					vars += 'var ' + colliderName + GetVarNameFromObject(_attachTo) + ';\n'
+					vars += 'var ' + colliderName + GetVarNameForObject(_attachTo) + ';\n'
 		for key in joints.keys():
-			jointName = GetVarNameFromObject(key) + 'Joint'
+			jointName = GetVarNameForObject(key) + 'Joint'
 			vars += 'var ' + jointName + ';\n'
 		for key in charControllers.keys():
-			charControllerName = GetVarNameFromObject(key) + 'CharController'
+			charControllerName = GetVarNameForObject(key) + 'CharController'
 			vars += 'var ' + charControllerName + ';\n'
 		physics = physics.replace('// Vars', vars)
 		if bpy.context.scene.use_gravity:
@@ -1684,11 +1697,15 @@ def GenPython (world, datas, background = ''):
 	python = python.replace('# API', '\n'.join(apiCode))
 	python = python.replace('# Init', '\n'.join(initCode))
 	python = python.replace('# Update', '\n'.join(updateCode))
+	renderCode = ''
+	for img in imgs.values():
+		renderCode += img + '\n'
+	python = python.replace('# Render', renderCode)
 	o = [ python ]
 	buildInfo['exe-size'] = len('\n'.join(o))
 	return '\n'.join(o)
 
-SERVER_PROC = None
+# SERVER_PROC = None
 prevObMode = None
 prevSvgExportPath = None
 
@@ -1711,9 +1728,11 @@ def PostBuild ():
 	bpy.context.scene.export_svg_output = prevSvgExportPath
 
 def BuildHtml (world):
-	global SERVER_PROC
-	if SERVER_PROC:
-		SERVER_PROC.kill()
+	global exportType
+	# global SERVER_PROC
+	# if SERVER_PROC:
+	# 	SERVER_PROC.kill()
+	exportType = 'html'
 	PreBuild ()
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
@@ -1753,6 +1772,8 @@ def BuildHtml (world):
 	return html
 
 def BuildExe (world):
+	global exportType
+	exportType = 'exe'
 	PreBuild ()
 	blenderInfo = GetBlenderData()
 	datas = blenderInfo[0]
@@ -1785,6 +1806,8 @@ def BuildExe (world):
 	PostBuild ()
 
 def BuildUnity (world):
+	global exportType
+	exportType = 'unity'
 	PreBuild ()
 	assetsPath = os.path.join(world.unityProjPath, 'Assets')
 	svgsExportPath = os.path.join(assetsPath, 'Art', 'Svgs')
