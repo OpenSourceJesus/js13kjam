@@ -251,7 +251,7 @@ imgs = {}
 imgsPaths = []
 initCode = []
 updateCode = []
-userJS = ''
+apiCode = ''
 svgsDatas = {}
 
 def ExportObject (ob):
@@ -955,9 +955,9 @@ def GetPathDelta (fromPathData, toPathData):
 	return output
 
 def GetBlenderData ():
-	global datas, clrs, userJS, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, rigidBodies, colliders, joints, charControllers
+	global datas, clrs, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, rigidBodies, colliders, joints, charControllers
 	exportedObs = []
-	userJS = ''
+	apiCode = ''
 	datas = []
 	clrs = {}
 	pathsDatas = []
@@ -974,7 +974,7 @@ def GetBlenderData ():
 		ExportObject (ob)
 	for ob in bpy.data.objects:
 		for script in GetScripts(ob, True):
-			userJS += script
+			apiCode += script
 		for scriptInfo in GetScripts(ob, False):
 			script = scriptInfo[0]
 			isInit = scriptInfo[1]
@@ -982,7 +982,7 @@ def GetBlenderData ():
 				initCode.append(script)
 			else:
 				updateCode.append(script)
-	return (datas, initCode, updateCode, userJS)
+	return (datas, initCode, updateCode, apiCode)
 
 buildInfo = {
 	'html'  : None,
@@ -993,6 +993,42 @@ buildInfo = {
 	'js-gz-size' : None,
 }
 
+PYTHON = '''from python import pygame
+
+# API
+
+class GameEngine:
+	def __init__ (self, width : int = 800, height : int = 600, title : str = 'Python Game'):
+		self.screen = pygame.display.set_mode((width, height))
+		pygame.display.set_caption(title)
+		self.clock = pygame.time.Clock()
+		self.running = True
+		self.dt = 0.0
+
+	def run (self):
+		while self.running:
+			self.handle_events()
+			self.update()
+			self.render()
+			self.dt = self.clock.tick(60) / 1000
+
+	def handle_events (self):
+		for event in pygame.event.get():
+			if event.type == pygame.QUIT:
+				self.running = False
+
+	def update (self):
+		# Update
+		pass
+
+	def render (self):
+		self.screen.fill((0, 0, 0))
+		pygame.display.flip()
+
+# Init
+pygame.init()
+engine = GameEngine()
+engine.run ()'''
 JS_SUFFIX = '''
 var i = 0;
 var d = JSON.parse(D);
@@ -1516,14 +1552,14 @@ class api
 	main ()
 	{
 		// Init
-		var f = ts => {
-			$.dt = (ts - $.prev) / 1000;
-			$.prev = ts;
+		var f = t => {
+			$.dt = (t - $.prevTicks) / 1000;
+			$.prevTicks = t;
 			window.requestAnimationFrame(f);
 			// Update
 		};
-		window.requestAnimationFrame(ts => {
-			$.prev = ts;
+		window.requestAnimationFrame(t => {
+			$.prevTicks = t;
 			window.requestAnimationFrame(f);
 		});
 		// Physics Section Start
@@ -1538,8 +1574,8 @@ class api
 var $ = new api;
 '''
 
-def GenJsAPI (world):
-	global datas, userJS, clrs
+def GenJs (world):
+	global datas, apiCode, clrs
 	jsApi = JS_API
 	if not usePhysics:
 		while True:
@@ -1550,7 +1586,7 @@ def GenJsAPI (world):
 			physicsSectionEndIndctr = '// Physics Section End'
 			idxOfPhysicsSectionEnd = jsApi.find(physicsSectionEndIndctr) + len(physicsSectionEndIndctr)
 			jsApi = jsAp[: idxOfPhysicsSectionStart] + jsAp[idxOfPhysicsSectionEnd :]
-	js = [JS, jsApi, userJS]
+	js = [JS, jsApi, apiCode]
 	if usePhysics:
 		physics = PHYSICS
 		vars = ''
@@ -1617,8 +1653,8 @@ def GenJsAPI (world):
 	return js
 
 def GenHtml (world, datas, background = ''):
-	global userJS, clrs, initCode, updateCode, pathsDatas
-	js = GenJsAPI(world)
+	global apiCode, clrs, initCode, updateCode, pathsDatas
+	js = GenJs(world)
 	if background:
 		background = 'background-color:%s;' %background
 	o = [
@@ -1643,44 +1679,12 @@ def GenHtml (world, datas, background = ''):
 	return '\n'.join(o)
 
 def GenPython (world, datas, background = ''):
-	global userJS, clrs, initCode, updateCode, pathsDatas
-	js = GenJsAPI(world)
-	if background:
-		background = 'background-color:%s;' %background
-	o = [
-		'''from python import pygame
-
-class GameEngine:
-	def __init__ (self, width : int = 800, height : int = 600, title : str = "Python Game Engine"):
-		self.screen = pygame.display.set_mode((width, height))
-		pygame.display.set_caption(title)
-		self.clock = pygame.time.Clock()
-		self.running = True
-
-	def run (self):
-		while self.running:
-			self.handle_events()
-			self.update()
-			self.render()
-			self.clock.tick(60)
-
-	def handle_events (self):
-		for event in pygame.event.get():
-			if event.type == pygame.QUIT:
-				self.running = False
-
-	def update (self):
-		pass
-
-	def render (self):
-		self.screen.fill((0, 0, 0))
-		pygame.display.flip()
-
-pygame.init()
-engine = GameEngine()
-engine.run()
-pygame.quit()'''
-	]
+	global apiCode, clrs, initCode, updateCode, pathsDatas
+	python = PYTHON
+	python = python.replace('# API', '\n'.join(apiCode))
+	python = python.replace('# Init', '\n'.join(initCode))
+	python = python.replace('# Update', '\n'.join(updateCode))
+	o = [ python ]
 	buildInfo['exe-size'] = len('\n'.join(o))
 	return '\n'.join(o)
 
