@@ -254,6 +254,7 @@ updateCode = []
 apiCode = ''
 svgsDatas = {}
 exportType = None
+vars = []
 
 def ExportObject (ob):
 	global svgsDatas
@@ -730,7 +731,10 @@ def ExportObject (ob):
 					size.x *= imgSize.x / imgSize.y
 				else:
 					size.y *= imgSize.y / imgSize.x
-				img = '		' + surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n		' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n		' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ',' + str(TryChangeToInt(pos.y)) + ')\n		self.screen.blit(' + surface + ', ' + surfaceRect + ')'
+				img = '		screen.blit(' + surface + ', ' + surfaceRect + ')'
+				initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ',' + str(TryChangeToInt(pos.y)) + ')')
+				vars.append(surface + ' = None')
+				vars.append(surfaceRect + ' = None')
 			ob.rotation_mode = prevRotMode
 			ob.data.save(filepath = imgPath)
 			imgs[ob.name] = img
@@ -1007,21 +1011,22 @@ buildInfo = {
 
 PYTHON = '''from python import pygame
 
-# API
+# Vars
+screen = None
 
-class GameEngine:
-	def __init__ (self, width : int = 800, height : int = 600, title : str = 'Python Game'):
-		self.screen = pygame.display.set_mode((width, height), pygame.FULLSCREEN)
+class Game:
+	def __init__ (self, title : str = 'Game'):
 		pygame.display.set_caption(title)
 		self.clock = pygame.time.Clock()
 		self.running = True
 		self.dt = 0.0
+		self.render ()
 
 	def run (self):
 		while self.running:
-			self.handle_events()
-			self.update()
-			self.render()
+			self.handle_events ()
+			self.update ()
+			self.render ()
 			self.dt = self.clock.tick(60) / 1000
 
 	def handle_events (self):
@@ -1030,17 +1035,19 @@ class GameEngine:
 				self.running = False
 
 	def update (self):
-		# Update
+# Update
 		pass
 
 	def render (self):
-		self.screen.fill((0, 0, 0))
+		screen.fill((0, 0, 0))
 # Render
 		pygame.display.flip()
 
-# Init
 pygame.init()
-engine = GameEngine()
+screen = pygame.display.set_mode((800, 600), pygame.FULLSCREEN)
+# API
+# Init
+engine = Game()
 engine.run ()'''
 JS_SUFFIX = '''
 var i = 0;
@@ -1692,10 +1699,16 @@ def GenHtml (world, datas, background = ''):
 	return '\n'.join(o)
 
 def GenPython (world, datas, background = ''):
-	global apiCode, clrs, initCode, updateCode, pathsDatas
+	global vars, apiCode, clrs, initCode, updateCode, pathsDatas
 	python = PYTHON
-	python = python.replace('# API', '\n'.join(apiCode))
+	python = python.replace('# API', apiCode)
+	python = python.replace('# Vars', '\n'.join(vars))
 	python = python.replace('# Init', '\n'.join(initCode))
+	for i, updateScript in enumerate(updateCode):
+		_updateScript = ''
+		for line in updateScript.split('\n'):
+			_updateScript += '		' + line + '\n'
+		updateCode[i] = _updateScript
 	python = python.replace('# Update', '\n'.join(updateCode))
 	renderCode = ''
 	for img in imgs.values():
