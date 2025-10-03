@@ -1020,7 +1020,6 @@ class Game:
 		self.clock = pygame.time.Clock()
 		self.running = True
 		self.dt = 0.0
-		self.render ()
 
 	def run (self):
 		while self.running:
@@ -1714,9 +1713,8 @@ def GenPython (world, datas, background = ''):
 	for img in imgs.values():
 		renderCode += img + '\n'
 	python = python.replace('# Render', renderCode)
-	o = [ python ]
-	buildInfo['exe-size'] = len('\n'.join(o))
-	return '\n'.join(o)
+	buildInfo['exe-size'] = len(python)
+	return python
 
 # SERVER_PROC = None
 prevObMode = None
