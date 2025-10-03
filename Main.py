@@ -1009,9 +1009,10 @@ buildInfo = {
 	'js-gz-size' : None,
 }
 
-PYTHON = '''from python import pygame
+PYTHON = '''from python import pygame, PyRapier2d
 
 # Vars
+sim = PyRapier2d.Simulation()
 screen = None
 
 class Game:
