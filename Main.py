@@ -750,179 +750,184 @@ def ExportObject (ob):
 def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameForObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
-	if ob.rigidBodyExists:
-		rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '()'
-		if ob.location.x != 0 or ob.location.y != 0:
-			rigidBody += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
-		prevRotMode = ob.rotation_mode
-		ob.rotation_mode = 'XYZ'
-		if ob.rotation_euler.z != 0:
-			rigidBody += '.setRotation(' + str(ob.rotation_euler.z) + ')'
-		ob.rotation_mode = prevRotMode
-		if not ob.canRot:
-			rigidBody += '.lockRotations();\n'
-		rigidBody += ';\n'
-		if not ob.rigidBodyEnable:
-			rigidBodyDescName + '.enabled = false;\n'
-		if ob.dominance != 0:
-			rigidBodyDescName + '.setDominanceGroup(' + str(ob.dominance) + ');\n'
-		if ob.gravityScale != 1:
-			rigidBody += rigidBodyDescName + '.setGravityScale(' + str(ob.gravityScale) + ');\n'
-		if not ob.canSleep:
-			rigidBody += rigidBodyDescName + '.setCanSleep(false);\n'
-		if ob.linearDrag != 0:
-			rigidBody += rigidBodyDescName + '.setLinearDamping(' + str(ob.linearDrag) + ');\n'
-		if ob.angDrag != 0:
-			rigidBody += rigidBodyDescName + '.setAngularDamping(' + str(ob.angDrag) + ');\n'
-		rigidBody += rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n'
-		if ob.continuousCollideDetect:
-			rigidBody += rigidBodyName + '.enableCcd(true);\n'
-		rigidBody += 'rigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
-		rigidBody += 'rigidBodyDescsIds["' + ob.name + '"] = ' + rigidBodyDescName + ';'
-		rigidBodies[ob] = rigidBody
-	if ob.colliderExists:
-		colliderName = GetVarNameForObject(ob) + 'Collider'
-		colliderDescName = colliderName + 'Desc'
-		collider = 'var ' + colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
-		if ob.shapeType == 'ball':
-			collider += str(ob.radius)
-		elif ob.shapeType == 'halfspace':
-			collider += ToVector2String(ob.normal)
-		elif ob.shapeType == 'cuboid':
-			collider += str(ob.size[0] / 2) + ', ' + str(ob.size[1] / 2)
-		elif ob.shapeType == 'roundCuboid':
-			collider += str(ob.size[0] / 2) + ', ' + str(ob.size[1] / 2) + ', ' + str(ob.cuboidBorderRadius)
-		elif ob.shapeType == 'capsule':
-			collider += str(ob.capsuleHeight / 2) + ', ' + str(ob.capsuleRadius)
-		elif ob.shapeType == 'segment':
-			collider += ToVector2String(ob.segmentPos1) + ', ' + ToVector2String(ob.segmentPos2)
-		elif ob.shapeType == 'triangle':
-			collider += ToVector2String(ob.trianglePos1) + ', ' + ToVector2String(ob.trianglePos2) + ', ' + ToVector2String(ob.trianglePos3)
-		elif ob.shapeType == 'roundTriangle':
-			collider += ToVector2String(ob.trianglePos1) + ', ' + ToVector2String(ob.trianglePos2) + ', ' + ToVector2String(ob.trianglePos3) + ', ' + str(ob.triangleBorderRadius)
-		elif ob.shapeType == 'polyline':
-			collider += '['
-			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'usePolylinePoint%s' %i):
-					break
-				point = getattr(ob, 'polylinePoint%s' %i)
-				collider += str(point[0]) + ', ' + str(point[1]) + ', '
-			if ob.polylineIdx0 != -1:
+	if exportType == 'html':
+		if ob.rigidBodyExists:
+			rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '()'
+			if ob.location.x != 0 or ob.location.y != 0:
+				rigidBody += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
+			prevRotMode = ob.rotation_mode
+			ob.rotation_mode = 'XYZ'
+			if ob.rotation_euler.z != 0:
+				rigidBody += '.setRotation(' + str(ob.rotation_euler.z) + ')'
+			ob.rotation_mode = prevRotMode
+			if not ob.canRot:
+				rigidBody += '.lockRotations();\n'
+			rigidBody += ';\n'
+			if not ob.rigidBodyEnable:
+				rigidBodyDescName + '.enabled = false;\n'
+			if ob.dominance != 0:
+				rigidBodyDescName + '.setDominanceGroup(' + str(ob.dominance) + ');\n'
+			if ob.gravityScale != 1:
+				rigidBody += rigidBodyDescName + '.setGravityScale(' + str(ob.gravityScale) + ');\n'
+			if not ob.canSleep:
+				rigidBody += rigidBodyDescName + '.setCanSleep(false);\n'
+			if ob.linearDrag != 0:
+				rigidBody += rigidBodyDescName + '.setLinearDamping(' + str(ob.linearDrag) + ');\n'
+			if ob.angDrag != 0:
+				rigidBody += rigidBodyDescName + '.setAngularDamping(' + str(ob.angDrag) + ');\n'
+			rigidBody += rigidBodyName + ' = world.createRigidBody(' + rigidBodyDescName + ');\n'
+			if ob.continuousCollideDetect:
+				rigidBody += rigidBodyName + '.enableCcd(true);\n'
+			rigidBody += 'rigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName + ';'
+			rigidBody += 'rigidBodyDescsIds["' + ob.name + '"] = ' + rigidBodyDescName + ';'
+			rigidBodies[ob] = rigidBody
+		if ob.colliderExists:
+			colliderName = GetVarNameForObject(ob) + 'Collider'
+			colliderDescName = colliderName + 'Desc'
+			collider = 'var ' + colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
+			if ob.shapeType == 'ball':
+				collider += str(ob.radius)
+			elif ob.shapeType == 'halfspace':
+				collider += ToVector2String(ob.normal)
+			elif ob.shapeType == 'cuboid':
+				collider += str(ob.size[0] / 2) + ', ' + str(ob.size[1] / 2)
+			elif ob.shapeType == 'roundCuboid':
+				collider += str(ob.size[0] / 2) + ', ' + str(ob.size[1] / 2) + ', ' + str(ob.cuboidBorderRadius)
+			elif ob.shapeType == 'capsule':
+				collider += str(ob.capsuleHeight / 2) + ', ' + str(ob.capsuleRadius)
+			elif ob.shapeType == 'segment':
+				collider += ToVector2String(ob.segmentPos1) + ', ' + ToVector2String(ob.segmentPos2)
+			elif ob.shapeType == 'triangle':
+				collider += ToVector2String(ob.trianglePos1) + ', ' + ToVector2String(ob.trianglePos2) + ', ' + ToVector2String(ob.trianglePos3)
+			elif ob.shapeType == 'roundTriangle':
+				collider += ToVector2String(ob.trianglePos1) + ', ' + ToVector2String(ob.trianglePos2) + ', ' + ToVector2String(ob.trianglePos3) + ', ' + str(ob.triangleBorderRadius)
+			elif ob.shapeType == 'polyline':
+				collider += '['
+				for i in range(MAX_SHAPE_POINTS):
+					if not getattr(ob, 'usePolylinePoint%s' %i):
+						break
+					point = getattr(ob, 'polylinePoint%s' %i)
+					collider += str(point[0]) + ', ' + str(point[1]) + ', '
+				if ob.polylineIdx0 != -1:
+					collider += '], ['
+					for i in range(MAX_SHAPE_POINTS):
+						idx = getattr(ob, 'polylineIdx%s' %i)
+						if idx != -1:
+							collider += str(idx) + ', '
+				collider += ']'
+			elif ob.shapeType == 'trimesh':
+				collider += '['
+				for i in range(MAX_SHAPE_POINTS):
+					if not getattr(ob, 'useTrimeshPoint%s' %i):
+						break
+					point = getattr(ob, 'trimeshPoint%s' %i)
+					collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += '], ['
 				for i in range(MAX_SHAPE_POINTS):
-					idx = getattr(ob, 'polylineIdx%s' %i)
+					idx = getattr(ob, 'trimeshIdx%s' %i)
 					if idx != -1:
 						collider += str(idx) + ', '
-			collider += ']'
-		elif ob.shapeType == 'trimesh':
-			collider += '['
-			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'useTrimeshPoint%s' %i):
+				collider += ']'
+			elif ob.shapeType == 'convexHull':
+				collider += '['
+				for i in range(MAX_SHAPE_POINTS):
+					if not getattr(ob, 'useConvexHullPoint%s' %i):
+						break
+					point = getattr(ob, 'convexHullPoint%s' %i)
+					collider += str(point[0]) + ', ' + str(point[1]) + ', '
+				collider += ']'
+			elif ob.shapeType == 'roundConvexHull':
+				collider += '['
+				for i in range(MAX_SHAPE_POINTS):
+					if not getattr(ob, 'useRoundConvexHullPoint%s' %i):
+						break
+					point = getattr(ob, 'roundConvexHullPoint%s' %i)
+					collider += str(point[0]) + ', ' + str(point[1]) + ', '
+				collider += '], ' + str(ob.roundConvexHullBorderRadius)
+			elif ob.shapeType == 'heightfield':
+				collider += '['
+				for i in range(MAX_SHAPE_POINTS):
+					if not getattr(ob, 'useHeight%s' %i):
+						break
+					collider += str(getattr(ob, 'height%s' %i))
+				collider += '], ' + ToVector2String(ob.heightfieldScale)
+			collider += ')'
+			if ob.location.x != 0 or ob.location.y != 0:
+				collider += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
+			prevRotMode = ob.rotation_mode
+			ob.rotation_mode = 'XYZ'
+			if ob.rotation_euler.z != 0:
+				collider += '.setRotation(' + str(ob.rotation_euler.z) + ')'
+			ob.rotation_mode = prevRotMode
+			collider += '.setActiveEvents(3);\n'
+			if ob.density != 0:
+				collider += colliderDescName + '.density = ' + str(ob.density) + ';\n'
+			collisionGroupMembership = 0
+			for i, enabled in enumerate(ob.collisionGroupMembership):
+				if enabled:
+					collisionGroupMembership |= (1 << i)
+			collisionGroupFilter = 0
+			for i, enabled in enumerate(ob.collisionGroupFilter):
+				if enabled:
+					collisionGroupFilter |= (1 << i)
+			if collisionGroupMembership != 65535 or collisionGroupFilter != 65535:
+				collider += colliderDescName + '.setCollisionGroups(0x{:04X}{:04X});\n'.format(collisionGroupFilter, collisionGroupMembership)
+			if not ob.colliderEnable:
+				collider += colliderDescName + '.enabled = false;\n'
+			attachTo = []
+			for i in range(MAX_ATTACH_COLLIDER_CNT):
+				_attachTo = getattr(ob, 'attachTo%s' %i)
+				if not getattr(ob, 'attach%s' %i):
 					break
-				point = getattr(ob, 'trimeshPoint%s' %i)
-				collider += str(point[0]) + ', ' + str(point[1]) + ', '
-			collider += '], ['
-			for i in range(MAX_SHAPE_POINTS):
-				idx = getattr(ob, 'trimeshIdx%s' %i)
-				if idx != -1:
-					collider += str(idx) + ', '
-			collider += ']'
-		elif ob.shapeType == 'convexHull':
-			collider += '['
-			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'useConvexHullPoint%s' %i):
-					break
-				point = getattr(ob, 'convexHullPoint%s' %i)
-				collider += str(point[0]) + ', ' + str(point[1]) + ', '
-			collider += ']'
-		elif ob.shapeType == 'roundConvexHull':
-			collider += '['
-			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'useRoundConvexHullPoint%s' %i):
-					break
-				point = getattr(ob, 'roundConvexHullPoint%s' %i)
-				collider += str(point[0]) + ', ' + str(point[1]) + ', '
-			collider += '], ' + str(ob.roundConvexHullBorderRadius)
-		elif ob.shapeType == 'heightfield':
-			collider += '['
-			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'useHeight%s' %i):
-					break
-				collider += str(getattr(ob, 'height%s' %i))
-			collider += '], ' + ToVector2String(ob.heightfieldScale)
-		collider += ')'
-		if ob.location.x != 0 or ob.location.y != 0:
-			collider += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
-		prevRotMode = ob.rotation_mode
-		ob.rotation_mode = 'XYZ'
-		if ob.rotation_euler.z != 0:
-			collider += '.setRotation(' + str(ob.rotation_euler.z) + ')'
-		ob.rotation_mode = prevRotMode
-		collider += '.setActiveEvents(3);\n'
-		if ob.density != 0:
-			collider += colliderDescName + '.density = ' + str(ob.density) + ';\n'
-		collisionGroupMembership = 0
-		for i, enabled in enumerate(ob.collisionGroupMembership):
-			if enabled:
-				collisionGroupMembership |= (1 << i)
-		collisionGroupFilter = 0
-		for i, enabled in enumerate(ob.collisionGroupFilter):
-			if enabled:
-				collisionGroupFilter |= (1 << i)
-		if collisionGroupMembership != 65535 or collisionGroupFilter != 65535:
-			collider += colliderDescName + '.setCollisionGroups(0x{:04X}{:04X});\n'.format(collisionGroupFilter, collisionGroupMembership)
-		if not ob.colliderEnable:
-			collider += colliderDescName + '.enabled = false;\n'
-		attachTo = []
-		for i in range(MAX_ATTACH_COLLIDER_CNT):
-			_attachTo = getattr(ob, 'attachTo%s' %i)
-			if not getattr(ob, 'attach%s' %i):
-				break
-			attachTo.append(_attachTo)
-		if attachTo == []:
-			collider += colliderName + ' = world.createCollider(' + colliderDescName +');'
-			if ob.isSensor:
-				collider += colliderName + '.setSensor(true);\n'
-		else:
-			for _attachTo in attachTo:
-				collider += colliderName + GetVarNameForObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameForObject(_attachTo) + 'RigidBody);\n'
+				attachTo.append(_attachTo)
+			if attachTo == []:
+				collider += colliderName + ' = world.createCollider(' + colliderDescName +');'
 				if ob.isSensor:
-					collider += colliderName + GetVarNameForObject(_attachTo) + '.setSensor(true);\n'
-		if not ob.rigidBodyExists and ob not in attachTo:
-			collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
-		colliders[ob] = collider
-	if ob.jointExists:
-		jointName = GetVarNameForObject(ob) + 'Joint'
-		jointDataName = jointName + 'Data'
-		joint = 'var ' + jointDataName + ' = RAPIER.JointData.' + ob.jointType + '('
-		if ob.jointType == 'fixed':
-			joint += ToVector2String(ob.anchorPos1)
-			joint += str(ob.anchorRot1) + ', '
-			joint += ToVector2String(ob.anchorPos2) + ', '
-			joint += str(ob.anchorRot2)
-		elif ob.jointType == 'spring':
-			joint += str(ob.restLen) + ', '
-			joint += str(ob.stiffness) + ', '
-			joint += str(ob.damping) + ', '
-			joint += ToVector2String(ob.anchorPos1) + ', '
-			joint += ToVector2String(ob.anchorPos2)
-		elif ob.jointType == 'revolute':
-			joint += ToVector2String(ob.anchorPos1) + ', '
-			joint += ToVector2String(ob.anchorPos2)
-		elif ob.jointType == 'prismatic':
-			joint += ToVector2String(ob.anchorPos1) + ', '
-			joint += ToVector2String(ob.anchorPos2) + ', '
-			joint += ToVector2String(ob.jointAxis)
-		elif ob.jointType == 'rope':
-			joint += str(ob.jointLen) + ', '
-			joint += ToVector2String(ob.anchorPos1) + ', '
-			joint += ToVector2String(ob.anchorPos2)
-		joint += ');\n' + jointName + ' = world.createImpulseJoint(' + jointDataName + ', ' + GetVarNameForObject(ob.anchorRigidBody1) + 'RigidBody, ' + GetVarNameForObject(ob.anchorRigidBody2) + 'RigidBody, true);'
-		joints[ob] = joint
-	if ob.charControllerExists:
-		charControllerName = GetVarNameForObject(ob) + 'CharController'
-		charController = 'var ' + charControllerName + ' = new RAPIER.KinematicCharacterController(' + str(ob.contactOff) + ', new RAPIER.IntegrationParameters(), '
-		charControllers[ob] = charController
+					collider += colliderName + '.setSensor(true);\n'
+			else:
+				for _attachTo in attachTo:
+					collider += colliderName + GetVarNameForObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameForObject(_attachTo) + 'RigidBody);\n'
+					if ob.isSensor:
+						collider += colliderName + GetVarNameForObject(_attachTo) + '.setSensor(true);\n'
+			if not ob.rigidBodyExists and ob not in attachTo:
+				collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
+			colliders[ob] = collider
+		if ob.jointExists:
+			jointName = GetVarNameForObject(ob) + 'Joint'
+			jointDataName = jointName + 'Data'
+			joint = 'var ' + jointDataName + ' = RAPIER.JointData.' + ob.jointType + '('
+			if ob.jointType == 'fixed':
+				joint += ToVector2String(ob.anchorPos1)
+				joint += str(ob.anchorRot1) + ', '
+				joint += ToVector2String(ob.anchorPos2) + ', '
+				joint += str(ob.anchorRot2)
+			elif ob.jointType == 'spring':
+				joint += str(ob.restLen) + ', '
+				joint += str(ob.stiffness) + ', '
+				joint += str(ob.damping) + ', '
+				joint += ToVector2String(ob.anchorPos1) + ', '
+				joint += ToVector2String(ob.anchorPos2)
+			elif ob.jointType == 'revolute':
+				joint += ToVector2String(ob.anchorPos1) + ', '
+				joint += ToVector2String(ob.anchorPos2)
+			elif ob.jointType == 'prismatic':
+				joint += ToVector2String(ob.anchorPos1) + ', '
+				joint += ToVector2String(ob.anchorPos2) + ', '
+				joint += ToVector2String(ob.jointAxis)
+			elif ob.jointType == 'rope':
+				joint += str(ob.jointLen) + ', '
+				joint += ToVector2String(ob.anchorPos1) + ', '
+				joint += ToVector2String(ob.anchorPos2)
+			joint += ');\n' + jointName + ' = world.createImpulseJoint(' + jointDataName + ', ' + GetVarNameForObject(ob.anchorRigidBody1) + 'RigidBody, ' + GetVarNameForObject(ob.anchorRigidBody2) + 'RigidBody, true);'
+			joints[ob] = joint
+		if ob.charControllerExists:
+			charControllerName = GetVarNameForObject(ob) + 'CharController'
+			charController = 'var ' + charControllerName + ' = new RAPIER.KinematicCharacterController(' + str(ob.contactOff) + ', new RAPIER.IntegrationParameters(), '
+			charControllers[ob] = charController
+	else:
+		if ob.rigidBodyExists:
+			rigidBody = 'sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ')'
+			rigidBodies[ob] = rigidBody
 
 def HandleCopyObject (ob, pos):
 	try:
@@ -1703,6 +1708,8 @@ def GenPython (world, datas, background = ''):
 	python = PYTHON
 	python = python.replace('# API', apiCode)
 	python = python.replace('# Vars', '\n'.join(vars))
+	for rigidBody in rigidBodies.values():
+		initCode.insert(0, rigidBody)
 	python = python.replace('# Init', '\n'.join(initCode))
 	for i, updateScript in enumerate(updateCode):
 		_updateScript = ''
@@ -2071,6 +2078,7 @@ JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'mite
 MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
 SHAPE_TYPE_ITEMS = [('ball', 'circle', ''), ('halfspace', 'half-space', ''), ('cuboid', 'rectangle', ''), ('roundCuboid', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('roundTriangle', 'rounded-triangle', ''), ('polyline', 'segment-series', ''), ('trimesh', 'triangle-mesh', ''), ('convexHull', 'convex-polygon', ''), ('roundConvexHull', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
 RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinematicPositionBased', 'kinematic-position-based', ''), ('kinematicVelocityBased', 'kinematic-velocity-based', '')]
+RIGID_BODY_TYPES = ['dynamic', 'fixed', 'kinematicVelocityBased', 'kinematic-velocity-based']
 JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('', '', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
