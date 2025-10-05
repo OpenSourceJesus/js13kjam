@@ -923,7 +923,9 @@ def RegisterPhysics (ob):
 			charControllers[ob] = charController
 	else:
 		if ob.rigidBodyExists:
-			rigidBody = 'rigidBodiesIds["' + obVarName + '"] = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.rotation_euler.z) + ')'
+			rigidBodyName = obVarName + 'RigidBody'
+			vars.append(rigidBodyName + ' = None')
+			rigidBody = rigidBodyName + ' = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.rotation_euler.z) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
 			rigidBodies[ob] = rigidBody
 		if ob.colliderExists:
 			if attachColliderTo == []:
