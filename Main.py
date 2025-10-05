@@ -932,17 +932,21 @@ def RegisterPhysics (ob):
 			if attachColliderTo == []:
 				vars.append(colliderName + ' = None')
 				if ob.shapeType == 'ball':
-					collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', None'
+					collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 				elif ob.shapeType == 'halfspace':
-					collider = colliderName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', None'
+					collider = colliderName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+				elif ob.shapeType == 'cuboid':
+					collider = colliderName + attachToVarName + ' = sim.AddCuboidCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
 					vars.append(colliderName + attachToVarName + ' = None')
 					if ob.shapeType == 'ball':
-						collider = colliderName + attachToVarName + ' = sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', rigidBodiesIds["' + attachToVarName + '"]'
-					if ob.shapeType == 'halfspace':
-						collider = colliderName + attachToVarName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+					elif ob.shapeType == 'halfspace':
+						collider = colliderName + attachToVarName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+					elif ob.shapeType == 'cuboid':
+						collider = colliderName + attachToVarName + ' = sim.AddCuboidCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 			collider += ')'
 			if not ob.rigidBodyExists and ob not in attachColliderTo:
 				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
