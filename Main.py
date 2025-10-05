@@ -750,6 +750,12 @@ def ExportObject (ob):
 def RegisterPhysics (ob):
 	rigidBodyName = GetVarNameForObject(ob) + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
+	attachColliderTo = []
+	for i in range(MAX_ATTACH_COLLIDER_CNT):
+		_attachColliderTo = getattr(ob, 'attachTo%s' %i)
+		if not getattr(ob, 'attach%s' %i):
+			break
+		attachColliderTo.append(_attachColliderTo)
 	if exportType == 'html':
 		if ob.rigidBodyExists:
 			rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '()'
@@ -874,21 +880,15 @@ def RegisterPhysics (ob):
 				collider += colliderDescName + '.setCollisionGroups(0x{:04X}{:04X});\n'.format(collisionGroupFilter, collisionGroupMembership)
 			if not ob.colliderEnable:
 				collider += colliderDescName + '.enabled = false;\n'
-			attachTo = []
-			for i in range(MAX_ATTACH_COLLIDER_CNT):
-				_attachTo = getattr(ob, 'attachTo%s' %i)
-				if not getattr(ob, 'attach%s' %i):
-					break
-				attachTo.append(_attachTo)
-			if attachTo == []:
+			if attachColliderTo == []:
 				collider += colliderName + ' = world.createCollider(' + colliderDescName +');'
 				if ob.isSensor:
 					collider += colliderName + '.setSensor(true);\n'
 			else:
-				for _attachTo in attachTo:
-					collider += colliderName + GetVarNameForObject(_attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameForObject(_attachTo) + 'RigidBody);\n'
+				for attachTo in attachColliderTo:
+					collider += colliderName + GetVarNameForObject(attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameForObject(attachTo) + 'RigidBody);\n'
 					if ob.isSensor:
-						collider += colliderName + GetVarNameForObject(_attachTo) + '.setSensor(true);\n'
+						collider += colliderName + GetVarNameForObject(attachTo) + '.setSensor(true);\n'
 			if not ob.rigidBodyExists and ob not in attachTo:
 				collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
 			colliders[ob] = collider
@@ -926,8 +926,22 @@ def RegisterPhysics (ob):
 			charControllers[ob] = charController
 	else:
 		if ob.rigidBodyExists:
-			rigidBody = 'sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ')'
+			rigidBody = 'rigidBodiesIds["' + ob.name + '"] = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ')'
 			rigidBodies[ob] = rigidBody
+		if ob.colliderExists:
+			if attachColliderTo == []:
+				if ob.shapeType == 'ball':
+					collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', None'
+				elif ob.shapeType == 'halfspace':
+					collider = 'sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', None'
+			else:
+				for attachTo in attachColliderTo:
+					if ob.shapeType == 'ball':
+						collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.radius) + ', rigidBodiesIds["' + attachTo.name + '"]'
+					if ob.shapeType == 'halfspace':
+						collider = 'sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', rigidBodiesIds["' + attachTo.name + '"]'
+			collider += ')'
+			colliders[ob] = collider
 
 def HandleCopyObject (ob, pos):
 	try:
@@ -1018,6 +1032,7 @@ PYTHON = '''from python import pygame, PyRapier2d
 
 # Vars
 sim = PyRapier2d.Simulation()
+rigidBodiesIds = {}
 screen = None
 
 class Game:
@@ -1708,6 +1723,8 @@ def GenPython (world, datas, background = ''):
 	python = PYTHON
 	python = python.replace('# API', apiCode)
 	python = python.replace('# Vars', '\n'.join(vars))
+	for collider in colliders.values():
+		initCode.insert(0, collider)
 	for rigidBody in rigidBodies.values():
 		initCode.insert(0, rigidBody)
 	python = python.replace('# Init', '\n'.join(initCode))
