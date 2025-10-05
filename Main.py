@@ -925,7 +925,7 @@ def RegisterPhysics (ob):
 		if ob.rigidBodyExists:
 			rigidBodyName = obVarName + 'RigidBody'
 			vars.append(rigidBodyName + ' = None')
-			rigidBody = rigidBodyName + ' = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.rotation_euler.z) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
+			rigidBody = rigidBodyName + ' = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.rotation_euler.z) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
 			rigidBodies[ob] = rigidBody
 		if ob.colliderExists:
 			colliderName = obVarName + 'Collider'
@@ -1071,7 +1071,7 @@ class Game:
 		for obName, rigidBodyId in rigidBodiesIds.items():
 			pos = sim.GetRigidBodyPosition(rigidBodyId)
 			size = surfacesRects[obName].size
-			surfacesRects[obName].update(pos[0] + size[0] / 2, pos[1] + size[1]  / 2, size[0], size[1])
+			surfacesRects[obName].update(pos[0] - size[0] / 2, pos[1] - size[1]  / 2, size[0], size[1])
 # Physics Section End
 
 	def render (self):
