@@ -732,7 +732,7 @@ def ExportObject (ob):
 				else:
 					size.y *= imgSize.y / imgSize.x
 				img = '		screen.blit(' + surface + ', ' + surfaceRect + ')'
-				initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ',' + str(TryChangeToInt(pos.y)) + ')')
+				initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ',' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
 				vars.append(surface + ' = None')
 				vars.append(surfaceRect + ' = None')
 			ob.rotation_mode = prevRotMode
@@ -748,7 +748,8 @@ def ExportObject (ob):
 	exportedObs.append(ob)
 
 def RegisterPhysics (ob):
-	rigidBodyName = GetVarNameForObject(ob) + 'RigidBody'
+	obVarName = GetVarNameForObject(ob)
+	rigidBodyName = obVarName + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	attachColliderTo = []
 	for i in range(MAX_ATTACH_COLLIDER_CNT):
@@ -756,16 +757,15 @@ def RegisterPhysics (ob):
 		if not getattr(ob, 'attach%s' %i):
 			break
 		attachColliderTo.append(_attachColliderTo)
+	prevRotMode = ob.rotation_mode
+	ob.rotation_mode = 'XYZ'
 	if exportType == 'html':
 		if ob.rigidBodyExists:
 			rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '()'
 			if ob.location.x != 0 or ob.location.y != 0:
 				rigidBody += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
-			prevRotMode = ob.rotation_mode
-			ob.rotation_mode = 'XYZ'
 			if ob.rotation_euler.z != 0:
 				rigidBody += '.setRotation(' + str(ob.rotation_euler.z) + ')'
-			ob.rotation_mode = prevRotMode
 			if not ob.canRot:
 				rigidBody += '.lockRotations();\n'
 			rigidBody += ';\n'
@@ -788,7 +788,7 @@ def RegisterPhysics (ob):
 			rigidBody += 'rigidBodyDescsIds["' + ob.name + '"] = ' + rigidBodyDescName + ';'
 			rigidBodies[ob] = rigidBody
 		if ob.colliderExists:
-			colliderName = GetVarNameForObject(ob) + 'Collider'
+			colliderName = obVarName + 'Collider'
 			colliderDescName = colliderName + 'Desc'
 			collider = 'var ' + colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
 			if ob.shapeType == 'ball':
@@ -860,11 +860,8 @@ def RegisterPhysics (ob):
 			collider += ')'
 			if ob.location.x != 0 or ob.location.y != 0:
 				collider += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
-			prevRotMode = ob.rotation_mode
-			ob.rotation_mode = 'XYZ'
 			if ob.rotation_euler.z != 0:
 				collider += '.setRotation(' + str(ob.rotation_euler.z) + ')'
-			ob.rotation_mode = prevRotMode
 			collider += '.setActiveEvents(3);\n'
 			if ob.density != 0:
 				collider += colliderDescName + '.density = ' + str(ob.density) + ';\n'
@@ -893,7 +890,7 @@ def RegisterPhysics (ob):
 				collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
 			colliders[ob] = collider
 		if ob.jointExists:
-			jointName = GetVarNameForObject(ob) + 'Joint'
+			jointName = obVarName + 'Joint'
 			jointDataName = jointName + 'Data'
 			joint = 'var ' + jointDataName + ' = RAPIER.JointData.' + ob.jointType + '('
 			if ob.jointType == 'fixed':
@@ -921,27 +918,29 @@ def RegisterPhysics (ob):
 			joint += ');\n' + jointName + ' = world.createImpulseJoint(' + jointDataName + ', ' + GetVarNameForObject(ob.anchorRigidBody1) + 'RigidBody, ' + GetVarNameForObject(ob.anchorRigidBody2) + 'RigidBody, true);'
 			joints[ob] = joint
 		if ob.charControllerExists:
-			charControllerName = GetVarNameForObject(ob) + 'CharController'
+			charControllerName = obVarName + 'CharController'
 			charController = 'var ' + charControllerName + ' = new RAPIER.KinematicCharacterController(' + str(ob.contactOff) + ', new RAPIER.IntegrationParameters(), '
 			charControllers[ob] = charController
 	else:
 		if ob.rigidBodyExists:
-			rigidBody = 'rigidBodiesIds["' + ob.name + '"] = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ')'
+			rigidBody = 'rigidBodiesIds["' + obVarName + '"] = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.rotation_euler.z) + ')'
 			rigidBodies[ob] = rigidBody
 		if ob.colliderExists:
 			if attachColliderTo == []:
 				if ob.shapeType == 'ball':
-					collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', None'
+					collider = 'sim.AddBallCollider (' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', None'
 				elif ob.shapeType == 'halfspace':
-					collider = 'sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', None'
+					collider = 'sim.AddHalfspaceCollider (' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', None'
 			else:
 				for attachTo in attachColliderTo:
+					attachToVarName = GetVarNameForObject(attachTo)
 					if ob.shapeType == 'ball':
-						collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.radius) + ', rigidBodiesIds["' + attachTo.name + '"]'
+						collider = 'sim.AddBallCollider (' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.radius) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					if ob.shapeType == 'halfspace':
-						collider = 'sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', rigidBodiesIds["' + attachTo.name + '"]'
+						collider = 'sim.AddHalfspaceCollider (' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', rigidBodiesIds["' + attachToVarName + '"]'
 			collider += ')'
 			colliders[ob] = collider
+	ob.rotation_mode = prevRotMode
 
 def HandleCopyObject (ob, pos):
 	try:
@@ -1031,8 +1030,11 @@ buildInfo = {
 PYTHON = '''from python import pygame, PyRapier2d
 
 # Vars
+# Physics Section Start
 sim = PyRapier2d.Simulation()
 rigidBodiesIds = {}
+# Physics Section End
+surfacesRects = {}
 screen = None
 
 class Game:
@@ -1056,7 +1058,13 @@ class Game:
 
 	def update (self):
 # Update
-		pass
+# Physics Section Start
+		sim.step ()
+		for obName, rigidBodyId in rigidBodiesIds.items():
+			pos = sim.GetRigidBodyPosition(rigidBodyId)
+			size = surfacesRects[obName].size
+			surfacesRects[obName].update(pos[0] + size[0] / 2, pos[1] + size[1]  / 2, size[0], size[1])
+# Physics Section End
 
 	def render (self):
 		screen.fill((0, 0, 0))
@@ -1625,7 +1633,7 @@ def GenJs (world):
 				break
 			physicsSectionEndIndctr = '// Physics Section End'
 			idxOfPhysicsSectionEnd = jsApi.find(physicsSectionEndIndctr) + len(physicsSectionEndIndctr)
-			jsApi = jsAp[: idxOfPhysicsSectionStart] + jsAp[idxOfPhysicsSectionEnd :]
+			jsApi = jsApi[: idxOfPhysicsSectionStart] + jsApi[idxOfPhysicsSectionEnd :]
 	js = [JS, jsApi, apiCode]
 	if usePhysics:
 		physics = PHYSICS
@@ -1721,6 +1729,15 @@ def GenHtml (world, datas, background = ''):
 def GenPython (world, datas, background = ''):
 	global vars, apiCode, clrs, initCode, updateCode, pathsDatas
 	python = PYTHON
+	if not usePhysics:
+		while True:
+			physicsSectionStartIndctr = '# Physics Section Start'
+			idxOfPhysicsSectionStart = python.find(physicsSectionStartIndctr) + len(physicsSectionStartIndctr)
+			if idxOfPhysicsSectionStart == -1:
+				break
+			physicsSectionEndIndctr = '# Physics Section End'
+			idxOfPhysicsSectionEnd = python.find(physicsSectionEndIndctr) + len(physicsSectionEndIndctr)
+			python = python[: idxOfPhysicsSectionStart] + python[idxOfPhysicsSectionEnd :]
 	python = python.replace('# API', apiCode)
 	python = python.replace('# Vars', '\n'.join(vars))
 	for collider in colliders.values():
