@@ -928,19 +928,24 @@ def RegisterPhysics (ob):
 			rigidBody = rigidBodyName + ' = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.rotation_euler.z) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
 			rigidBodies[ob] = rigidBody
 		if ob.colliderExists:
+			colliderName = obVarName + 'Collider'
 			if attachColliderTo == []:
+				vars.append(colliderName + ' = None')
 				if ob.shapeType == 'ball':
-					collider = 'sim.AddBallCollider (' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', None'
+					collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', None'
 				elif ob.shapeType == 'halfspace':
-					collider = 'sim.AddHalfspaceCollider (' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', None'
+					collider = colliderName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', None'
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
+					vars.append(colliderName + attachToVarName + ' = None')
 					if ob.shapeType == 'ball':
-						collider = 'sim.AddBallCollider (' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.radius) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.radius) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					if ob.shapeType == 'halfspace':
-						collider = 'sim.AddHalfspaceCollider (' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', rigidBodiesIds["' + attachToVarName + '"]'
 			collider += ')'
+			if not ob.rigidBodyExists and ob not in attachTo:
+				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
 			colliders[ob] = collider
 	ob.rotation_mode = prevRotMode
 
@@ -1035,6 +1040,7 @@ PYTHON = '''from python import pygame, PyRapier2d
 # Physics Section Start
 sim = PyRapier2d.Simulation()
 rigidBodiesIds = {}
+collidersIds = {}
 # Physics Section End
 surfacesRects = {}
 screen = None
