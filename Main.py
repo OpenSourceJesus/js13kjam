@@ -757,6 +757,14 @@ def RegisterPhysics (ob):
 		if not getattr(ob, 'attach%s' %i):
 			break
 		attachColliderTo.append(_attachColliderTo)
+	collisionGroupMembership = 0
+	for i, enabled in enumerate(ob.collisionGroupMembership):
+		if enabled:
+			collisionGroupMembership |= (1 << i)
+	collisionGroupFilter = 0
+	for i, enabled in enumerate(ob.collisionGroupFilter):
+		if enabled:
+			collisionGroupFilter |= (1 << i)
 	prevRotMode = ob.rotation_mode
 	ob.rotation_mode = 'XYZ'
 	if exportType == 'html':
@@ -865,14 +873,6 @@ def RegisterPhysics (ob):
 			collider += '.setActiveEvents(3);\n'
 			if ob.density != 0:
 				collider += colliderDescName + '.density = ' + str(ob.density) + ';\n'
-			collisionGroupMembership = 0
-			for i, enabled in enumerate(ob.collisionGroupMembership):
-				if enabled:
-					collisionGroupMembership |= (1 << i)
-			collisionGroupFilter = 0
-			for i, enabled in enumerate(ob.collisionGroupFilter):
-				if enabled:
-					collisionGroupFilter |= (1 << i)
 			if collisionGroupMembership != 65535 or collisionGroupFilter != 65535:
 				collider += colliderDescName + '.setCollisionGroups(0x{:04X}{:04X});\n'.format(collisionGroupFilter, collisionGroupMembership)
 			if not ob.colliderEnable:
@@ -932,17 +932,17 @@ def RegisterPhysics (ob):
 			if attachColliderTo == []:
 				vars.append(colliderName + ' = None')
 				if ob.shapeType == 'ball':
-					collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.radius) + ', None'
+					collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', None'
 				elif ob.shapeType == 'halfspace':
-					collider = colliderName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', None'
+					collider = colliderName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', None'
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
 					vars.append(colliderName + attachToVarName + ' = None')
 					if ob.shapeType == 'ball':
-						collider = colliderName + attachToVarName + ' = sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.radius) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					if ob.shapeType == 'halfspace':
-						collider = colliderName + attachToVarName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(list(ob.normal)) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', rigidBodiesIds["' + attachToVarName + '"]'
 			collider += ')'
 			if not ob.rigidBodyExists and ob not in attachColliderTo:
 				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
@@ -952,8 +952,14 @@ def RegisterPhysics (ob):
 			vars.append(jointName + ' = None')
 			if ob.jointType == 'fixed':
 				joint = jointName + ' = sim.AddFixedJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(ob.anchorRot1) + ', ' + str(ob.anchorRot2) + ', True)'
-			if ob.jointType == 'spring':
+			elif ob.jointType == 'spring':
 				joint = jointName + ' = sim.AddSpringJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(ob.restLen) + ', ' + str(ob.stiffness) + ', ' + str(ob.damping) + ', True)'
+			elif ob.jointType == 'revolute':
+				joint = jointName + ' = sim.AddRevoluteJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', True)'
+			elif ob.joinType == 'prismatic':
+				joint = jointName + ' = sim.AddRevoluteJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(list(ob.jointAxis)) + ', True)'
+			elif ob.joinType == 'rope':
+				joint = jointName + ' = sim.AddRopeJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(list(ob.jointLen)) + ', True)'
 			joint += '\njointsIds["' + obVarName + '"] = ' + jointName
 			joints[ob] = joint
 	ob.rotation_mode = prevRotMode
