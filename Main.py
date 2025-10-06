@@ -941,6 +941,8 @@ def RegisterPhysics (ob):
 					collider = colliderName + attachToVarName + ' = sim.AddRoundCuboidCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.cuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 				elif ob.shapeType == 'capsule':
 					collider = colliderName + attachToVarName + ' = sim.AddCapsuleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+					elif ob.shapeType == 'segment':
+						collider = colliderName + attachToVarName + ' = sim.AddSegmentCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPos1)) + ', ' + str(list(ob.segmentPos2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
@@ -955,6 +957,8 @@ def RegisterPhysics (ob):
 						collider = colliderName + attachToVarName + ' = sim.AddRoundCuboidCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.cuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					elif ob.shapeType == 'capsule':
 						collider = colliderName + attachToVarName + ' = sim.AddCapsuleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+					elif ob.shapeType == 'segment':
+						collider = colliderName + attachToVarName + ' = sim.AddSegmentCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPos1)) + ', ' + str(list(ob.segmentPos2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 			collider += ')'
 			if not ob.rigidBodyExists and ob not in attachColliderTo:
 				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
