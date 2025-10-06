@@ -732,7 +732,7 @@ def ExportObject (ob):
 				else:
 					size.y *= imgSize.y / imgSize.x
 				img = '		screen.blit(' + surface + ', ' + surfaceRect + ')'
-				initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ',' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
+				initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
 				vars.append(surface + ' = None')
 				vars.append(surfaceRect + ' = None')
 			ob.rotation_mode = prevRotMode
@@ -822,12 +822,12 @@ def RegisterPhysics (ob):
 						break
 					point = getattr(ob, 'polylinePoint%s' %i)
 					collider += str(point[0]) + ', ' + str(point[1]) + ', '
-				if ob.polylineIdx0 != -1:
-					collider += '], ['
-					for i in range(MAX_SHAPE_POINTS):
-						idx = getattr(ob, 'polylineIdx%s' %i)
-						if idx != -1:
-							collider += str(idx) + ', '
+				collider += '], ['
+				for i in range(MAX_SHAPE_POINTS):
+					if not getattr(ob, 'usePolylineIdx%s' %i):
+						break
+					idx = getattr(ob, 'polylineIdx%s' %i)
+					collider += str(idx[0]) + ', ' + str(idx[1]) + ', '
 				collider += ']'
 			elif ob.shapeType == 'trimesh':
 				collider += '['
@@ -838,9 +838,10 @@ def RegisterPhysics (ob):
 					collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += '], ['
 				for i in range(MAX_SHAPE_POINTS):
+					if not getattr(ob, 'useTrimeshIdx%s' %i):
+						break
 					idx = getattr(ob, 'trimeshIdx%s' %i)
-					if idx != -1:
-						collider += str(idx) + ', '
+					collider += str(idx[0]) + ', ' + str(idx[1]) + ', '
 				collider += ']'
 			elif ob.shapeType == 'convexHull':
 				collider += '['
@@ -925,48 +926,67 @@ def RegisterPhysics (ob):
 		if ob.rigidBodyExists:
 			rigidBodyName = obVarName + 'RigidBody'
 			vars.append(rigidBodyName + ' = None')
-			rigidBody = rigidBodyName + ' = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(ob.rotation_euler.z) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ', ' + str(ob.canSleep) + ', ' + str(ob.continuousCollideDetect) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
+			rigidBody = rigidBodyName + ' = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ', ' + str(ob.canSleep) + ', ' + str(ob.continuousCollideDetect) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
 			rigidBodies[ob] = rigidBody
 		if ob.colliderExists:
+			points = []
+			for i in range(MAX_SHAPE_POINTS):
+				if not getattr(ob, 'usePolylinePoint%s' %i):
+					break
+				point = getattr(ob, 'polylinePoint%s' %i)
+				points.append(list(point))
+			indices = []
+			for i in range(MAX_SHAPE_POINTS):
+				if not getattr(ob, 'usePolylineIdx%s' %i):
+					break
+				idx = getattr(ob, 'polylineIdx%s' %i)
+				indices.append(list(idx))
+			indicesStr = 'None'
+			if indices != []:
+				indicesStr = str(indices)
 			colliderName = obVarName + 'Collider'
 			if attachColliderTo == []:
 				vars.append(colliderName + ' = None')
 				if ob.shapeType == 'ball':
-					collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+					collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 				elif ob.shapeType == 'halfspace':
-					collider = colliderName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+					collider = colliderName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 				elif ob.shapeType == 'cuboid':
-					collider = colliderName + attachToVarName + ' = sim.AddCuboidCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+					collider = colliderName + ' = sim.AddCuboidCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 				elif ob.shapeType == 'roundCuboid':
-					collider = colliderName + attachToVarName + ' = sim.AddRoundCuboidCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.cuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+					collider = colliderName + ' = sim.AddRoundCuboidCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.cuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 				elif ob.shapeType == 'capsule':
-					collider = colliderName + attachToVarName + ' = sim.AddCapsuleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+					collider = colliderName + ' = sim.AddCapsuleCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 				elif ob.shapeType == 'segment':
-					collider = colliderName + attachToVarName + ' = sim.AddSegmentCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPos1)) + ', ' + str(list(ob.segmentPos2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+					collider = colliderName + ' = sim.AddSegmentCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPos1)) + ', ' + str(list(ob.segmentPos2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 				elif ob.shapeType == 'triangle':
-					collider = colliderName + attachToVarName + ' = sim.AddTriangleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+					collider = colliderName + ' = sim.AddTriangleCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 				elif ob.shapeType == 'roundTriangle':
-					collider = colliderName + attachToVarName + ' = sim.AddRoundTriangleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+					collider = colliderName + ' = sim.AddRoundTriangleCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+				elif ob.shapeType == 'polyline':
+					collider = colliderName + ' = sim.AddPolylineCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(points) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None, ' + indicesStr
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
 					vars.append(colliderName + attachToVarName + ' = None')
 					if ob.shapeType == 'ball':
-						collider = colliderName + attachToVarName + ' = sim.AddBallCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddBallCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					elif ob.shapeType == 'halfspace':
-						collider = colliderName + attachToVarName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					elif ob.shapeType == 'cuboid':
-						collider = colliderName + attachToVarName + ' = sim.AddCuboidCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddCuboidCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					elif ob.shapeType == 'roundCuboid':
-						collider = colliderName + attachToVarName + ' = sim.AddRoundCuboidCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.cuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddRoundCuboidCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.cuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					elif ob.shapeType == 'capsule':
-						collider = colliderName + attachToVarName + ' = sim.AddCapsuleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddCapsuleCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					elif ob.shapeType == 'segment':
-						collider = colliderName + attachToVarName + ' = sim.AddSegmentCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPos1)) + ', ' + str(list(ob.segmentPos2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddSegmentCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPos1)) + ', ' + str(list(ob.segmentPos2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					elif ob.shapeType == 'triangle':
-						collider = colliderName + attachToVarName + ' = sim.AddTriangleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddTriangleCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					elif ob.shapeType == 'roundTriangle':
-						collider = colliderName + attachToVarName + ' = sim.AddRoundTriangleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddRoundTriangleCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+					elif ob.shapeType == 'polyline':
+						collider = colliderName + attachToVarName + ' = sim.AddPolylineCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(points) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"], ' + indicesStr
 			collider += ')'
 			if not ob.rigidBodyExists and ob not in attachColliderTo:
 				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
@@ -1337,12 +1357,12 @@ class api
 	}
 	get_svg_path (pathStr, cyclic)
 	{
-		var output = 'M ' + pathStr.charCodeAt(0) + ',' + pathStr.charCodeAt(1) + ' ';
+		var output = 'M ' + pathStr.charCodeAt(0) + ', ' + pathStr.charCodeAt(1) + ' ';
 		for (var i = 2; i < pathStr.length; i += 2)
 		{
 			if ((i - 2) % 6 == 0)
 				output += 'C ';
-			output += '' + pathStr.charCodeAt(i) + ',' + pathStr.charCodeAt(i + 1) + ' '
+			output += '' + pathStr.charCodeAt(i) + ', ' + pathStr.charCodeAt(i + 1) + ' '
 		}
 		if (cyclic)
 			output += 'Z';
@@ -1354,7 +1374,7 @@ class api
 		copy.id = newId;
 		copy.setAttribute('x', pos[0]);
 		copy.setAttribute('y', pos[1]);
-		copy.style.transform = 'translate(' + pos[0] + ',' + pos[1] + ')rotate(' + rot + 'deg)';
+		copy.style.transform = 'translate(' + pos[0] + ', ' + pos[1] + ')rotate(' + rot + 'deg)';
 		for (var [key, val] of Object.entries(attributes))
 			copy.setAttribute(key, val);
 		document.body.appendChild(copy);
@@ -1392,7 +1412,7 @@ class api
 		var mixMode = 'lighter';
 		if (subtractive)
 			mixMode = 'darker';
-		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ',' + clr[1] + ',' + clr[2] + ',' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ',' + clr2[1] + ',' + clr2[2] + ',' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ',' + clr3[1] + ',' + clr3[2] + ',' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
+		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ', ' + clr[1] + ', ' + clr[2] + ', ' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ', ' + clr2[1] + ', ' + clr2[2] + ', ' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ', ' + clr3[1] + ', ' + clr3[2] + ', ' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
 	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, attributes, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
@@ -1409,7 +1429,7 @@ class api
 		svg.setAttribute('y', pos[1]);
 		svg.setAttribute('width', size[0]);
 		svg.setAttribute('height', size[1]);
-		var trs = 'translate(' + pos[0] + ',' + pos[1] + ')';
+		var trs = 'translate(' + pos[0] + ', ' + pos[1] + ')';
 		svg.setAttribute('transform', trs);
 		var i = 0;
 		var pathsValsAndStrings = $.get_svg_paths_and_strings(pathFramesStrings, cyclic);
@@ -1577,7 +1597,7 @@ class api
 			var childRect = child.getBoundingClientRect();
 			var pathAnchor = [lerp(pathRect.x, pathRect.right, origin[0] / 100), lerp(pathRect.y, pathRect.bottom, origin[1] / 100)];
 			var childAnchor = [lerp(childRect.x, childRect.right, origin[0] / 100), lerp(childRect.y, childRect.bottom, origin[1] / 100)];
-			child.setAttribute('transform', 'translate(' + (pathAnchor[0] - childAnchor[0]) + ',' + (pathAnchor[1] - childAnchor[1]) + ')');
+			child.setAttribute('transform', 'translate(' + (pathAnchor[0] - childAnchor[0]) + ', ' + (pathAnchor[1] - childAnchor[1]) + ')');
 			pathRect = childRect;
 		}
 	}
@@ -2312,7 +2332,12 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'polylineIdx%s' %i,
-		bpy.props.IntProperty(name = 'Index%s' %i, min = -1, default = -1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'polylineIdx%s' %i))
+		bpy.props.IntVectorProperty(name = 'Index%s' %i, size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'polylineIdx%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'usePolylineIdx%s' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'usePolylineIdx%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
@@ -2327,7 +2352,7 @@ for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
 		'trimeshIdx%s' %i,
-		bpy.props.IntProperty(name = 'Index%s' %i, min = -1, default = -1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trimeshIdx%s' %i))
+		bpy.props.IntVectorProperty(name = 'Index%s' %i, size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trimeshIdx%s' %i))
 	)
 	setattr(
 		bpy.types.Object,
@@ -2751,14 +2776,12 @@ class ColliderPanel (bpy.types.Panel):
 				row.prop(ob, 'usePolylinePoint%s' %i)
 				if not getattr(ob, 'usePolylinePoint%s' %i):
 					break
-			foundInvalidIdx = False
 			for i in range(MAX_SHAPE_POINTS):
-				idx = getattr(ob, 'polylineIdx%s' %i)
-				validIdx = idx != -1
-				if validIdx or not foundInvalidIdx:
-					self.layout.prop(ob, 'polylineIdx%s' %i)
-				if not foundInvalidIdx:
-					foundInvalidIdx = not validIdx
+				row = self.layout.row()
+				row.prop(ob, 'polylineIdx%s' %i)
+				row.prop(ob, 'usePolylineIdx%s' %i)
+				if not getattr(ob, 'usePolylineIdx%s' %i):
+					break
 		elif ob.shapeType == 'trimesh':
 			for i in range(MAX_SHAPE_POINTS):
 				row = self.layout.row()
@@ -2766,14 +2789,12 @@ class ColliderPanel (bpy.types.Panel):
 				row.prop(ob, 'useTrimeshPoint%s' %i)
 				if not getattr(ob, 'useTrimeshPoint%s' %i):
 					break
-			foundInvalidIdx = False
 			for i in range(MAX_SHAPE_POINTS):
-				idx = getattr(ob, 'trimeshIdx%s' %i)
-				validIdx = idx != -1
-				if validIdx or not foundInvalidIdx:
-					self.layout.prop(ob, 'trimeshIdx%s' %i)
-				if not foundInvalidIdx:
-					foundInvalidIdx = not validIdx
+				row = self.layout.row()
+				row.prop(ob, 'trimeshIdx%s' %i)
+				row.prop(ob, 'useTrimeshIdx%s' %i)
+				if not getattr(ob, 'useTrimeshIdx%s' %i):
+					break
 		elif ob.shapeType == 'convexHull':
 			for i in range(MAX_SHAPE_POINTS):
 				row = self.layout.row()
