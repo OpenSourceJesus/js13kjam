@@ -731,7 +731,7 @@ def ExportObject (ob):
 					size.x *= imgSize.x / imgSize.y
 				else:
 					size.y *= imgSize.y / imgSize.x
-				img = '		screen.blit(' + surface + ', ' + surfaceRect + ')'
+				img = '		pos = ' + surfaceRect + '.topleft\n		screen.blit(' + surface + ', (pos[0] - off[0] + windowSize[0] / 2, pos[1] - off[1] + windowSize[1] / 2))'
 				initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
 				vars.append(surface + ' = None')
 				vars.append(surfaceRect + ' = None')
@@ -1090,7 +1090,7 @@ def GetBlenderData ():
 		ExportObject (ob)
 	for ob in bpy.data.objects:
 		for script in GetScripts(ob, True):
-			apiCode += script
+			apiCode += script + '\n'
 		for scriptInfo in GetScripts(ob, False):
 			script = scriptInfo[0]
 			isInit = scriptInfo[1]
@@ -1120,6 +1120,8 @@ jointsIds = {}
 # Physics Section End
 surfacesRects = {}
 screen = None
+windowSize = None
+off = [0.0, 0.0]
 
 class Game:
 	def __init__ (self, title : str = 'Game'):
@@ -1147,7 +1149,7 @@ class Game:
 		for obName, rigidBodyId in rigidBodiesIds.items():
 			pos = sim.GetPosition(rigidBodyId)
 			size = surfacesRects[obName].size
-			surfacesRects[obName].update(pos[0] - size[0] / 2, pos[1] - size[1]  / 2, size[0], size[1])
+			surfacesRects[obName].update(pos[0] - size[0] / 2, pos[1] - size[1] / 2, size[0], size[1])
 # Physics Section End
 
 	def render (self):
@@ -1157,6 +1159,7 @@ class Game:
 
 pygame.init()
 screen = pygame.display.set_mode((800, 600), pygame.FULLSCREEN)
+windowSize = pygame.display.get_window_size()
 # API
 # Init
 game = Game()
