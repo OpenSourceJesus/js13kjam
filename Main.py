@@ -929,21 +929,33 @@ def RegisterPhysics (ob):
 			rigidBody = rigidBodyName + ' = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ', ' + str(ob.canSleep) + ', ' + str(ob.continuousCollideDetect) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
 			rigidBodies[ob] = rigidBody
 		if ob.colliderExists:
-			points = []
+			polylinePoints = []
 			for i in range(MAX_SHAPE_POINTS):
 				if not getattr(ob, 'usePolylinePoint%s' %i):
 					break
 				point = getattr(ob, 'polylinePoint%s' %i)
-				points.append(list(point))
-			indices = []
+				polylinePoints.append(list(point))
+			polylineIndices = []
 			for i in range(MAX_SHAPE_POINTS):
 				if not getattr(ob, 'usePolylineIdx%s' %i):
 					break
 				idx = getattr(ob, 'polylineIdx%s' %i)
-				indices.append(list(idx))
-			indicesStr = 'None'
-			if indices != []:
-				indicesStr = str(indices)
+				polylineIndices.append(list(idx))
+			polylineIndicesStr = ''
+			if polylineIndices != []:
+				polylineIndicesStr = str(polylineIndices)
+			trimeshPoints = []
+			for i in range(MAX_SHAPE_POINTS):
+				if not getattr(ob, 'useTrimeshPoint%s' %i):
+					break
+				point = getattr(ob, 'trimeshPoint%s' %i)
+				trimeshPoints.append(list(point))
+			trimeshIndices = []
+			for i in range(MAX_SHAPE_POINTS):
+				if not getattr(ob, 'useTrimeshIdx%s' %i):
+					break
+				idx = getattr(ob, 'trimeshIdx%s' %i)
+				trimeshIndices.append(list(idx))
 			colliderName = obVarName + 'Collider'
 			if attachColliderTo == []:
 				vars.append(colliderName + ' = None')
@@ -964,7 +976,9 @@ def RegisterPhysics (ob):
 				elif ob.shapeType == 'roundTriangle':
 					collider = colliderName + ' = sim.AddRoundTriangleCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density)
 				elif ob.shapeType == 'polyline':
-					collider = colliderName + ' = sim.AddPolylineCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(points) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + indicesStr
+					collider = colliderName + ' = sim.AddPolylineCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePoints) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + polylineIndicesStr
+				elif ob.shapeType == 'trimesh':
+					collider = colliderName + ' = sim.AddTrimeshCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePoints) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + str(trimeshIndices)
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
@@ -986,7 +1000,9 @@ def RegisterPhysics (ob):
 					elif ob.shapeType == 'roundTriangle':
 						collider = colliderName + attachToVarName + ' = sim.AddRoundTriangleCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					elif ob.shapeType == 'polyline':
-						collider = colliderName + attachToVarName + ' = sim.AddPolylineCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(points) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + indicesStr + ', rigidBodiesIds["' + attachToVarName + '"]'
+						collider = colliderName + attachToVarName + ' = sim.AddPolylineCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePoints) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + polylineIndicesStr + ', rigidBodiesIds["' + attachToVarName + '"]'
+					elif ob.shapeType == 'trimesh':
+						collider = colliderName + attachToVarName + ' = sim.AddTrimeshCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePoints) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + str(trimeshIndices) + ', rigidBodiesIds["' + attachToVarName + '"]'
 			collider += ')'
 			if not ob.rigidBodyExists and ob not in attachColliderTo:
 				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
