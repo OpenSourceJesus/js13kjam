@@ -731,7 +731,7 @@ def ExportObject (ob):
 					size.x *= imgSize.x / imgSize.y
 				else:
 					size.y *= imgSize.y / imgSize.x
-				img = '		pos = ' + surfaceRect + '.topleft\n		screen.blit(' + surface + ', (pos[0] - off[0] + windowSize[0] / 2, pos[1] - off[1] + windowSize[1] / 2))'
+				img = '		pos = ' + surfaceRect + '.topleft\n		screen.blit(' + surface + ', (pos[0] - off[0], pos[1] - off[1]))'
 				initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
 				vars.append(surface + ' = None')
 				vars.append(surfaceRect + ' = None')
