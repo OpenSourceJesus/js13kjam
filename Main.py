@@ -943,6 +943,10 @@ def RegisterPhysics (ob):
 					collider = colliderName + attachToVarName + ' = sim.AddCapsuleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 				elif ob.shapeType == 'segment':
 					collider = colliderName + attachToVarName + ' = sim.AddSegmentCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPos1)) + ', ' + str(list(ob.segmentPos2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+				elif ob.shapeType == 'triangle':
+					collider = colliderName + attachToVarName + ' = sim.AddTriangleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
+				elif ob.shapeType == 'roundTriangle':
+					collider = colliderName + attachToVarName + ' = sim.AddRoundTriangleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', None'
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
@@ -959,6 +963,10 @@ def RegisterPhysics (ob):
 						collider = colliderName + attachToVarName + ' = sim.AddCapsuleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 					elif ob.shapeType == 'segment':
 						collider = colliderName + attachToVarName + ' = sim.AddSegmentCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPos1)) + ', ' + str(list(ob.segmentPos2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+					elif ob.shapeType == 'triangle':
+						collider = colliderName + attachToVarName + ' = sim.AddTriangleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
+					elif ob.shapeType == 'roundTriangle':
+						collider = colliderName + attachToVarName + ' = sim.AddRoundTriangleCollider(' + str(ob.colliderEnable) + ',' + str([ob.location.x, ob.location.y]) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"]'
 			collider += ')'
 			if not ob.rigidBodyExists and ob not in attachColliderTo:
 				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
