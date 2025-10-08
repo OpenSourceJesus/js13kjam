@@ -101,9 +101,9 @@ def GetScripts (ob, isAPI : bool):
 		txt = getattr(ob, type + 'Script%s' %i)
 		if txt:
 			if isAPI:
-				scripts.append(txt.as_string())
+				scripts.append((txt.as_string(), getattr(ob, 'scriptType%s' %i)))
 			else:
-				scripts.append((txt.as_string(), getattr(ob, 'initScript%s' %i)))
+				scripts.append((txt.as_string(), getattr(ob, 'initScript%s' %i), getattr(ob, 'scriptType%s' %i)))
 	return scripts
 
 def TryChangeToInt (f : float):
@@ -286,183 +286,186 @@ def ExportObject (ob):
 		data.append(ob.subtractive)
 		datas.append(data)
 	elif ob.type == 'CURVE':
-		prevObName = ob.name
-		ob.name += '_'
-		geoDatas = []
-		for frame in range(ob.minPathFrame, ob.maxPathFrame + 1):
-			bpy.context.scene.frame_set(frame)
-			depsgraph = bpy.context.evaluated_depsgraph_get()
-			evaluatedOb = ob.evaluated_get(depsgraph)
-			curveData = evaluatedOb.to_curve(depsgraph, apply_modifiers = True)
-			spline = curveData.splines[0]
-			pnts = spline.bezier_points
-			controlPnts = [pnt.co.copy() for pnt in pnts]
-			leftHandles = [pnt.handle_left.copy() for pnt in pnts]
-			rightHandles = [pnt.handle_right.copy() for pnt in pnts]
-			worldMatrix = evaluatedOb.matrix_world.copy()
-			geoDatas.append({'controlPnts' : controlPnts, 'leftHandles' : leftHandles, 'rightHandles' : rightHandles, 'cyclic' : spline.use_cyclic_u, 'matrix' : worldMatrix})
-		bpy.context.scene.frame_set(prevFrame)
 		tempCollection = bpy.data.collections.new('Temp')
 		bpy.context.scene.collection.children.link(tempCollection)
 		newCurveData = bpy.data.curves.new(name = 'Temp', type = 'CURVE')
 		newOb = bpy.data.objects.new(name = 'Temp', object_data = newCurveData)
 		tempCollection.objects.link(newOb)
-		pathDataFrames = []
-		prevPathData = ''
-		posFrames = []
-		data = []
-		prevPos = None
-		for frame, geoData in enumerate(geoDatas):
-			if frame > 0:
-				pos = geoData['matrix'].translation()
-				posFrames.append([TryChangeToInt(pos.x - prevPos.x), TryChangeToInt(pos.y - prevPos.y)])
-			prevPos = ob.location
-		for frame, geoData in enumerate(geoDatas):
-			newCurveData.splines.clear()
-			newCurveData.splines.new('BEZIER')
-			newCurveData.splines[0].bezier_points.add(len(geoData['controlPnts']) - 1)
-			for i, pnt in enumerate(geoData['controlPnts']):
-				spline = newCurveData.splines[0]
-				spline.bezier_points[i].co = pnt
-				spline.bezier_points[i].handle_left = geoData['leftHandles'][i]
-				spline.bezier_points[i].handle_right = geoData['rightHandles'][i]
-			spline.use_cyclic_u = geoData['cyclic']
-			newOb.matrix_world = geoData['matrix']
-			bpy.ops.object.select_all(action = 'DESELECT')
-			newOb.select_set(True)
-			bpy.ops.curve.export_svg()
-			svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
-			idxOfName = svgTxt.find('"' + newOb.name + '"') + 1
-			idxOfGroupStart = svgTxt.rfind('\n', 0, idxOfName)
-			groupEndIndctr = '</g>'
-			idxOfGroupEnd = svgTxt.find(groupEndIndctr, idxOfGroupStart) + len(groupEndIndctr)
-			group = svgTxt[idxOfGroupStart : idxOfGroupEnd]
-			parentGroupIndctr = '\n  <g'
-			idxOfParentGroupStart = svgTxt.find(parentGroupIndctr)
-			idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndctr))
-			idxOfParentGroupEnd = svgTxt.rfind('</g')
-			_min, _max = GetRectMinMax(newOb)
-			scale = Vector((sx, sy))
-			_min *= scale
-			_min += off
-			_max *= scale
-			_max += off
-			svgTxt = svgTxt[: idxOfParentGroupContents] + group + svgTxt[idxOfParentGroupEnd :]
-			pathDataIndctr = ' d="'
-			idxOfPathDataStart = svgTxt.find(pathDataIndctr) + len(pathDataIndctr)
-			idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
-			pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
-			pathData = pathData.replace('.0', '')
-			vectors = pathData.split(' ')
-			pathData = []
-			minPathVector = Vector((float('inf'), float('inf')))
-			maxPathVector = Vector((-float('inf'), -float('inf')))
-			for vector in vectors:
-				if len(vector) == 1:
-					continue
-				components = vector.split(',')
-				x = int(round(float(components[0])))
-				y = int(round(float(components[1])))
-				vector = newOb.matrix_world @ Vector((x, y, 0))
-				x = vector.x
-				y = vector.y
-				minPathVector = GetMinComponents(minPathVector, vector, True)
-				maxPathVector = GetMaxComponents(maxPathVector, vector, True)
-				pathData.append(x)
-				pathData.append(y)
-			_off = -minPathVector + Vector((32, 32))
-			for i, pathValue in enumerate(pathData):
-				if i % 2 == 1:
-					pathData[i] = ToByteString(maxPathVector[1] - pathValue + 32)
-				else:
-					pathData[i] = ToByteString(pathValue + _off[0])
-			strokeWidth = 0
-			if ob.useStroke:
-				strokeWidth = ob.strokeWidth
-			jiggleDist = ob.jiggleDist * int(ob.useJiggle)
-			x = _min.x - strokeWidth / 2 - jiggleDist
-			y = -_max.y + strokeWidth / 2 + jiggleDist
-			size = _max - _min
-			size += Vector((1, 1)) * (strokeWidth + jiggleDist * 2)
-			if ob.roundPosAndSize:
-				x = int(round(x))
-				y = int(round(y))
-				size = Vector(Round(size))
-			pathDataStr = ''.join(pathData)
-			if frame == 0:
-				if HandleCopyObject(newOb, [x, y]):
-					break
-				posFrames.insert(0, [TryChangeToInt(x), TryChangeToInt(y)])
-				data.append(posFrames)
-				data.append(ob.posPingPong)
-				data.append(TryChangeToInt(size.x))
-				data.append(TryChangeToInt(size.y))
-				materialClr = DEFAULT_CLR
-				if ob.active_material:
-					materialClr = ob.active_material.diffuse_color
-				data.append(GetColor(materialClr))
-				data.append(round(strokeWidth))
-				data.append(GetColor(ob.strokeClr))
-				data.append(prevObName)
-				data.append(spline.use_cyclic_u)
-				data.append(round(ob.location.z))
-				data.append(GetAttributes(ob))
-				data.append(TryChangeToInt(ob.jiggleDist * int(ob.useJiggle)))
-				data.append(TryChangeToInt(ob.jiggleDur))
-				data.append(ob.jiggleFrames * int(ob.useJiggle))
-				data.append(TryChangeToInt(ob.rotAngRange[0]))
-				data.append(TryChangeToInt(ob.rotAngRange[1]))
-				data.append(TryChangeToInt(ob.rotDur * int(ob.useRot)))
-				data.append(ob.rotPingPong)
-				data.append(TryChangeToInt(ob.scaleXRange[0]))
-				data.append(TryChangeToInt(ob.scaleXRange[1]))
-				data.append(TryChangeToInt(ob.scaleYRange[0]))
-				data.append(TryChangeToInt(ob.scaleYRange[1]))
-				data.append(TryChangeToInt(ob.scaleDur * int(ob.useScale)))
-				data.append(TryChangeToInt(ob.scaleHaltDurAtMin * int(ob.useScale)))
-				data.append(TryChangeToInt(ob.scaleHaltDurAtMax * int(ob.useScale)))
-				data.append(ob.scalePingPong)
-				data.append(TryChangeToInt(ob.origin[0]))
-				data.append(TryChangeToInt(ob.origin[1]))
-				data.append(TryChangeToInt(ob.fillHatchDensity[0] * int(ob.useFillHatch[0])))
-				data.append(TryChangeToInt(ob.fillHatchDensity[1] * int(ob.useFillHatch[1])))
-				data.append(TryChangeToInt(ob.fillHatchRandDensity[0] / 100 * int(ob.useFillHatch[0])))
-				data.append(TryChangeToInt(ob.fillHatchRandDensity[1] / 100 * int(ob.useFillHatch[1])))
-				data.append(TryChangeToInt(ob.fillHatchAng[0] * int(ob.useFillHatch[0])))
-				data.append(TryChangeToInt(ob.fillHatchAng[1] * int(ob.useFillHatch[1])))
-				data.append(TryChangeToInt(ob.fillHatchWidth[0] * int(ob.useFillHatch[0])))
-				data.append(TryChangeToInt(ob.fillHatchWidth[1] * int(ob.useFillHatch[1])))
-				data.append(TryChangeToInt(ob.strokeHatchDensity[0] * int(ob.useStrokeHatch[0])))
-				data.append(TryChangeToInt(ob.strokeHatchDensity[1] * int(ob.useStrokeHatch[1])))
-				data.append(TryChangeToInt(ob.strokeHatchRandDensity[0] / 100 * int(ob.useStrokeHatch[0])))
-				data.append(TryChangeToInt(ob.strokeHatchRandDensity[1] / 100 * int(ob.useStrokeHatch[1])))
-				data.append(TryChangeToInt(ob.strokeHatchAng[0] * int(ob.useStrokeHatch[0])))
-				data.append(TryChangeToInt(ob.strokeHatchAng[1] * int(ob.useStrokeHatch[1])))
-				data.append(TryChangeToInt(ob.strokeHatchWidth[0] * int(ob.useStrokeHatch[0])))
-				data.append(TryChangeToInt(ob.strokeHatchWidth[1] * int(ob.useStrokeHatch[1])))
-				data.append(ob.mirrorX)
-				data.append(ob.mirrorY)
-				data.append(CAP_TYPES.index(ob.capType))
-				data.append(JOIN_TYPES.index(ob.joinType))
-				dashArr = []
-				for value in ob.dashLengthsAndSpaces:
-					if value == 0:
+		prevObName = ob.name
+		ob.name += '_'
+		if exportType == 'html':
+			geoDatas = []
+			for frame in range(ob.minPathFrame, ob.maxPathFrame + 1):
+				bpy.context.scene.frame_set(frame)
+				depsgraph = bpy.context.evaluated_depsgraph_get()
+				evaluatedOb = ob.evaluated_get(depsgraph)
+				curveData = evaluatedOb.to_curve(depsgraph, apply_modifiers = True)
+				spline = curveData.splines[0]
+				pnts = spline.bezier_points
+				controlPnts = [pnt.co.copy() for pnt in pnts]
+				leftHandles = [pnt.handle_left.copy() for pnt in pnts]
+				rightHandles = [pnt.handle_right.copy() for pnt in pnts]
+				worldMatrix = evaluatedOb.matrix_world.copy()
+				geoDatas.append({'controlPnts' : controlPnts, 'leftHandles' : leftHandles, 'rightHandles' : rightHandles, 'cyclic' : spline.use_cyclic_u, 'matrix' : worldMatrix})
+			bpy.context.scene.frame_set(prevFrame)
+			pathDataFrames = []
+			prevPathData = ''
+			posFrames = []
+			data = []
+			prevPos = None
+			for frame, geoData in enumerate(geoDatas):
+				if frame > 0:
+					pos = geoData['matrix'].translation()
+					posFrames.append([TryChangeToInt(pos.x - prevPos.x), TryChangeToInt(pos.y - prevPos.y)])
+				prevPos = ob.location
+			for frame, geoData in enumerate(geoDatas):
+				newCurveData.splines.clear()
+				newCurveData.splines.new('BEZIER')
+				newCurveData.splines[0].bezier_points.add(len(geoData['controlPnts']) - 1)
+				for i, pnt in enumerate(geoData['controlPnts']):
+					spline = newCurveData.splines[0]
+					spline.bezier_points[i].co = pnt
+					spline.bezier_points[i].handle_left = geoData['leftHandles'][i]
+					spline.bezier_points[i].handle_right = geoData['rightHandles'][i]
+				spline.use_cyclic_u = geoData['cyclic']
+				newOb.matrix_world = geoData['matrix']
+				bpy.ops.object.select_all(action = 'DESELECT')
+				newOb.select_set(True)
+				bpy.ops.curve.export_svg()
+				svgTxt = open(bpy.context.scene.export_svg_output, 'r').read()
+				idxOfName = svgTxt.find('"' + newOb.name + '"') + 1
+				idxOfGroupStart = svgTxt.rfind('\n', 0, idxOfName)
+				groupEndIndctr = '</g>'
+				idxOfGroupEnd = svgTxt.find(groupEndIndctr, idxOfGroupStart) + len(groupEndIndctr)
+				group = svgTxt[idxOfGroupStart : idxOfGroupEnd]
+				parentGroupIndctr = '\n  <g'
+				idxOfParentGroupStart = svgTxt.find(parentGroupIndctr)
+				idxOfParentGroupContents = svgTxt.find('\n', idxOfParentGroupStart + len(parentGroupIndctr))
+				idxOfParentGroupEnd = svgTxt.rfind('</g')
+				_min, _max = GetRectMinMax(newOb)
+				scale = Vector((sx, sy))
+				_min *= scale
+				_min += off
+				_max *= scale
+				_max += off
+				svgTxt = svgTxt[: idxOfParentGroupContents] + group + svgTxt[idxOfParentGroupEnd :]
+				pathDataIndctr = ' d="'
+				idxOfPathDataStart = svgTxt.find(pathDataIndctr) + len(pathDataIndctr)
+				idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
+				pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
+				pathData = pathData.replace('.0', '')
+				vectors = pathData.split(' ')
+				pathData = []
+				minPathVector = Vector((float('inf'), float('inf')))
+				maxPathVector = Vector((-float('inf'), -float('inf')))
+				for vector in vectors:
+					if len(vector) == 1:
+						continue
+					components = vector.split(',')
+					x = int(round(float(components[0])))
+					y = int(round(float(components[1])))
+					vector = newOb.matrix_world @ Vector((x, y, 0))
+					x = vector.x
+					y = vector.y
+					minPathVector = GetMinComponents(minPathVector, vector, True)
+					maxPathVector = GetMaxComponents(maxPathVector, vector, True)
+					pathData.append(x)
+					pathData.append(y)
+				_off = -minPathVector + Vector((32, 32))
+				for i, pathValue in enumerate(pathData):
+					if i % 2 == 1:
+						pathData[i] = ToByteString(maxPathVector[1] - pathValue + 32)
+					else:
+						pathData[i] = ToByteString(pathValue + _off[0])
+				strokeWidth = 0
+				if ob.useStroke:
+					strokeWidth = ob.strokeWidth
+				jiggleDist = ob.jiggleDist * int(ob.useJiggle)
+				x = _min.x - strokeWidth / 2 - jiggleDist
+				y = -_max.y + strokeWidth / 2 + jiggleDist
+				size = _max - _min
+				size += Vector((1, 1)) * (strokeWidth + jiggleDist * 2)
+				if ob.roundPosAndSize:
+					x = int(round(x))
+					y = int(round(y))
+					size = Vector(Round(size))
+				pathDataStr = ''.join(pathData)
+				if frame == 0:
+					if HandleCopyObject(newOb, [x, y]):
 						break
-					dashArr.append(value)
-				data.append(dashArr)
-				data.append(TryChangeToInt(ob.cycleDur))
-				pathDataFrames.append(pathDataStr)
-			else:
-				pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
-			prevPathData = pathDataStr
-		datas.append(data)
+					posFrames.insert(0, [TryChangeToInt(x), TryChangeToInt(y)])
+					data.append(posFrames)
+					data.append(ob.posPingPong)
+					data.append(TryChangeToInt(size.x))
+					data.append(TryChangeToInt(size.y))
+					materialClr = DEFAULT_CLR
+					if ob.active_material:
+						materialClr = ob.active_material.diffuse_color
+					data.append(GetColor(materialClr))
+					data.append(round(strokeWidth))
+					data.append(GetColor(ob.strokeClr))
+					data.append(prevObName)
+					data.append(spline.use_cyclic_u)
+					data.append(round(ob.location.z))
+					data.append(GetAttributes(ob))
+					data.append(TryChangeToInt(ob.jiggleDist * int(ob.useJiggle)))
+					data.append(TryChangeToInt(ob.jiggleDur))
+					data.append(ob.jiggleFrames * int(ob.useJiggle))
+					data.append(TryChangeToInt(ob.rotAngRange[0]))
+					data.append(TryChangeToInt(ob.rotAngRange[1]))
+					data.append(TryChangeToInt(ob.rotDur * int(ob.useRot)))
+					data.append(ob.rotPingPong)
+					data.append(TryChangeToInt(ob.scaleXRange[0]))
+					data.append(TryChangeToInt(ob.scaleXRange[1]))
+					data.append(TryChangeToInt(ob.scaleYRange[0]))
+					data.append(TryChangeToInt(ob.scaleYRange[1]))
+					data.append(TryChangeToInt(ob.scaleDur * int(ob.useScale)))
+					data.append(TryChangeToInt(ob.scaleHaltDurAtMin * int(ob.useScale)))
+					data.append(TryChangeToInt(ob.scaleHaltDurAtMax * int(ob.useScale)))
+					data.append(ob.scalePingPong)
+					data.append(TryChangeToInt(ob.origin[0]))
+					data.append(TryChangeToInt(ob.origin[1]))
+					data.append(TryChangeToInt(ob.fillHatchDensity[0] * int(ob.useFillHatch[0])))
+					data.append(TryChangeToInt(ob.fillHatchDensity[1] * int(ob.useFillHatch[1])))
+					data.append(TryChangeToInt(ob.fillHatchRandDensity[0] / 100 * int(ob.useFillHatch[0])))
+					data.append(TryChangeToInt(ob.fillHatchRandDensity[1] / 100 * int(ob.useFillHatch[1])))
+					data.append(TryChangeToInt(ob.fillHatchAng[0] * int(ob.useFillHatch[0])))
+					data.append(TryChangeToInt(ob.fillHatchAng[1] * int(ob.useFillHatch[1])))
+					data.append(TryChangeToInt(ob.fillHatchWidth[0] * int(ob.useFillHatch[0])))
+					data.append(TryChangeToInt(ob.fillHatchWidth[1] * int(ob.useFillHatch[1])))
+					data.append(TryChangeToInt(ob.strokeHatchDensity[0] * int(ob.useStrokeHatch[0])))
+					data.append(TryChangeToInt(ob.strokeHatchDensity[1] * int(ob.useStrokeHatch[1])))
+					data.append(TryChangeToInt(ob.strokeHatchRandDensity[0] / 100 * int(ob.useStrokeHatch[0])))
+					data.append(TryChangeToInt(ob.strokeHatchRandDensity[1] / 100 * int(ob.useStrokeHatch[1])))
+					data.append(TryChangeToInt(ob.strokeHatchAng[0] * int(ob.useStrokeHatch[0])))
+					data.append(TryChangeToInt(ob.strokeHatchAng[1] * int(ob.useStrokeHatch[1])))
+					data.append(TryChangeToInt(ob.strokeHatchWidth[0] * int(ob.useStrokeHatch[0])))
+					data.append(TryChangeToInt(ob.strokeHatchWidth[1] * int(ob.useStrokeHatch[1])))
+					data.append(ob.mirrorX)
+					data.append(ob.mirrorY)
+					data.append(CAP_TYPES.index(ob.capType))
+					data.append(JOIN_TYPES.index(ob.joinType))
+					dashArr = []
+					for value in ob.dashLengthsAndSpaces:
+						if value == 0:
+							break
+						dashArr.append(value)
+					data.append(dashArr)
+					data.append(TryChangeToInt(ob.cycleDur))
+					pathDataFrames.append(pathDataStr)
+				else:
+					pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
+				prevPathData = pathDataStr
+			datas.append(data)
+			pathsDatas.append(chr(1).join(pathDataFrames))
+		elif exportType == 'exe':
+			RenderObject (ob, newOb, lambda : RenderCurve (ob, newOb, os.path.join(TMP_DIR, ob.name)))
 		tempCollection.objects.unlink(newOb)
 		bpy.data.objects.remove(newOb)
 		bpy.data.curves.remove(newCurveData)
 		bpy.context.scene.collection.children.unlink(tempCollection)
 		bpy.data.collections.remove(tempCollection)
 		bpy.data.objects[prevObName + '_'].name = prevObName
-		pathsDatas.append(chr(1).join(pathDataFrames))
 	elif ob.type == 'MESH':
 		prevObName = ob.name
 		ob.name += '_'
@@ -520,100 +523,17 @@ def ExportObject (ob):
 						newName += '_' + str(frame)
 					elif frame == 0 and HandleCopyObject(newOb, list(_min)):
 						break
-					renderSettings = scene.render
-					imageSettings = renderSettings.image_settings
-					viewSettings = imageSettings.view_settings
-					prevRenderPath = renderSettings.filepath
-					prevTransparentFilm = renderSettings.film_transparent
-					prevExposure = viewSettings.exposure
-					prevGamma = viewSettings.gamma
-					prevRenderFormat = imageSettings.file_format
-					prevClrMode = imageSettings.color_mode
-					renderSettings.film_transparent = True
-					prevClrManagement = imageSettings.color_management
-					prevExposure = viewSettings.exposure
-					prevGamma = viewSettings.gamma
-					if len(bpy.data.lights) == 0:
-						imageSettings.color_management = 'OVERRIDE'
-						viewSettings.exposure = 32
-						viewSettings.gamma = 5
-					imageSettings.file_format = 'BMP'
-					imageSettings.color_mode = 'BW'
-					renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
-					renderPaths = []
-					prevHideObsInRender = {}
-					for ob2 in bpy.data.objects:
-						prevHideObsInRender[ob2] = ob2.hide_render
-						ob2.hide_render = ob2 != newOb
 					prevMatClrs = {}
 					for matSlot in ob.material_slots:
 						mat2 = matSlot.material
 						if mat2 and mat != mat2:
 							prevMatClrs[mat2] = mat2.diffuse_color
 							mat2.diffuse_color = DEFAULT_CLR
-					for cam in renderCams:
-						prevName = newName
-						if i > 0:
-							newName += '_' + str(i)
-						scene.camera = cam
-						bpy.ops.render.render(write_still = True)
-						for i, tint in enumerate(tints):
-							prevName2 = newName
-							if i > 0:
-								newName += '_' + str(i)
-							cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(visibleClrValues[i]), '-i']
-							print(' '.join(cmd))
-							subprocess.check_call(cmd)
-							svgTxt = open(renderSettings.filepath.replace('.bmp', '.svg'), 'r').read()
-							svgTxt = svgTxt.replace('\n', ' ')
-							svgIndctr = '<svg '
-							svgTxt = svgTxt[svgTxt.find(svgIndctr) :]
-							svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
-							metadataEndIndctr = '/metadata>'
-							svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
-							svgTxt = svgTxt.replace('00000', '')
-							svgTxt = svgTxt.replace('.000000', '')
-							camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
-							camToOb = newOb.location - cam.location
-							projectedVec = camToOb.project(camForward)
-							addToSvgTxt = 'id="' + newName + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"'
-							if frame > 0:
-								addToSvgTxt += ' opacity=0'
-							svgTxt = svgTxt[: len(svgIndctr)] + addToSvgTxt + svgTxt[len(svgIndctr) :]
-							fillIndctr = 'fill="'
-							idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
-							idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
-							materialClr = mat.diffuse_color
-							fillClr = ClampComponents(Round(Multiply(materialClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-							if ob.gradientFill:
-								svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.gradientFill.name + ')' + svgTxt[idxOfFillEnd :]
-							else:
-								svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillClr[0] * tint[0]) + ' ' + str(fillClr[1] * tint[1]) + ' ' + str(fillClr[2] * tint[2]) + ')' + svgTxt[idxOfFillEnd :]
-							if ob.useStroke:
-								strokeClr = ClampComponents(Round(Multiply(ob.strokeClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
-								svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeClr[0]) + ' ' + str(strokeClr[1]) + ' ' + str(strokeClr[2]) + ')" stroke-width=' + str(ob.strokeWidth))
-							svgsDatas[newName] = svgTxt
-							newName = prevName2
-						newName = prevName
-						for ob in bpy.data.objects:
-							ob.hide_render = prevHideObsInRender[ob]
-						for matSlot in ob.material_slots:
-							mat2 = matSlot.material
-							if mat2 in prevMatClrs:
-								mat2.diffuse_color = prevMatClrs[mat2]
-					renderSettings.filepath = prevRenderPath
-					renderSettings.film_transparent = prevTransparentFilm
-					viewSettings.exposure = prevExposure
-					viewSettings.gamma = prevGamma
-					imageSettings.file_format = prevRenderFormat
-					imageSettings.color_mode = prevClrMode
-					imageSettings.color_management = prevClrManagement
-					viewSettings.exposure = prevExposure
-					viewSettings.gamma = prevGamma
+					RenderObject (ob, newOb, lambda : RenderMesh (ob, newOb, renderCams, newName, tints, frame, visibleClrValues, mat, prevMatClrs))
 		tempCollection.objects.unlink(newOb)
 		bpy.data.objects.remove(newOb)
 		bpy.data.meshes.remove(newMeshData)
-		bpy.context.scene.collection.children.unlink(tempCollection)
+		scene.collection.children.unlink(tempCollection)
 		bpy.data.collections.remove(tempCollection)
 		bpy.data.objects[prevObName + '_'].name = prevObName
 	elif ob.type == 'GREASEPENCIL':
@@ -625,6 +545,7 @@ def ExportObject (ob):
 		imageSettings = renderSettings.image_settings
 		viewSettings = imageSettings.view_settings
 		prevRenderPath = renderSettings.filepath
+		prevResPercent = renderSettings.resolution_percentage
 		prevTransparentFilm = renderSettings.film_transparent
 		prevExposure = viewSettings.exposure
 		prevGamma = viewSettings.gamma
@@ -640,7 +561,6 @@ def ExportObject (ob):
 			viewSettings.gamma = 5
 		imageSettings.file_format = 'BMP'
 		imageSettings.color_mode = 'BW'
-		renderPaths = []
 		world = bpy.data.worlds[0]
 		worldClr = world.color
 		prevWorldClr = list(worldClr)
@@ -658,6 +578,7 @@ def ExportObject (ob):
 					mat.diffuse_color = DEFAULT_CLR
 		cam = scene.camera
 		renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
+		renderSettings.resolution_percentage *= ob.resPercent
 		bpy.ops.render.render(write_still = True)
 		cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(.01), '-i']
 		print(' '.join(cmd))
@@ -694,14 +615,13 @@ def ExportObject (ob):
 			if ob2 in prevObsClrs:
 				ob2.active_material.diffuse_color = prevObsClrs[ob2]
 		renderSettings.filepath = prevRenderPath
+		renderSettings.resolution_percentage = prevResPercent
 		renderSettings.film_transparent = prevTransparentFilm
 		viewSettings.exposure = prevExposure
 		viewSettings.gamma = prevGamma
 		imageSettings.file_format = prevRenderFormat
 		imageSettings.color_mode = prevClrMode
 		imageSettings.color_management = prevClrManagement
-		viewSettings.exposure = prevExposure
-		viewSettings.gamma = prevGamma
 		svgsDatas[ob.name] = svgTxt
 	elif ob.type == 'EMPTY':
 		if ob.empty_display_type == 'IMAGE':
@@ -723,21 +643,16 @@ def ExportObject (ob):
 				if ob.use_empty_image_alpha and ob.color[3] != 1:
 					img += ';opacity:' + str(ob.color[3])
 				img += '">'
+				imgs[ob.name] = img
 			elif exportType == 'exe':
-				surface = GetVarNameForObject(ob)
-				surfaceRect = surface + 'Rect'
 				imgSize = Vector(list(ob.data.size) + [0])
 				if imgSize.x > imgSize.y:
 					size.x *= imgSize.x / imgSize.y
 				else:
 					size.y *= imgSize.y / imgSize.x
-				img = '		pos = ' + surfaceRect + '.topleft\n		screen.blit(' + surface + ', (pos[0] - off[0], pos[1] - off[1]))'
-				initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
-				vars.append(surface + ' = None')
-				vars.append(surfaceRect + ' = None')
+				AddImageDataForExe (ob, imgPath, pos, size)
 			ob.rotation_mode = prevRotMode
 			ob.data.save(filepath = imgPath)
-			imgs[ob.name] = img
 			imgsPaths.append(imgPath)
 		else:
 			childrenNames = []
@@ -1047,6 +962,145 @@ def RegisterPhysics (ob):
 			joints[ob] = joint
 	ob.rotation_mode = prevRotMode
 
+def RenderObject (ob, newOb, renderFunc, *args):
+	scene = bpy.context.scene
+	prevCam = scene.camera
+	renderSettings = scene.render
+	imageSettings = renderSettings.image_settings
+	viewSettings = imageSettings.view_settings
+	prevRenderPath = renderSettings.filepath
+	prevResPercent = renderSettings.resolution_percentage
+	prevTransparentFilm = renderSettings.film_transparent
+	prevExposure = viewSettings.exposure
+	prevGamma = viewSettings.gamma
+	prevRenderFormat = imageSettings.file_format
+	prevClrMode = imageSettings.color_mode
+	renderSettings.film_transparent = True
+	prevClrManagement = imageSettings.color_management
+	prevExposure = viewSettings.exposure
+	prevGamma = viewSettings.gamma
+	if len(bpy.data.lights) == 0:
+		imageSettings.color_management = 'OVERRIDE'
+		viewSettings.exposure = 32
+		viewSettings.gamma = 5
+	imageSettings.file_format = 'BMP'
+	imageSettings.color_mode = 'BW'
+	renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
+	renderSettings.resolution_percentage *= ob.resPercent
+	prevHideObsInRender = {}
+	for ob2 in bpy.data.objects:
+		prevHideObsInRender[ob2] = ob2.hide_render
+		ob2.hide_render = ob2 != newOb
+	renderFunc (*args)
+	scene.camera = prevCam
+	for ob in bpy.data.objects:
+		ob.hide_render = prevHideObsInRender[ob]
+	renderSettings.filepath = prevRenderPath
+	renderSettings.resolution_percentage = prevResPercent
+	renderSettings.film_transparent = prevTransparentFilm
+	viewSettings.exposure = prevExposure
+	viewSettings.gamma = prevGamma
+	imageSettings.file_format = prevRenderFormat
+	imageSettings.color_mode = prevClrMode
+	imageSettings.color_management = prevClrManagement
+
+def RenderCurve (*args):
+	ob = args[0]
+	newOb = args[1]
+	renderPath = args[2]
+	scene = bpy.context.scene
+	renderSettings = scene.render
+	renderSettings.filepath = renderPath
+	imageSettings = renderSettings.image_settings
+	imageSettings.file_format = 'PNG'
+	imageSettings.color_mode = 'RGBA'
+	imgsPaths.append(renderPath)
+	camData = bpy.data.cameras.new('Temp')
+	cam = bpy.data.objects.new('Temp', object_data = camData)
+	scene.collection.objects.link(cam)
+	scene.camera = cam
+	bpy.context.view_layer.objects.active = ob
+	ob.select_set(True)
+	bpy.ops.view3d.camera_to_view_selected()
+	bpy.ops.render.render(write_still = True)
+	pos = ob.location.copy()
+	pos.y *= -1
+	_min, _max = GetRectMinMax(ob)
+	size = _max - _min
+	imgs[ob.name] = AddImageDataForExe(ob, renderPath, pos, size)
+	scene.collection.objects.unlink(cam)
+	bpy.data.objects.remove(cam)
+
+def RenderMesh (*args):
+	ob = args[0]
+	newOb = args[1]
+	renderCams = args[2]
+	newName = args[3]
+	tints = args[4]
+	frame = args[5]
+	visibleClrValues = args[6]
+	mat = args[7]
+	prevMatClrs = args[8]
+	scene = bpy.context.scene
+	renderSettings = scene.render
+	for cam in renderCams:
+		prevName = newName
+		if frame > 0:
+			newName += '_' + str(frame)
+		scene.camera = cam
+		bpy.ops.render.render(write_still = True)
+		for i, tint in enumerate(tints):
+			prevName2 = newName
+			if i > 0:
+				newName += '_' + str(i)
+			cmd = [POTRACE_PATH, '-s', renderSettings.filepath, '-k ' + str(visibleClrValues[i]), '-i']
+			print(' '.join(cmd))
+			subprocess.check_call(cmd)
+			svgTxt = open(renderSettings.filepath.replace('.bmp', '.svg'), 'r').read()
+			svgTxt = svgTxt.replace('\n', ' ')
+			svgIndctr = '<svg '
+			svgTxt = svgTxt[svgTxt.find(svgIndctr) :]
+			svgTxt = svgTxt.replace(' version="1.0" xmlns="http://www.w3.org/2000/svg"', '')
+			metadataEndIndctr = '/metadata>'
+			svgTxt = svgTxt[: svgTxt.find('<metadata')] + svgTxt[svgTxt.find('/metadata>') + len(metadataEndIndctr) :]
+			svgTxt = svgTxt.replace('00000', '')
+			svgTxt = svgTxt.replace('.000000', '')
+			camForward = cam.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
+			camToOb = newOb.location - cam.location
+			projectedVec = camToOb.project(camForward)
+			addToSvgTxt = 'id="' + newName + '" style="position:absolute;z-index:' + str(round(-projectedVec.length * 99999)) + '"'
+			if frame > 0:
+				addToSvgTxt += ' opacity=0'
+			svgTxt = svgTxt[: len(svgIndctr)] + addToSvgTxt + svgTxt[len(svgIndctr) :]
+			fillIndctr = 'fill="'
+			idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
+			idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
+			materialClr = mat.diffuse_color
+			fillClr = ClampComponents(Round(Multiply(materialClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+			if ob.gradientFill:
+				svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.gradientFill.name + ')' + svgTxt[idxOfFillEnd :]
+			else:
+				svgTxt = svgTxt[: idxOfFillStart] + 'rgb(' + str(fillClr[0] * tint[0]) + ' ' + str(fillClr[1] * tint[1]) + ' ' + str(fillClr[2] * tint[2]) + ')' + svgTxt[idxOfFillEnd :]
+			if ob.useStroke:
+				strokeClr = ClampComponents(Round(Multiply(ob.strokeClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
+				svgTxt = svgTxt.replace('stroke="none"', 'stroke="rgb(' + str(strokeClr[0]) + ' ' + str(strokeClr[1]) + ' ' + str(strokeClr[2]) + ')" stroke-width=' + str(ob.strokeWidth))
+			svgsDatas[newName] = svgTxt
+			newName = prevName2
+		newName = prevName
+		for matSlot in ob.material_slots:
+			mat2 = matSlot.material
+			if mat2 in prevMatClrs:
+				mat2.diffuse_color = prevMatClrs[mat2]
+
+def AddImageDataForExe (ob, imgPath, pos, size):
+	surface = GetVarNameForObject(ob)
+	surfaceRect = surface + 'Rect'
+	img = '		pos = ' + surfaceRect + '.topleft\n		screen.blit(' + surface + ', (pos[0] - off[0], pos[1] - off[1]))'
+	imgs[ob.name] = img
+	initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
+	vars.append(surface + ' = None')
+	vars.append(surfaceRect + ' = None')
+
 def HandleCopyObject (ob, pos):
 	try:
 		for exportedOb in exportedObs:
@@ -1112,15 +1166,20 @@ def GetBlenderData ():
 	for ob in bpy.data.objects:
 		ExportObject (ob)
 	for ob in bpy.data.objects:
-		for script in GetScripts(ob, True):
-			apiCode += script + '\n'
+		for scriptInfo in GetScripts(ob, True):
+			script = scriptInfo[0]
+			_type = scriptInfo[1]
+			if _type == exportType:
+				apiCode += script + '\n'
 		for scriptInfo in GetScripts(ob, False):
 			script = scriptInfo[0]
 			isInit = scriptInfo[1]
-			if isInit:
-				initCode.append(script)
-			else:
-				updateCode.append(script)
+			_type = scriptInfo[2]
+			if _type == exportType:
+				if isInit:
+					initCode.append(script)
+				else:
+					updateCode.append(script)
 	return (datas, initCode, updateCode, apiCode)
 
 buildInfo = {
@@ -1169,10 +1228,11 @@ class Game:
 # Update
 # Physics Section Start
 		sim.step ()
-		for obName, rigidBodyId in rigidBodiesIds.items():
-			pos = sim.GetPosition(rigidBodyId)
-			size = surfacesRects[obName].size
-			surfacesRects[obName].update(pos[0] - size[0] / 2, pos[1] - size[1] / 2, size[0], size[1])
+		for name, rigidBodyId in rigidBodiesIds.items():
+			if name in surfacesRects:
+				pos = sim.GetPosition(rigidBodyId)
+				size = surfacesRects[name].size
+				surfacesRects[name].update(pos[0] - size[0] / 2, pos[1] - size[1] / 2, size[0], size[1])
 # Physics Section End
 
 	def render (self):
@@ -1794,7 +1854,7 @@ def GenJs (world):
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
 		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
-		cmd = ['python', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-no_compress', dontMangleArg]
+		cmd = ['python3', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-no_compress', dontMangleArg]
 		print(' '.join(cmd))
 		subprocess.run(cmd)
 		js = open(jsTmp, 'r').read()
@@ -2251,6 +2311,7 @@ SHAPE_TYPE_ITEMS = [('ball', 'circle', ''), ('halfspace', 'half-space', ''), ('c
 RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinematicPositionBased', 'kinematic-position-based', ''), ('kinematicVelocityBased', 'kinematic-velocity-based', '')]
 RIGID_BODY_TYPES = ['dynamic', 'fixed', 'kinematicVelocityBased', 'kinematic-velocity-based']
 JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
+SCRIPT_TYPE_ITEMS = [('html', 'html', ''), ('exe', 'exe', ''), ('unity', 'unity', '')]
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOff = bpy.props.IntVectorProperty(name = 'Offset', size = 2)
@@ -2356,6 +2417,7 @@ bpy.types.Object.jointAxis = bpy.props.FloatVectorProperty(name = 'Axis', size =
 bpy.types.Object.jointLen = bpy.props.FloatProperty(name = 'Length', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'joinLen'))
 bpy.types.Object.charControllerExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'charControllerExists'))
 bpy.types.Object.contactOff = bpy.props.FloatProperty(name = 'Contact offset', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'contactOff'))
+bpy.types.Object.resPercent = bpy.props.IntProperty(name = 'Resolution percent', min = 0, max = 100, default = 100, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'resPercent'))
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -2382,6 +2444,11 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 		bpy.types.Object,
 		'initScript%s' %i,
 		bpy.props.BoolProperty(name = 'Is init', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'initScript%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'scriptType%s' %i,
+		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scriptType%s' %i))
 	)
 for i in range(MAX_SHAPE_POINTS):
 	setattr(
@@ -2683,6 +2750,7 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'minPosFrame')
 			self.layout.prop(ob, 'maxPosFrame')
 			self.layout.prop(ob, 'posPingPong')
+		self.layout.prop(ob, 'resPercent')
 		if ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
 			for i in range(MAX_POTRACE_PASSES_PER_OBJECT_MAT):
 				row = self.layout.row()
@@ -2706,6 +2774,7 @@ class ObjectPanel (bpy.types.Panel):
 			if hasProp or not foundUnassignedScript:
 				row = self.layout.row()
 				row.prop(ob, 'apiScript%s' %i)
+				row.prop(ob, 'scriptType%s' %i)
 				row.prop(ob, 'apiScript%sDisable' %i)
 			if not foundUnassignedScript:
 				foundUnassignedScript = not hasProp
@@ -2716,6 +2785,7 @@ class ObjectPanel (bpy.types.Panel):
 				row = self.layout.row()
 				row.prop(ob, 'runtimeScript%s' %i)
 				row.prop(ob, 'initScript%s' %i)
+				row.prop(ob, 'scriptType%s' %i)
 				row.prop(ob, 'runtimeScript%sDisable' %i)
 			if not foundUnassignedScript:
 				foundUnassignedScript = not hasProp
@@ -3011,122 +3081,6 @@ class DrawCollidersPanel (bpy.types.Panel):
 			layout.operator('view3d.draw_colliders', text = 'Stop Visualizing', depress = True)
 		else:
 			layout.operator('view3d.draw_colliders', text = 'Visualize Colliders', depress = False)
-
-@bpy.utils.register_class
-class ConvertSelectedObjectsToCurves (bpy.types.Operator):
-	bl_idname = 'render.convert_to_curves'
-	bl_label = 'Convert Selected Objects To Curves'
-
-	@classmethod
-	def poll (cls, ctx):
-		return True
-
-	def execute (self, ctx):
-		scene = bpy.context.scene
-		world = bpy.data.worlds[0]
-		SCALE = world.exportScale
-		off = Vector(world.exportOff)
-		renderSettings = scene.render
-		imageSettings = renderSettings.image_settings
-		viewSettings = imageSettings.view_settings
-		prevRenderPath = renderSettings.filepath
-		prevTransparentFilm = renderSettings.film_transparent
-		prevExposure = viewSettings.exposure
-		prevGamma = viewSettings.gamma
-		prevRenderFormat = imageSettings.file_format
-		prevClrMode = imageSettings.color_mode
-		renderSettings.film_transparent = True
-		if len(bpy.data.lights) == 0:
-			imageSettings.color_management = 'OVERRIDE'
-			viewSettings.exposure = 32
-			viewSettings.gamma = 5
-		imageSettings.file_format = 'BMP'
-		imageSettings.color_mode = 'BW'
-		depsgraph = bpy.context.evaluated_depsgraph_get()
-		prevHideObsInRender = {}
-		for ob2 in bpy.data.objects:
-			prevHideObsInRender[ob2] = ob.hide_render
-			ob2.hide_render = ob != ob2
-		# renderResScale = renderSettings.resolution_percentage / 100
-		# minHitDists = {}
-		# cam = scene.camera
-		# camData = cam.data
-		# viewFrame = camData.view_frame(scene = scene)
-		# viewFrameTopLeft = viewFrame[0]
-		# viewFrameTopRight = viewFrame[1]
-		# viewFrameBottLeft = viewFrame[2]
-		# viewFrameXRange = viewFrameTopRight - viewFrameTopLeft
-		# viewFrameYRange = viewFrameBottLeft - viewFrameTopLeft
-		# camWorldMatrix = cam.matrix_world
-		# camPos = camWorldMatrix.translation
-		# renderResolutionX = int(renderSettings.resolution_x * renderResScale)
-		# renderResolutionY = int(renderSettings.resolution_y * renderResScale)
-		# for ob in bpy.context.selected_objects:
-		# 	bvhTree = bvhtree.BVHTree(ob, depsgraph, render = True)
-		# 	for x in range(renderResolutionX):
-		# 		for y in range(renderResolutionY):
-		# 			xNormalized = x / (renderResolutionX - 1)
-		# 			yNormalized = y / (renderResolutionY - 1)
-		# 			pointOnNearClipPlane = viewFrameTopLeft + viewFrameXRange * xNormalized + viewFrameYRange * yNormalized
-		# 			worldPointOnNearClipPlane = camWorldMatrix @ pointOnNearClipPlane
-		# 			rayDir = (worldPointOnNearClipPlane - camPos).normalized()
-		# 			hitDist = bvhTree.ray_cast(worldPointOnNearClipPlane, rayDir)[3]
-		# 			if hitDist:
-		# 				pass
-		for i, ob in enumerate(bpy.context.selected_objects):
-			renderSettings.filepath = os.path.join(TMP_DIR, 'Render' + str(i) + '.bmp')
-			renderPaths.append(renderSettings.filepath)
-			bpy.ops.render.render(write_still = True)
-		for ob in bpy.context.selected_objects:
-			ob.hide_render = prevHideObsInRender[ob]
-		renderSettings.filepath = prevRenderPath
-		renderSettings.film_transparent = prevTransparentFilm
-		viewSettings.exposure = prevExposure
-		viewSettings.gamma = prevGamma
-		imageSettings.file_format = prevRenderFormat
-		imageSettings.color_mode = prevClrMode
-		cmd = [POTRACE_PATH, '-o ' + os.path.join(TMP_DIR, 'Render.svg'), '-s']
-		cmd += renderPaths
-		print(' '.join(cmd))
-		subprocess.check_call(cmd)
-		for i, ob in enumerate(bpy.context.selected_objects):
-			svgTxt = open(renderPaths[i].replace('.bmp', '.svg'), 'r').read()
-			# print('YAY' + str(i) + svgTxt)
-			# idxOfTrsStart = svgTxt.rfind('transform="')
-			# trsEndIndctr = '"'
-			# idxOfTrsEnd = svgTxt.find(trsEndIndctr, idxOfTrsStart) + len(trsEndIndctr)
-			# trs = svgTxt[idxOfTrsStart + len(idxOfTrsStart) : idxOfTrsEnd]
-			# min, max = GetRectMinMax(ob)
-			# pathDataIndctr = ' d="'
-			# idxOfPathDataStart = svgTxt.find(pathDataIndctr) + len(pathDataIndctr)
-			# idxOfPathDataEnd = svgTxt.find('"', idxOfPathDataStart)
-			# pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
-			# pathData = pathData[: 1] + ' ' + pathData[1 :]
-			# pathData = pathData[: -1]
-			# pathData = pathData.replace('.0', '')
-			# vectors = pathData.split(' ')
-			# pathData = []
-			# for vec in vectors:
-			# 	if len(vec) == 1:
-			# 		continue
-			# 	components = vec.split(' ')
-			# 	x = float(components[0])
-			# 	y = float(components[1])
-			# 	vec = ob.matrix_world @ Vector((x, y, 0))
-			# 	pathData.append(x)
-			# 	pathData.append(y)
-		return {'FINISHED'}
-
-@bpy.utils.register_class
-class ConvertToCurvesPanel (bpy.types.Panel):
-	bl_idname = 'RENDER_PT_Convert_To_Curves_Panel'
-	bl_label = 'Convert To Curves'
-	bl_space_type = 'PROPERTIES'
-	bl_region_type = 'WINDOW'
-	bl_context = 'render'
-
-	def draw (self, ctx):
-		self.layout.operator('render.convert_to_curves', icon = 'CONSOLE')
 
 classes = (
 	DrawColliders,
