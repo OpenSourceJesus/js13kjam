@@ -886,7 +886,7 @@ def RegisterPhysics (ob):
 			if attachColliderTo == []:
 				vars.append(colliderName + ' = None')
 				if ob.shapeType == 'ball':
-					collider = 'sim.AddBallCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, -ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density)
+					collider = colliderName + ' = sim.AddBallCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, -ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density)
 				elif ob.shapeType == 'halfspace':
 					collider = colliderName + ' = sim.AddHalfspaceCollider(' + str(ob.colliderEnable) + ', ' + str([ob.location.x, -ob.location.y]) + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density)
 				elif ob.shapeType == 'cuboid':
@@ -1216,6 +1216,18 @@ buildInfo = {
 PYTHON = '''from python import math, pygame, typing, PyRapier2d
 from typing import List
 
+def multiply (v, f) -> List[float]:
+	return [v[0] * f, v[1] * f]
+
+def divide (v, f) -> List[float]:
+	return [v[0] / f, v[1] / f]
+
+def magnitude (v) -> float:
+	return math.sqrt(v[0] * v[0] + v[1] * v[1])
+
+def normalize (v) -> List[float]:
+	return divide(v, magnitude(v))
+
 # Vars
 # Physics Section Start
 sim = PyRapier2d.Simulation()
@@ -1263,18 +1275,6 @@ class Game:
 		screen.fill((0, 0, 0))
 # Render
 		pygame.display.flip()
-
-def multiply (v, f) -> List[float]:
-	return [v[0] * f, v[1] * f]
-
-def divide (v, f) -> List[float]:
-	return [v[0] / f, v[1] / f]
-
-def magnitude (v) -> float:
-	return math.sqrt(v[0] * v[0] + v[1] * v[1])
-
-def normalize (v) -> List[float]:
-	return divide(v, magnitude(v))
 
 pygame.init()
 screen = pygame.display.set_mode((800, 600), pygame.FULLSCREEN)
