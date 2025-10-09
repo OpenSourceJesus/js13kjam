@@ -101,9 +101,9 @@ def GetScripts (ob, isAPI : bool):
 		txt = getattr(ob, type + 'Script%s' %i)
 		if txt:
 			if isAPI:
-				scripts.append((txt.as_string(), getattr(ob, 'scriptType%s' %i)))
+				scripts.append((txt.as_string(), getattr(ob, 'apiScriptType%s' %i)))
 			else:
-				scripts.append((txt.as_string(), getattr(ob, 'initScript%s' %i), getattr(ob, 'scriptType%s' %i)))
+				scripts.append((txt.as_string(), getattr(ob, 'initScript%s' %i), getattr(ob, 'runtimeScriptType%s' %i)))
 	return scripts
 
 def TryChangeToInt (f : float):
@@ -1213,7 +1213,8 @@ buildInfo = {
 	'js-gz-size' : None,
 }
 
-PYTHON = '''from python import pygame, PyRapier2d
+PYTHON = '''from python import math, pygame, typing, PyRapier2d
+from typing import List
 
 # Vars
 # Physics Section Start
@@ -1247,6 +1248,7 @@ class Game:
 				self.running = False
 
 	def update (self):
+		global off
 # Update
 # Physics Section Start
 		sim.step ()
@@ -1261,6 +1263,18 @@ class Game:
 		screen.fill((0, 0, 0))
 # Render
 		pygame.display.flip()
+
+def multiply (v, f) -> List[float]:
+	return [v[0] * f, v[1] * f]
+
+def divide (v, f) -> List[float]:
+	return [v[0] / f, v[1] / f]
+
+def magnitude (v) -> float:
+	return math.sqrt(v[0] * v[0] + v[1] * v[1])
+
+def normalize (v) -> List[float]:
+	return divide(v, magnitude(v))
 
 pygame.init()
 screen = pygame.display.set_mode((800, 600), pygame.FULLSCREEN)
@@ -2459,6 +2473,11 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 	)
 	setattr(
 		bpy.types.Object,
+		'apiScriptType%s' %i,
+		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'apiScriptType%s' %i))
+	)
+	setattr(
+		bpy.types.Object,
 		'runtimeScript%sDisable' %i,
 		bpy.props.BoolProperty(name = 'Disable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScript%sDisable' %i))
 	)
@@ -2469,8 +2488,8 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 	)
 	setattr(
 		bpy.types.Object,
-		'scriptType%s' %i,
-		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scriptType%s' %i))
+		'runtimeScriptType%s' %i,
+		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScriptType%s' %i))
 	)
 for i in range(MAX_SHAPE_POINTS):
 	setattr(
@@ -2796,7 +2815,7 @@ class ObjectPanel (bpy.types.Panel):
 			if hasProp or not foundUnassignedScript:
 				row = self.layout.row()
 				row.prop(ob, 'apiScript%s' %i)
-				row.prop(ob, 'scriptType%s' %i)
+				row.prop(ob, 'apiScriptType%s' %i)
 				row.prop(ob, 'apiScript%sDisable' %i)
 			if not foundUnassignedScript:
 				foundUnassignedScript = not hasProp
@@ -2807,7 +2826,7 @@ class ObjectPanel (bpy.types.Panel):
 				row = self.layout.row()
 				row.prop(ob, 'runtimeScript%s' %i)
 				row.prop(ob, 'initScript%s' %i)
-				row.prop(ob, 'scriptType%s' %i)
+				row.prop(ob, 'runtimeScriptType%s' %i)
 				row.prop(ob, 'runtimeScript%sDisable' %i)
 			if not foundUnassignedScript:
 				foundUnassignedScript = not hasProp
