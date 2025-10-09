@@ -625,15 +625,15 @@ def ExportObject (ob):
 		svgsDatas[ob.name] = svgTxt
 	elif ob.type == 'EMPTY':
 		if ob.empty_display_type == 'IMAGE':
+			size = ob.scale * ob.empty_display_size
+			pos = GetImagePosition(ob)
+			if HandleCopyObject(ob, pos):
+				return
 			obData = ob.data
 			imgName = GetFileName(obData.filepath)
 			imgPath = TMP_DIR + '/' + imgName
 			prevRotMode = ob.rotation_mode
 			ob.rotation_mode = 'XYZ'
-			size = ob.scale * ob.empty_display_size
-			pos = ob.location.copy()
-			pos += size * Vector((ob.empty_image_offset[0], ob.empty_image_offset[1] + 1, 0))
-			pos.y *= -1
 			img = ''
 			if exportType == 'html':
 				img = '<img id="' + ob.name + '" src="' + imgName + '" width=' + str(size[0]) + ' height=' + str(size[1]) + ' style="z-index:' + str(round(ob.location.z)) + ';position:absolute;transform:translate(' + str(TryChangeToInt(pos.x)) + 'px,' + str(TryChangeToInt(pos.y)) + 'px)'
@@ -650,7 +650,7 @@ def ExportObject (ob):
 					size.x *= imgSize.x / imgSize.y
 				else:
 					size.y *= imgSize.y / imgSize.x
-				AddImageDataForExe (ob, imgPath, pos, size)
+				imgs[ob.name] = AddImageDataForExe(ob, imgPath, pos, size)
 			ob.rotation_mode = prevRotMode
 			ob.data.save(filepath = imgPath)
 			imgsPaths.append(imgPath)
@@ -1096,33 +1096,55 @@ def AddImageDataForExe (ob, imgPath, pos, size):
 	surface = GetVarNameForObject(ob)
 	surfaceRect = surface + 'Rect'
 	img = '		pos = ' + surfaceRect + '.topleft\n		screen.blit(' + surface + ', (pos[0] - off[0], pos[1] - off[1]))'
-	imgs[ob.name] = img
 	initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
 	vars.append(surface + ' = None')
 	vars.append(surfaceRect + ' = None')
+	return img
+
+def GetImagePosition (ob):
+	size = ob.scale * ob.empty_display_size
+	pos = ob.location.copy()
+	pos += size * Vector((ob.empty_image_offset[0], ob.empty_image_offset[1] + 1, 0))
+	pos.y *= -1
+	return pos
 
 def HandleCopyObject (ob, pos):
-	try:
-		for exportedOb in exportedObs:
-			idxOfPeriod = ob.name.find('.')
-			if idxOfPeriod == -1:
-				obNameWithoutPeriod = ob.name
-			else:
-				obNameWithoutPeriod = ob.name[: idxOfPeriod]
-			idxOfPeriod = exportedOb.name.find('.')
-			if idxOfPeriod == -1:
-				exportedObNameWithoutPeriod = exportedOb.name
-			else:
-				exportedObNameWithoutPeriod = exportedOb.name[: idxOfPeriod]
-			if obNameWithoutPeriod == exportedObNameWithoutPeriod:
-				prevRotMode = ob.rotation_mode
-				ob.rotation_mode = 'XYZ'
-				datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1]), TryChangeToInt(math.degrees(ob.rotation_euler.z)), GetAttributes(ob)])
-				exportedObs.append(ob)
-				ob.rotation_mode = prevRotMode
-				return True
-	except:
+	if IsCopiedObject(ob):
+		if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE':
+			if exportType == 'exe':
+				idxOfPeriod = ob.name.find('.')
+				if idxOfPeriod == -1:
+					obNameWithoutPeriod = ob.name
+				else:
+					obNameWithoutPeriod = ob.name[: idxOfPeriod]
+				origOb = bpy.data.objects[obNameWithoutPeriod]
+				imgName = GetFileName(origOb.data.filepath)
+				imgPath = TMP_DIR + '/' + imgName
+				imgsPaths.append(imgPath)
+				AddImageDataForExe (ob, imgPath, GetImagePosition(origOb), ob.scale * ob.empty_display_size)
+		prevRotMode = ob.rotation_mode
+		ob.rotation_mode = 'XYZ'
+		datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1]), TryChangeToInt(math.degrees(ob.rotation_euler.z)), GetAttributes(ob)])
+		exportedObs.append(ob)
+		ob.rotation_mode = prevRotMode
+		return True
+	else:
 		return False
+
+def IsCopiedObject (ob):
+	for exportedOb in exportedObs:
+		idxOfPeriod = ob.name.find('.')
+		if idxOfPeriod == -1:
+			obNameWithoutPeriod = ob.name
+		else:
+			obNameWithoutPeriod = ob.name[: idxOfPeriod]
+		idxOfPeriod = exportedOb.name.find('.')
+		if idxOfPeriod == -1:
+			exportedObNameWithoutPeriod = exportedOb.name
+		else:
+			exportedObNameWithoutPeriod = exportedOb.name[: idxOfPeriod]
+		if obNameWithoutPeriod == exportedObNameWithoutPeriod:
+			return True
 	return False
 
 def GetAttributes (ob):
