@@ -650,7 +650,7 @@ def ExportObject (ob):
 					size.x *= imgSize.x / imgSize.y
 				else:
 					size.y *= imgSize.y / imgSize.x
-				imgs[ob.name] = AddImageDataForExe(ob, imgPath, pos, size)
+				AddImageDataForExe (ob, imgPath, pos, size)
 			ob.rotation_mode = prevRotMode
 			ob.data.save(filepath = imgPath)
 			imgsPaths.append(imgPath)
@@ -1027,7 +1027,7 @@ def RenderCurve (*args):
 	pos.y *= -1
 	_min, _max = GetRectMinMax(ob)
 	size = _max - _min
-	imgs[ob.name] = AddImageDataForExe(ob, renderPath, pos, size)
+	AddImageDataForExe (ob, renderPath, pos, size)
 	scene.collection.objects.unlink(cam)
 	bpy.data.objects.remove(cam)
 
@@ -1095,11 +1095,9 @@ def RenderMesh (*args):
 def AddImageDataForExe (ob, imgPath, pos, size):
 	surface = GetVarNameForObject(ob)
 	surfaceRect = surface + 'Rect'
-	img = '		pos = ' + surfaceRect + '.topleft\n		screen.blit(' + surface + ', (pos[0] - off[0], pos[1] - off[1]))'
-	initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
+	initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
 	vars.append(surface + ' = None')
 	vars.append(surfaceRect + ' = None')
-	return img
 
 def GetImagePosition (ob):
 	size = ob.scale * ob.empty_display_size
@@ -1216,6 +1214,18 @@ buildInfo = {
 PYTHON = '''from python import math, pygame, typing, PyRapier2d
 from typing import List
 
+# Physics Section Start
+sim = PyRapier2d.Simulation()
+rigidBodiesIds = {}
+collidersIds = {}
+jointsIds = {}
+# Physics Section End
+surfaces = {}
+surfacesRects = {}
+screen = None
+windowSize = None
+off = [0.0, 0.0]
+
 def multiply (v, f) -> List[float]:
 	return [v[0] * f, v[1] * f]
 
@@ -1228,17 +1238,15 @@ def magnitude (v) -> float:
 def normalize (v) -> List[float]:
 	return divide(v, magnitude(v))
 
+def copy_surface (name, newName, rect, rot):
+	surfaces[newName] = surfaces[name].copy()
+	surfacesRects[newName] = rect
+	if name + 'RigidBody' in rigidBodiesIds:
+		rigidBodiesIds[newName + 'RigidBody'] = sim.CopyRigidBody(rigidBodiesIds[name + 'RigidBody'], rect.topleft, rot)
+	elif name + 'Collider' in collidersIds:
+		collidersIds[newName + 'Collider'] = sim.CopyCollider(collidersIds[name + 'Collider'], rect.topleft, rot)
+
 # Vars
-# Physics Section Start
-sim = PyRapier2d.Simulation()
-rigidBodiesIds = {}
-collidersIds = {}
-jointsIds = {}
-# Physics Section End
-surfacesRects = {}
-screen = None
-windowSize = None
-off = [0.0, 0.0]
 
 class Game:
 	def __init__ (self, title : str = 'Game'):
@@ -1273,7 +1281,9 @@ class Game:
 
 	def render (self):
 		screen.fill((0, 0, 0))
-# Render
+		for name, surface in surfaces.items():
+			pos = surfacesRects[name].topleft
+			screen.blit(surfaces[name], (pos[0] - off[0], pos[1] - off[1]))
 		pygame.display.flip()
 
 pygame.init()
@@ -1964,10 +1974,6 @@ def GenPython (world, datas, background = ''):
 			_updateScript += '		' + line + '\n'
 		updateCode[i] = _updateScript
 	python = python.replace('# Update', '\n'.join(updateCode))
-	renderCode = ''
-	for img in imgs.values():
-		renderCode += img + '\n'
-	python = python.replace('# Render', renderCode)
 	buildInfo['exe-size'] = len(python)
 	return python
 
@@ -2791,7 +2797,7 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'minPosFrame')
 			self.layout.prop(ob, 'maxPosFrame')
 			self.layout.prop(ob, 'posPingPong')
-		self.layout.prop(ob, 'resPercent')
+			self.layout.prop(ob, 'resPercent')
 		if ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
 			for i in range(MAX_POTRACE_PASSES_PER_OBJECT_MAT):
 				row = self.layout.row()
