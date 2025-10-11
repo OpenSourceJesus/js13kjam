@@ -1168,7 +1168,8 @@ def GetPathDelta (fromPathData, toPathData):
 	return output
 
 def GetBlenderData ():
-	global datas, clrs, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, rigidBodies, colliders, joints, charControllers
+	global vars, datas, clrs, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, rigidBodies, colliders, joints, charControllers
+	vars = []
 	exportedObs = []
 	apiCode = ''
 	datas = []
@@ -1238,13 +1239,13 @@ def magnitude (v) -> float:
 def normalize (v) -> List[float]:
 	return divide(v, magnitude(v))
 
-def copy_surface (name, newName, rect, rot):
+def copy_surface (name, newName, pos, rot, wakeUp = True):
 	surfaces[newName] = surfaces[name].copy()
-	surfacesRects[newName] = rect
-	if name + 'RigidBody' in rigidBodiesIds:
-		rigidBodiesIds[newName + 'RigidBody'] = sim.CopyRigidBody(rigidBodiesIds[name + 'RigidBody'], rect.topleft, rot)
-	elif name + 'Collider' in collidersIds:
-		collidersIds[newName + 'Collider'] = sim.CopyCollider(collidersIds[name + 'Collider'], rect.topleft, rot)
+	surfacesRects[newName] = surfacesRects[name].copy()
+	if name in rigidBodiesIds:
+		rigidBodiesIds[newName] = sim.CopyRigidBody(rigidBodiesIds[name], pos, rot, wakeUp)
+	elif name in collidersIds:
+		collidersIds[newName] = sim.CopyCollider(collidersIds[name], pos, rot, wakeUp)
 
 # Vars
 
