@@ -1247,6 +1247,17 @@ def copy_surface (name, newName, pos, rot, wakeUp = True):
 	elif name in collidersIds:
 		collidersIds[newName] = sim.CopyCollider(collidersIds[name], pos, rot, wakeUp)
 
+def remove_surface (name):
+	del surfaces[name]
+	del surfacesRects[name]
+	if name in rigidBodiesIds:
+		del rigidBodiesIds[name]
+	elif name in collidersIds:
+		del collidersIds[name]
+
+def ang_to_dir (ang) -> List[float]:
+	return [float(math.cos(ang)), float(math.sin(ang))]
+
 # Vars
 
 class Game:
