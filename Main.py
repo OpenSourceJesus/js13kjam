@@ -653,7 +653,8 @@ def ExportObject (ob):
 				AddImageDataForExe (ob, imgPath, pos, size)
 			ob.rotation_mode = prevRotMode
 			ob.data.save(filepath = imgPath)
-			imgsPaths.append(imgPath)
+			if imgPath not in imgsPaths:
+				imgsPaths.append(imgPath)
 		else:
 			childrenNames = []
 			for child in ob.children:
@@ -1118,7 +1119,8 @@ def HandleCopyObject (ob, pos):
 				origOb = bpy.data.objects[obNameWithoutPeriod]
 				imgName = GetFileName(origOb.data.filepath)
 				imgPath = TMP_DIR + '/' + imgName
-				imgsPaths.append(imgPath)
+				if imgPath not in imgsPaths:
+					imgsPaths.append(imgPath)
 				AddImageDataForExe (ob, imgPath, GetImagePosition(origOb), ob.scale * ob.empty_display_size)
 		prevRotMode = ob.rotation_mode
 		ob.rotation_mode = 'XYZ'
