@@ -1297,7 +1297,7 @@ class Game:
 # Physics Section End
 
 	def render (self):
-		screen.fill((0, 0, 0))
+# Background
 		for name, surface in surfaces.items():
 			pos = surfacesRects[name].topleft
 			if name in rigidBodiesIds:
@@ -1976,6 +1976,7 @@ def GenPython (world, datas, background = ''):
 			idxOfPhysicsSectionEnd = python.find(physicsSectionEndIndctr) + len(physicsSectionEndIndctr)
 			python = python[: idxOfPhysicsSectionStart] + python[idxOfPhysicsSectionEnd :]
 	python = python.replace('# API', apiCode)
+	python = python.replace('# API', apiCode)
 	python = python.replace('# Vars', '\n'.join(vars))
 	gravity = [0, 0]
 	if bpy.context.scene.use_gravity:
@@ -1995,6 +1996,7 @@ def GenPython (world, datas, background = ''):
 			_updateScript += '		' + line + '\n'
 		updateCode[i] = _updateScript
 	python = python.replace('# Update', '\n'.join(updateCode))
+	python = python.replace('# Background', '		screen.fill(' + str(Multiply(list(world.color), [255] * 3)) + ')')
 	buildInfo['exe-size'] = len(python)
 	return python
 
