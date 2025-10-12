@@ -1095,7 +1095,7 @@ def RenderMesh (*args):
 def AddImageDataForExe (ob, imgPath, pos, size):
 	surface = GetVarNameForObject(ob)
 	surfaceRect = surface + 'Rect'
-	initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
+	initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\ninitRots["' + surface + '"] = ' + str(math.degrees(ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
 	vars.append(surface + ' = None')
 	vars.append(surfaceRect + ' = None')
 
@@ -1223,6 +1223,7 @@ jointsIds = {}
 # Physics Section End
 surfaces = {}
 surfacesRects = {}
+initRots = {}
 screen = None
 windowSize = None
 off = [0.0, 0.0]
@@ -1240,8 +1241,11 @@ def normalize (v) -> List[float]:
 	return divide(v, magnitude(v))
 
 def copy_surface (name, newName, pos, rot, wakeUp = True):
-	surfaces[newName] = surfaces[name].copy()
+	surface = surfaces[name].copy()
 	surfacesRects[newName] = surfacesRects[name].copy()
+	surface = pygame.transform.rotate(surface, rot)
+	surfaces[newName] = surface
+	initRots[newName] = rot
 	if name in rigidBodiesIds:
 		rigidBodiesIds[newName] = sim.CopyRigidBody(rigidBodiesIds[name], pos, rot, wakeUp)
 	elif name in collidersIds:
@@ -1250,6 +1254,7 @@ def copy_surface (name, newName, pos, rot, wakeUp = True):
 def remove_surface (name):
 	del surfaces[name]
 	del surfacesRects[name]
+	del initRots[name]
 	if name in rigidBodiesIds:
 		del rigidBodiesIds[name]
 	elif name in collidersIds:
@@ -1295,11 +1300,15 @@ class Game:
 		screen.fill((0, 0, 0))
 		for name, surface in surfaces.items():
 			pos = surfacesRects[name].topleft
-			screen.blit(surfaces[name], (pos[0] - off[0], pos[1] - off[1]))
+			if name in rigidBodiesIds:
+				rot = sim.GetRotation(rigidBodiesIds[name])
+				surface = pygame.transform.rotate(surface, rot - initRots[name])
+				initRots[name] = rot
+			screen.blit(surface.copy(), (pos[0] - off[0], pos[1] - off[1]))
 		pygame.display.flip()
 
 pygame.init()
-screen = pygame.display.set_mode((800, 600), pygame.FULLSCREEN)
+screen = pygame.display.set_mode(flags=pygame.FULLSCREEN)
 windowSize = pygame.display.get_window_size()
 # API
 # Init
