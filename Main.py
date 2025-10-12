@@ -1238,11 +1238,23 @@ windowSize = None
 # Attributes
 off = [0.0, 0.0]
 
+def add (v, v2) -> List[float]:
+	_v = [float(v[0]), float(v[1])]
+	_v2 = [float(v2[0]), float(v2[1])]
+	return [_v[0] + _v2[0], _v[1] + _v2[1]]
+
+def subtract (v, v2) -> List[float]:
+	_v = [float(v[0]), float(v[1])]
+	_v2 = [float(v2[0]), float(v2[1])]
+	return [_v[0] - _v2[0], _v[1] - _v2[1]]
+
 def multiply (v, f) -> List[float]:
-	return [v[0] * f, v[1] * f]
+	_v = [float(v[0]), float(v[1])]
+	return [_v[0] * f, _v[1] * f]
 
 def divide (v, f) -> List[float]:
-	return [v[0] / f, v[1] / f]
+	_v = [float(v[0]), float(v[1])]
+	return [_v[0] / f, _v[1] / f]
 
 def magnitude (v) -> float:
 	return math.sqrt(v[0] * v[0] + v[1] * v[1])
@@ -1271,6 +1283,7 @@ def remove_surface (name):
 		del collidersIds[name]
 
 def ang_to_dir (ang) -> List[float]:
+	ang = math.radians(ang)
 	return [float(math.cos(ang)), float(math.sin(ang))]
 
 # Vars
@@ -1301,7 +1314,7 @@ class Game:
 		sim.step ()
 		for name, rigidBodyId in rigidBodiesIds.items():
 			if name in surfacesRects:
-				pos = sim.GetPosition(rigidBodyId)
+				pos = sim.GetRigidBodyPosition(rigidBodyId)
 				size = surfacesRects[name].size
 				surfacesRects[name].update(pos[0] - size[0] / 2, pos[1] - size[1] / 2, size[0], size[1])
 # Physics Section End
@@ -1311,9 +1324,8 @@ class Game:
 		for name, surface in surfaces.items():
 			pos = surfacesRects[name].topleft
 			if name in rigidBodiesIds:
-				rot = sim.GetRotation(rigidBodiesIds[name])
+				rot = sim.GetRigidBodyRotation(rigidBodiesIds[name])
 				surface = pygame.transform.rotate(surface, rot - initRots[name])
-				initRots[name] = rot
 			screen.blit(surface.copy(), (pos[0] - off[0], pos[1] - off[1]))
 		pygame.display.flip()
 
