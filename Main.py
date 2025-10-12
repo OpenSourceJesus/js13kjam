@@ -255,11 +255,17 @@ apiCode = ''
 svgsDatas = {}
 exportType = None
 vars = []
+attributes = {}
 
 def ExportObject (ob):
 	global svgsDatas
 	if ob.hide_get() or ob in exportedObs:
 		return
+	_attributes = GetAttributes(ob)
+	if _attributes != {}:
+		for key, value in _attributes.items():
+			_attributes[key] = str(value)
+		attributes[GetVarNameForObject(ob)] = _attributes
 	RegisterPhysics (ob)
 	world = bpy.data.worlds[0]
 	SCALE = world.exportScale
@@ -1170,8 +1176,9 @@ def GetPathDelta (fromPathData, toPathData):
 	return output
 
 def GetBlenderData ():
-	global vars, datas, clrs, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, rigidBodies, colliders, joints, charControllers
+	global vars, datas, clrs, joints, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, rigidBodies, colliders, attributes, charControllers
 	vars = []
+	attributes = {}
 	exportedObs = []
 	apiCode = ''
 	datas = []
@@ -1228,6 +1235,7 @@ surfacesRects = {}
 initRots = {}
 screen = None
 windowSize = None
+# Attributes
 off = [0.0, 0.0]
 
 def multiply (v, f) -> List[float]:
@@ -1978,8 +1986,8 @@ def GenPython (world, datas, background = ''):
 			idxOfPhysicsSectionEnd = python.find(physicsSectionEndIndctr) + len(physicsSectionEndIndctr)
 			python = python[: idxOfPhysicsSectionStart] + python[idxOfPhysicsSectionEnd :]
 	python = python.replace('# API', apiCode)
-	python = python.replace('# API', apiCode)
 	python = python.replace('# Vars', '\n'.join(vars))
+	python = python.replace('# Attributes', 'attributes = ' + str(attributes))
 	gravity = [0, 0]
 	if bpy.context.scene.use_gravity:
 		gravity = list(bpy.context.scene.gravity)
