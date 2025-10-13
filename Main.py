@@ -256,16 +256,19 @@ svgsDatas = {}
 exportType = None
 vars = []
 attributes = {}
+pivots = {}
 
 def ExportObject (ob):
 	global svgsDatas
 	if ob.hide_get() or ob in exportedObs:
 		return
+	obVarName = GetVarNameForObject(ob)
 	_attributes = GetAttributes(ob)
 	if _attributes != {}:
 		for key, value in _attributes.items():
 			_attributes[key] = str(value)
-		attributes[GetVarNameForObject(ob)] = _attributes
+		attributes[obVarName] = _attributes
+	pivots[obVarName] = list(ob.origin)
 	RegisterPhysics (ob)
 	world = bpy.data.worlds[0]
 	SCALE = world.exportScale
@@ -1102,7 +1105,7 @@ def RenderMesh (*args):
 def AddImageDataForExe (ob, imgPath, pos, size):
 	surface = GetVarNameForObject(ob)
 	surfaceRect = surface + 'Rect'
-	initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) +  ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(ob.rotation_euler.z)) +')\ninitRots["' + surface + '"] = ' + str(math.degrees(ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
+	initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\ninitRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
 	vars.append(surface + ' = None')
 	vars.append(surfaceRect + ' = None')
 
@@ -1176,9 +1179,10 @@ def GetPathDelta (fromPathData, toPathData):
 	return output
 
 def GetBlenderData ():
-	global vars, datas, clrs, joints, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, rigidBodies, colliders, attributes, charControllers
+	global vars, clrs, datas, joints, pivots, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, rigidBodies, colliders, attributes, charControllers
 	vars = []
 	attributes = {}
+	pivots = {}
 	exportedObs = []
 	apiCode = ''
 	datas = []
@@ -1235,6 +1239,7 @@ surfacesRects = {}
 initRots = {}
 screen = None
 windowSize = None
+# Pivots
 # Attributes
 off = [0.0, 0.0]
 
@@ -1268,6 +1273,7 @@ def copy_surface (name, newName, pos, rot, wakeUp = True):
 	surface = pygame.transform.rotate(surface, rot)
 	surfaces[newName] = surface
 	initRots[newName] = rot
+	pivots[newName] = pivots[name]
 	if name in rigidBodiesIds:
 		rigidBodiesIds[newName] = sim.CopyRigidBody(rigidBodiesIds[name], pos, rot, wakeUp)
 	elif name in collidersIds:
@@ -1277,6 +1283,7 @@ def remove_surface (name):
 	del surfaces[name]
 	del surfacesRects[name]
 	del initRots[name]
+	del pivots[name]
 	if name in rigidBodiesIds:
 		del rigidBodiesIds[name]
 	elif name in collidersIds:
@@ -1324,7 +1331,12 @@ class Game:
 		for name, surface in surfaces.items():
 			pos = surfacesRects[name].topleft
 			if name in rigidBodiesIds:
-				rot = sim.GetRigidBodyRotation(rigidBodiesIds[name])
+				pivot = pivots[name]
+				rot = -sim.GetRigidBodyRotation(rigidBodiesIds[name])
+				width, height = surface.get_size()
+				pivotOff = pygame.math.Vector2(width * pivot[0] / 100.0, height * pivot[1] / 100.0)
+				rotatedPivotOff = pivotOff.rotate(rot)
+				pos -= rotatedPivotOff
 				surface = pygame.transform.rotate(surface, rot - initRots[name])
 			screen.blit(surface.copy(), (pos[0] - off[0], pos[1] - off[1]))
 		pygame.display.flip()
@@ -1999,6 +2011,7 @@ def GenPython (world, datas, background = ''):
 			python = python[: idxOfPhysicsSectionStart] + python[idxOfPhysicsSectionEnd :]
 	python = python.replace('# API', apiCode)
 	python = python.replace('# Vars', '\n'.join(vars))
+	python = python.replace('# Pivots', 'pivots = ' + str(pivots))
 	python = python.replace('# Attributes', 'attributes = ' + str(attributes))
 	gravity = [0, 0]
 	if bpy.context.scene.use_gravity:
@@ -2411,7 +2424,7 @@ bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if ou
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Unit length', min = 0, default = 1)
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundPosAndSize'))
-bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Origin', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'origin'))
+bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Pivot point', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'origin'))
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStroke'))
 bpy.types.Object.strokeWidth = bpy.props.FloatProperty(name = 'Stroke width', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeWidth'))
 bpy.types.Object.strokeClr = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, min = 0, max = 1, default = [0, 0, 0, 1])
@@ -2786,9 +2799,9 @@ class ObjectPanel (bpy.types.Panel):
 		ob = ctx.active_object
 		if not ob:
 			return
+		self.layout.prop(ob, 'origin')
 		if ob.type == 'CURVE' or ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
 			self.layout.prop(ob, 'roundPosAndSize')
-			self.layout.prop(ob, 'origin')
 			self.layout.prop(ob, 'useStroke')
 			if ob.useStroke:
 				self.layout.prop(ob, 'strokeWidth')
