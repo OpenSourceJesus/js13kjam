@@ -239,6 +239,7 @@ def GetObjectPosition (ob):
 	return Round(Vector((x, y)))
 
 DEFAULT_CLR = [0, 0, 0, 0]
+VISUALIZER_CLR = (0.2, 1.0, 0.2, 0.8)
 exportedObs = []
 datas = []
 clrs = {}
@@ -268,7 +269,7 @@ def ExportObject (ob):
 		for key, value in _attributes.items():
 			_attributes[key] = str(value)
 		attributes[obVarName] = _attributes
-	pivots[obVarName] = list(ob.origin)
+	pivots[obVarName] = list(ob.pivot)
 	RegisterPhysics (ob)
 	world = bpy.data.worlds[0]
 	SCALE = world.exportScale
@@ -432,8 +433,8 @@ def ExportObject (ob):
 					data.append(TryChangeToInt(ob.scaleHaltDurAtMin * int(ob.useScale)))
 					data.append(TryChangeToInt(ob.scaleHaltDurAtMax * int(ob.useScale)))
 					data.append(ob.scalePingPong)
-					data.append(TryChangeToInt(ob.origin[0]))
-					data.append(TryChangeToInt(ob.origin[1]))
+					data.append(TryChangeToInt(ob.pivot[0]))
+					data.append(TryChangeToInt(ob.pivot[1]))
 					data.append(TryChangeToInt(ob.fillHatchDensity[0] * int(ob.useFillHatch[0])))
 					data.append(TryChangeToInt(ob.fillHatchDensity[1] * int(ob.useFillHatch[1])))
 					data.append(TryChangeToInt(ob.fillHatchRandDensity[0] / 100 * int(ob.useFillHatch[0])))
@@ -1241,7 +1242,7 @@ screen = None
 windowSize = None
 # Pivots
 # Attributes
-off = [0.0, 0.0]
+off = pygame.math.Vector2()
 
 def add (v, v2) -> List[float]:
 	_v = [float(v[0]), float(v[1])]
@@ -1293,6 +1294,12 @@ def ang_to_dir (ang) -> List[float]:
 	ang = math.radians(ang)
 	return [float(math.cos(ang)), float(math.sin(ang))]
 
+def rotate (surface, rot, pivot, offset):
+	rotatedSurface = pygame.transform.rotate(surface, -rot)
+	rotatedOff = offset.rotate(rot)
+	rect = rotatedSurface.get_rect(center = pivot + rotatedOff)
+	return rotatedSurface, rect
+
 # Vars
 
 class Game:
@@ -1329,20 +1336,22 @@ class Game:
 	def render (self):
 # Background
 		for name, surface in surfaces.items():
-			pos = surfacesRects[name].topleft
 			if name in rigidBodiesIds:
-				pivot = pivots[name]
-				rot = -sim.GetRigidBodyRotation(rigidBodiesIds[name])
-				width, height = surface.get_size()
-				pivotOff = pygame.math.Vector2(width * pivot[0] / 100.0, height * pivot[1] / 100.0)
-				rotatedPivotOff = pivotOff.rotate(rot)
-				pos -= rotatedPivotOff
-				surface = pygame.transform.rotate(surface, rot - initRots[name])
-			screen.blit(surface.copy(), (pos[0] - off[0], pos[1] - off[1]))
+				rigidBody = rigidBodiesIds[name]
+				pos = sim.GetRigidBodyPosition(rigidBody)
+				rot = sim.GetRigidBodyRotation(rigidBody)
+				pivot = pygame.math.Vector2(pos[0], pos[1])
+				origRect = surface.get_rect()
+				offset = pygame.math.Vector2(pivots[name][0] - origRect.width / 2, pivots[name][1] - origRect.height / 2)
+				rotatedSurface, rotatedRect = rotate(surface, rot + initRots[name], pivot, offset)
+				screen.blit(rotatedSurface, (rotatedRect.left - off.x, rotatedRect.top - off.y))
+			else:
+				pos = surfacesRects[name].topleft
+				screen.blit(surface.copy(), (pos[0] - off.x, pos[1] - off.y))
 		pygame.display.flip()
 
 pygame.init()
-screen = pygame.display.set_mode(flags=pygame.FULLSCREEN)
+screen = pygame.display.set_mode(flags = pygame.FULLSCREEN)
 windowSize = pygame.display.get_window_size()
 # API
 # Init
@@ -1618,7 +1627,7 @@ class api
 		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ', ' + clr[1] + ', ' + clr[2] + ', ' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ', ' + clr2[1] + ', ' + clr2[2] + ', ' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ', ' + clr3[1] + ', ' + clr3[2] + ', ' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, attributes, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, origin, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
+	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, attributes, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, pivot, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
 	{
 		var fillClrTxt = 'rgb(' + fillClr[0] + ' ' + fillClr[1] + ' ' + fillClr[2] + ')';
 		var lineClrTxt = 'rgb(' + lineClr[0] + ' ' + lineClr[1] + ' ' + lineClr[2] + ')';
@@ -1627,7 +1636,7 @@ class api
 		svg.setAttribute('fill-opacity', fillClr[3] / 255);
 		svg.id = id;
 		svg.style = 'z-index:' + zIdx + ';position:absolute';
-		svg.setAttribute('transform-origin', origin[0] + '% ' + origin[1] + '%');
+		svg.setAttribute('transform-pivot', pivot[0] + '% ' + pivot[1] + '%');
 		svg.setAttribute('x', pos[0]);
 		svg.setAttribute('y', pos[1]);
 		svg.setAttribute('width', size[0]);
@@ -1785,21 +1794,21 @@ class api
 		{
 			svg = $.copy_node(id, '~' + id, pos);
 			svg.setAttribute('transform', trs + 'scale(-1,1)');
-			svg.setAttribute('transform-origin', 50 - (origin[0] - 50) + '% ' + origin[1] + '%');
+			svg.setAttribute('transform-origin', 50 - (pivot[0] - 50) + '% ' + pivot[1] + '%');
 		}
 		if (mirrorY)
 		{
 			svg = $.copy_node(id, '`' + id, pos);
 			svg.setAttribute('transform', trs + 'scale(1,-1)');
-			svg.setAttribute('transform-origin', origin[0] + '% ' + (50 - (origin[1] - 50)) + '%');
+			svg.setAttribute('transform-origin', pivot[0] + '% ' + (50 - (pivot[1] - 50)) + '%');
 		}
 		var pathRect = svg.children[svg.children.length - 1].getBoundingClientRect();
 		for (var i = svg.children.length - 2; i >= 0; i --)
 		{
 			var child = svg.children[i];
 			var childRect = child.getBoundingClientRect();
-			var pathAnchor = [lerp(pathRect.x, pathRect.right, origin[0] / 100), lerp(pathRect.y, pathRect.bottom, origin[1] / 100)];
-			var childAnchor = [lerp(childRect.x, childRect.right, origin[0] / 100), lerp(childRect.y, childRect.bottom, origin[1] / 100)];
+			var pathAnchor = [lerp(pathRect.x, pathRect.right, pivot[0] / 100), lerp(pathRect.y, pathRect.bottom, pivot[1] / 100)];
+			var childAnchor = [lerp(childRect.x, childRect.right, pivot[0] / 100), lerp(childRect.y, childRect.bottom, pivot[1] / 100)];
 			child.setAttribute('transform', 'translate(' + (pathAnchor[0] - childAnchor[0]) + ', ' + (pathAnchor[1] - childAnchor[1]) + ')');
 			pathRect = childRect;
 		}
@@ -2192,8 +2201,9 @@ def OnDrawColliders (self, ctx):
 	gpu.state.line_width_set(2)
 	shader = gpu.shader.from_builtin('UNIFORM_COLOR')
 	shader.bind()
+	shader.uniform_float('color', VISUALIZER_CLR)
 	for ob in self.objects:
-		if not ob.colliderExists:
+		if not ob or not ob.colliderExists:
 			continue
 		matrix = ob.matrix_world
 		pos = matrix.to_translation()
@@ -2201,8 +2211,6 @@ def OnDrawColliders (self, ctx):
 		rot.x = 0
 		rot.y = 0
 		matrix = Matrix.LocRotScale(pos, rot, Vector((1, 1, 1)))
-		clr = (0.2, 1.0, 0.2, 0.8)
-		shader.uniform_float('color', clr)
 		if ob.shapeType == 'ball':
 			radius = ob.radius
 			segments = 32
@@ -2365,6 +2373,41 @@ def OnDrawColliders (self, ctx):
 		# 	batch.draw(shader)
 	gpu.state.blend_set('NONE')
 
+def OnDrawPivots (self, ctx):
+	gpu.state.blend_set('ALPHA')
+	gpu.state.line_width_set(2)
+	shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+	shader.bind()
+	shader.uniform_float('color', VISUALIZER_CLR)
+	for ob in self.objects:
+		prevRotMode = ob.rotation_mode
+		ob.rotation_mode = 'XYZ'
+		matrix = Matrix.LocRotScale(Vector((0, 0, 0)), ob.rotation_euler, Vector((1, 1, 1)))
+		if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE':
+			size = ob.scale * ob.empty_display_size
+			imgSize = Vector(list(ob.data.size) + [0])
+			if imgSize.x > imgSize.y:
+				size.x *= imgSize.x / imgSize.y
+			else:
+				size.y *= imgSize.y / imgSize.x
+			_min = ob.location - size / 2
+			_max = ob.location + size / 2
+		else:
+			_min, _max = GetRectMinMax(ob)
+			size = _max - _min
+		pivot = Vector(list(ob.pivot) + [0]) / 100
+		pivot = _min + size * pivot
+		pnt = matrix @ (pivot + Vector((-1, 0, 0)))
+		pnt2 = matrix @ (pivot + Vector((1, 0, 0)))
+		batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
+		batch.draw(shader)
+		pnt = matrix @ (pivot + Vector((0, -1, 0)))
+		pnt2 = matrix @ (pivot + Vector((0, 1, 0)))
+		batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
+		batch.draw(shader)
+		ob.rotation_mode = prevRotMode
+	gpu.state.blend_set('NONE')
+
 canUpdateProps = True
 def OnUpdateProperty (self, ctx, propName):
 	global canUpdateProps
@@ -2424,7 +2467,7 @@ bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if ou
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Unit length', min = 0, default = 1)
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundPosAndSize'))
-bpy.types.Object.origin = bpy.props.FloatVectorProperty(name = 'Pivot point', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'origin'))
+bpy.types.Object.pivot = bpy.props.FloatVectorProperty(name = 'Pivot point', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'pivot'))
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStroke'))
 bpy.types.Object.strokeWidth = bpy.props.FloatProperty(name = 'Stroke width', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeWidth'))
 bpy.types.Object.strokeClr = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, min = 0, max = 1, default = [0, 0, 0, 1])
@@ -2799,7 +2842,7 @@ class ObjectPanel (bpy.types.Panel):
 		ob = ctx.active_object
 		if not ob:
 			return
-		self.layout.prop(ob, 'origin')
+		self.layout.prop(ob, 'pivot')
 		if ob.type == 'CURVE' or ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
 			self.layout.prop(ob, 'roundPosAndSize')
 			self.layout.prop(ob, 'useStroke')
@@ -3173,9 +3216,45 @@ class DrawColliders (bpy.types.Operator):
 			self.report({'WARNING'}, 'View3D not found, cannot run operator')
 			return {'CANCELLED'}
 
-class DrawCollidersPanel (bpy.types.Panel):
-	bl_label = 'Collider Visualizer'
-	bl_idname = 'VIEW3D_PT_collider_visualizer'
+class DrawPivots (bpy.types.Operator):
+	bl_idname = 'view3d.draw_pivots'
+	bl_label = 'Draw Pivots'
+	handle = None
+	isRunning = False
+
+	def modal (self, ctx, event):
+		if not DrawPivots.isRunning:
+			bpy.types.SpaceView3D.draw_handler_remove(DrawPivots.handle, 'WINDOW')
+			DrawPivots.handle = None
+			ctx.area.tag_redraw()
+			return {'CANCELLED'}
+		ctx.area.tag_redraw()
+		if event.type in {'RIGHTMOUSE', 'ESC'}:
+			DrawPivots.isRunning = False
+			return {'PASS_THROUGH'}
+		return {'PASS_THROUGH'}
+
+	def invoke (self, ctx, event):
+		if ctx.area.type == 'VIEW_3D':
+			if DrawPivots.handle:
+				DrawPivots.isRunning = False
+				return {'FINISHED'}
+			self.objects = ctx.selected_objects
+			if not self.objects:
+				self.report({'INFO'}, 'No objects selected.')
+				return {'CANCELLED'}
+			args = (self, ctx)
+			DrawPivots.handle = bpy.types.SpaceView3D.draw_handler_add(OnDrawPivots, args, 'WINDOW', 'POST_VIEW')
+			DrawPivots.isRunning = True
+			ctx.window_manager.modal_handler_add(self)
+			return {'RUNNING_MODAL'}
+		else:
+			self.report({'WARNING'}, 'View3D not found, cannot run operator')
+			return {'CANCELLED'}
+
+class VisualizersPanel (bpy.types.Panel):
+	bl_label = 'Visualizers'
+	bl_idname = 'VIEW3D_PT_visualizers'
 	bl_space_type = 'VIEW_3D'
 	bl_region_type = 'UI'
 	bl_category = 'Tool'
@@ -3183,13 +3262,18 @@ class DrawCollidersPanel (bpy.types.Panel):
 	def draw (self, ctx):
 		layout = self.layout
 		if DrawColliders.isRunning:
-			layout.operator('view3d.draw_colliders', text = 'Stop Visualizing', depress = True)
+			layout.operator('view3d.draw_colliders', text = 'Stop Visualizing Colliders', depress = True)
 		else:
 			layout.operator('view3d.draw_colliders', text = 'Visualize Colliders', depress = False)
+		if DrawPivots.isRunning:
+			layout.operator('view3d.draw_pivots', text = 'Stop Visualizing Pivots', depress = True)
+		else:
+			layout.operator('view3d.draw_pivots', text = 'Visualize Pivots', depress = False)
 
 classes = (
 	DrawColliders,
-	DrawCollidersPanel
+	DrawPivots,
+	VisualizersPanel
 )
 
 def register():
