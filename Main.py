@@ -207,7 +207,7 @@ def GetFileName (filePath : str):
 
 def GetVarNameForObject (ob):
 	output = '_' + ob.name
-	disallowedChars = '/\\`~?|!@#$%^&*()[]{}<>=+-;:",.' + "'"
+	disallowedChars = ' /\\`~?|!@#$%^&*()[]{}<>=+-;:",.' + "'"
 	for disallowedChar in disallowedChars:
 		output = output.replace(disallowedChar, '')
 	return output
@@ -1235,8 +1235,10 @@ buildInfo = {
 	'js-gz-size' : None,
 }
 
-PYTHON = '''from python import math, pygame, typing, PyRapier2d
+PYTHON = '''from python import os, math, pygame, typing, PyRapier2d
 from typing import List
+
+os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
 
 # Physics Section Start
 sim = PyRapier2d.Simulation()
