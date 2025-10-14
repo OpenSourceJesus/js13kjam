@@ -1282,14 +1282,16 @@ def normalize (v) -> List[float]:
 def copy_surface (name, newName, pos, rot, wakeUp = True):
 	surface = surfaces[name].copy()
 	surfacesRects[newName] = surfacesRects[name].copy()
-	surface = pygame.transform.rotate(surface, rot)
 	surfaces[newName] = surface
-	initRots[newName] = rot
+	initRots[newName] = initRots[name]
 	pivots[newName] = pivots[name]
 	if name in rigidBodiesIds:
 		rigidBodiesIds[newName] = sim.CopyRigidBody(rigidBodiesIds[name], pos, rot, wakeUp)
-	elif name in collidersIds:
-		collidersIds[newName] = sim.CopyCollider(collidersIds[name], pos, rot, wakeUp)
+	else:
+		surface = pygame.transform.rotate(surface, rot)
+		initRots[newName] = rot
+		if name in collidersIds:
+			collidersIds[newName] = sim.CopyCollider(collidersIds[name], pos, rot, wakeUp)
 
 def remove_surface (name):
 	del surfaces[name]
@@ -1352,10 +1354,10 @@ class Game:
 				pos = sim.GetRigidBodyPosition(rigidBody)
 				rot = sim.GetRigidBodyRotation(rigidBody)
 				pivot = pygame.math.Vector2(pos[0], pos[1])
-				origRect = surface.get_rect()
-				offset = pygame.math.Vector2(pivots[name][0] - origRect.width / 2, pivots[name][1] - origRect.height / 2)
-				rotatedSurface, rotatedRect = rotate(surface, rot + initRots[name], pivot, offset)
-				screen.blit(rotatedSurface, (rotatedRect.left - off.x, rotatedRect.top - off.y))
+				width, height = surface.get_size()
+				offset = pygame.math.Vector2(pivots[name][0] - width / 2, pivots[name][1] - height / 2)
+				rotatedSurface, rect = rotate(surface, rot + initRots[name], pivot, offset)
+				screen.blit(rotatedSurface, (rect.left - off.x, rect.top - off.y))
 			else:
 				pos = surfacesRects[name].topleft
 				screen.blit(surface.copy(), (pos[0] - off.x, pos[1] - off.y))
