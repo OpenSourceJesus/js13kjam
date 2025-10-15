@@ -1217,7 +1217,8 @@ def GetBlenderData ():
 	initCode = []
 	updateCode = []
 	svgsDatas = {}
-	for ob in bpy.data.objects:
+	sortedObs = sorted(bpy.data.objects, key = lambda ob : ob.location.z)
+	for ob in sortedObs:
 		ExportObject (ob)
 	for ob in bpy.data.objects:
 		for scriptInfo in GetScripts(ob, True):
@@ -1237,10 +1238,10 @@ def GetBlenderData ():
 	return (datas, initCode, updateCode, apiCode)
 
 buildInfo = {
-	'html'  : None,
-	'html-size':None,
-	'zip'     : None,
-	'zip-size': None,
+	'html' : None,
+	'html-size': None,
+	'zip' : None,
+	'zip-size' : None,
 	'js-size' : None,
 	'js-gz-size' : None,
 }
@@ -1368,7 +1369,7 @@ class Game:
 				rot = sim.GetRigidBodyRotation(rigidBody)
 				width, height = surface.get_size()
 				pivot = pivots[name]
-				offset = pygame.math.Vector2(pivot[0] * width, pivot[1] * height) - pygame.math.Vector2(width / 2, height / 2)
+				offset = pygame.math.Vector2(pivot[0] * width, pivot[1] * height) - pygame.math.Vector2(width, height) / 2
 				rotatedSurface, rect = rotate(surface, rot + initRots[name], pos, offset)
 				screen.blit(rotatedSurface, (rect.left - off.x, rect.top - off.y))
 			else:
