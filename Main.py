@@ -269,7 +269,6 @@ def ExportObject (ob):
 		for key, value in _attributes.items():
 			_attributes[key] = str(value)
 		attributes[obVarName] = _attributes
-	pivots[obVarName] = list(ob.pivot)
 	RegisterPhysics (ob)
 	world = bpy.data.worlds[0]
 	SCALE = world.exportScale
@@ -637,6 +636,7 @@ def ExportObject (ob):
 		if ob.empty_display_type == 'IMAGE':
 			size = ob.scale * ob.empty_display_size
 			pos = GetImagePosition(ob)
+			pivots[obVarName] = GetPivot(ob)
 			if HandleCopyObject(ob, pos):
 				return
 			obData = ob.data
@@ -853,8 +853,9 @@ def RegisterPhysics (ob):
 		xCoords = [v[0] for v in ob.bound_box]
 		yCoords = [v[1] for v in ob.bound_box]
 		size = Vector((max(xCoords) - min(xCoords), max(yCoords) - min(yCoords), 0))
-		pivotOffX = (ob.pivot[0] - 50) / 100 * size.x
-		pivotOffY = (ob.pivot[1] - 50) / 100 * size.y
+		pivot = GetPivot(ob)
+		pivotOffX = pivot[0] * size.x
+		pivotOffY = pivot[1] * size.y
 		localPivot = localCenter + Vector((pivotOffX, pivotOffY, 0))
 		worldPivot = ob.matrix_world @ localPivot
 		posStr = str([worldPivot.x, -worldPivot.y])
@@ -969,15 +970,15 @@ def RegisterPhysics (ob):
 			jointName = obVarName + 'Joint'
 			vars.append(jointName + ' = None')
 			if ob.jointType == 'fixed':
-				joint = jointName + ' = sim.AddFixedJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(ob.anchorRot1) + ', ' + str(ob.anchorRot2) + ', True)'
+				joint = jointName + ' = sim.AddFixedJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(ob.anchorRot1) + ', ' + str(ob.anchorRot2) + ')'
 			elif ob.jointType == 'spring':
-				joint = jointName + ' = sim.AddSpringJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(ob.restLen) + ', ' + str(ob.stiffness) + ', ' + str(ob.damping) + ', True)'
+				joint = jointName + ' = sim.AddSpringJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(ob.restLen) + ', ' + str(ob.stiffness) + ', ' + str(ob.damping) + ')'
 			elif ob.jointType == 'revolute':
-				joint = jointName + ' = sim.AddRevoluteJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', True)'
+				joint = jointName + ' = sim.AddRevoluteJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ')'
 			elif ob.joinType == 'prismatic':
-				joint = jointName + ' = sim.AddRevoluteJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(list(ob.jointAxis)) + ', True)'
+				joint = jointName + ' = sim.AddRevoluteJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(list(ob.jointAxis)) + ')'
 			elif ob.joinType == 'rope':
-				joint = jointName + ' = sim.AddRopeJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(list(ob.jointLen)) + ', True)'
+				joint = jointName + ' = sim.AddRopeJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(list(ob.jointLen)) + ')'
 			joint += '\njointsIds["' + obVarName + '"] = ' + jointName
 			joints[ob] = joint
 	ob.rotation_mode = prevRotMode
@@ -1118,6 +1119,15 @@ def AddImageDataForExe (ob, imgPath, pos, size):
 	initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\ninitRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
 	vars.append(surface + ' = None')
 	vars.append(surfaceRect + ' = None')
+
+def GetPivot (ob):
+	if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE':
+		pivot = list(ob.empty_image_offset)
+		pivot[0] *= -1
+		pivot[1] *= -1
+		return pivot
+	else:
+		return list(ob.pivot)
 
 def GetImagePosition (ob):
 	size = ob.scale * ob.empty_display_size
@@ -1310,7 +1320,7 @@ def ang_to_dir (ang) -> List[float]:
 def rotate (surface, rot, pivot, offset):
 	rotatedSurface = pygame.transform.rotate(surface, -rot)
 	rotatedOff = offset.rotate(rot)
-	rect = rotatedSurface.get_rect(center = pivot + rotatedOff)
+	rect = rotatedSurface.get_rect(center = pivot - rotatedOff)
 	return rotatedSurface, rect
 
 # Vars
@@ -1353,10 +1363,10 @@ class Game:
 				rigidBody = rigidBodiesIds[name]
 				pos = sim.GetRigidBodyPosition(rigidBody)
 				rot = sim.GetRigidBodyRotation(rigidBody)
-				pivot = pygame.math.Vector2(pos[0], pos[1])
 				width, height = surface.get_size()
-				offset = pygame.math.Vector2(pivots[name][0] - width / 2, pivots[name][1] - height / 2)
-				rotatedSurface, rect = rotate(surface, rot + initRots[name], pivot, offset)
+				pivot = pivots[name]
+				offset = pygame.math.Vector2(pivot[0] * width, pivot[1] * height) - pygame.math.Vector2(width / 2, height / 2)
+				rotatedSurface, rect = rotate(surface, rot + initRots[name], pos, offset)
 				screen.blit(rotatedSurface, (rect.left - off.x, rect.top - off.y))
 			else:
 				pos = surfacesRects[name].topleft
@@ -2855,9 +2865,9 @@ class ObjectPanel (bpy.types.Panel):
 		ob = ctx.active_object
 		if not ob:
 			return
-		self.layout.prop(ob, 'pivot')
 		if ob.type == 'CURVE' or ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
 			self.layout.prop(ob, 'roundPosAndSize')
+			self.layout.prop(ob, 'pivot')
 			self.layout.prop(ob, 'useStroke')
 			if ob.useStroke:
 				self.layout.prop(ob, 'strokeWidth')
