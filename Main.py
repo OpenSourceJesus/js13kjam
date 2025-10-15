@@ -1150,7 +1150,7 @@ def HandleCopyObject (ob, pos):
 				imgPath = TMP_DIR + '/' + imgName
 				if imgPath not in imgsPaths:
 					imgsPaths.append(imgPath)
-				AddImageDataForExe (ob, imgPath, GetImagePosition(origOb), ob.scale * ob.empty_display_size)
+				AddImageDataForExe (ob, imgPath, GetImagePosition(ob), ob.scale * ob.empty_display_size)
 		prevRotMode = ob.rotation_mode
 		ob.rotation_mode = 'XYZ'
 		datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1]), TryChangeToInt(math.degrees(ob.rotation_euler.z)), GetAttributes(ob)])
@@ -2437,6 +2437,7 @@ def OnUpdateProperty (self, ctx, propName):
 	if not canUpdateProps:
 		return
 	canUpdateProps = False
+	print(ctx.selected_objects)
 	for ob in ctx.selected_objects:
 		if ob != self:
 			setattr(ob, propName, getattr(self, propName))
