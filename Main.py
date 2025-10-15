@@ -1284,7 +1284,10 @@ def divide (v, f) -> List[float]:
 	return [_v[0] / f, _v[1] / f]
 
 def magnitude (v) -> float:
-	return math.sqrt(v[0] * v[0] + v[1] * v[1])
+	return math.sqrt(sqr_magnitude(v))
+
+def sqr_magnitude (v) -> float:
+	return v[0] * v[0] + v[1] * v[1]
 
 def normalize (v) -> List[float]:
 	return divide(v, magnitude(v))
@@ -2437,7 +2440,6 @@ def OnUpdateProperty (self, ctx, propName):
 	if not canUpdateProps:
 		return
 	canUpdateProps = False
-	print(ctx.selected_objects)
 	for ob in ctx.selected_objects:
 		if ob != self:
 			setattr(ob, propName, getattr(self, propName))
