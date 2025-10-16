@@ -1116,7 +1116,11 @@ def RenderMesh (*args):
 def AddImageDataForExe (ob, imgPath, pos, size):
 	surface = GetVarNameForObject(ob)
 	surfaceRect = surface + 'Rect'
-	initCode.insert(0, surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n' + surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\ninitRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect)
+	initCodeLine = surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n'
+	if ob.rotation_euler.z != 0:
+		initCodeLine += surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\n'
+	initCodeLine += 'initRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect
+	initCode.insert(0, initCodeLine)
 	vars.append(surface + ' = None')
 	vars.append(surfaceRect + ' = None')
 
@@ -1231,10 +1235,13 @@ def GetBlenderData ():
 			isInit = scriptInfo[1]
 			_type = scriptInfo[2]
 			if _type == exportType:
+				script = script.replace('$name', '"' + GetVarNameForObject(ob) + '"')
 				if isInit:
-					initCode.append(script)
+					if script not in initCode:
+						initCode.append(script)
 				else:
-					updateCode.append(script)
+					if script not in updateCode:
+						updateCode.append(script)
 	return (datas, initCode, updateCode, apiCode)
 
 buildInfo = {
@@ -1350,7 +1357,6 @@ class Game:
 
 	def update (self):
 		global off
-# Update
 # Physics Section Start
 		sim.step ()
 		for name, rigidBodyId in rigidBodiesIds.items():
@@ -1359,6 +1365,7 @@ class Game:
 				size = surfacesRects[name].size
 				surfacesRects[name].update(pos[0] - size[0] / 2, pos[1] - size[1] / 2, size[0], size[1])
 # Physics Section End
+# Update
 
 	def render (self):
 # Background
