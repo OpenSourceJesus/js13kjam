@@ -860,7 +860,6 @@ def RegisterPhysics (ob):
 		posStr = str([worldPivot.x, -worldPivot.y])
 		if ob.rigidBodyExists:
 			rigidBodyName = obVarName + 'RigidBody'
-			vars.append(rigidBodyName + ' = None')
 			rigidBody = rigidBodyName + ' = sim.AddRigidBody(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ', ' + str(ob.canSleep) + ', ' + str(ob.continuousCollideDetect) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
 			rigidBodies[ob] = rigidBody
 		if ob.colliderExists:
@@ -904,7 +903,6 @@ def RegisterPhysics (ob):
 				heights.append(getattr(ob, 'height%s' %i))
 			colliderName = obVarName + 'Collider'
 			if attachColliderTo == []:
-				vars.append(colliderName + ' = None')
 				if ob.shapeType == 'ball':
 					collider = colliderName + ' = sim.AddBallCollider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.shapeType == 'halfspace':
@@ -935,7 +933,6 @@ def RegisterPhysics (ob):
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
-					vars.append(colliderName + attachToVarName + ' = None')
 					if ob.shapeType == 'ball':
 						collider = colliderName + attachToVarName + ' = sim.AddBallCollider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.shapeType == 'halfspace':
@@ -965,7 +962,6 @@ def RegisterPhysics (ob):
 			colliders[ob] = collider
 		if ob.jointExists:
 			jointName = obVarName + 'Joint'
-			vars.append(jointName + ' = None')
 			if ob.jointType == 'fixed':
 				joint = jointName + ' = sim.AddFixedJoint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(ob.anchorRot1) + ', ' + str(ob.anchorRot2) + ')'
 			elif ob.jointType == 'spring':
@@ -1118,8 +1114,6 @@ def AddImageDataForExe (ob, imgPath, pos, size):
 		initCodeLine += surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\n'
 	initCodeLine += 'initRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect
 	initCode.insert(0, initCodeLine)
-	vars.append(surface + ' = None')
-	vars.append(surfaceRect + ' = None')
 
 def GetPivot (ob):
 	if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE':
@@ -1300,6 +1294,7 @@ def copy_surface (name, newName, pos, rot, wakeUp = True):
 	surface = surfaces[name].copy()
 	surfacesRects[newName] = surfacesRects[name].copy()
 	surfaces[newName] = surface
+	attributes[newName] = attributes[name]
 	initRots[newName] = initRots[name]
 	pivots[newName] = pivots[name]
 	offset = pygame.math.Vector2(surface.get_size()) / 2
@@ -1316,6 +1311,7 @@ def copy_surface (name, newName, pos, rot, wakeUp = True):
 def remove_surface (name):
 	del surfaces[name]
 	del surfacesRects[name]
+	del attributes[name]
 	del initRots[name]
 	del pivots[name]
 	if name in rigidBodiesIds:
@@ -2154,7 +2150,7 @@ def BuildExe (world):
 		exePath = TMP_DIR + '/' + bpy.path.basename(bpy.data.filepath).replace('.blend', '')
 	# if not exePath.endswith('.exe'):
 	# 	exePath += '.exe'
-	cmd = 'python3 CodonBuild.py ' + pythonPath + ' ' + exePath
+	cmd = 'python3 CodonBuild.py ' + pythonPath + ' ' + exePath + ' ' + str(world.debugMode)
 	print(cmd)
 	os.system(cmd)
 	# subprocess.check_call(cmd.split())
@@ -2495,6 +2491,7 @@ bpy.types.World.minifyMethod = bpy.props.EnumProperty(name = 'Minify using libra
 bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if output is over 13kb')
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Unit length', min = 0, default = 1)
+bpy.types.World.debugMode = bpy.props.BoolProperty(name = 'Debug mode', default = True)
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundPosAndSize'))
 bpy.types.Object.pivot = bpy.props.FloatVectorProperty(name = 'Pivot point', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'pivot'))
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStroke'))
@@ -2826,6 +2823,7 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.prop(ctx.world, 'unityProjPath')
 		if usePhysics:
 			self.layout.prop(ctx.world, 'unitLen')
+		self.layout.prop(ctx.world, 'debugMode')
 		self.layout.operator('world.html_export', icon = 'CONSOLE')
 		self.layout.operator('world.exe_export', icon = 'CONSOLE')
 		self.layout.operator('world.unity_export', icon = 'CONSOLE')

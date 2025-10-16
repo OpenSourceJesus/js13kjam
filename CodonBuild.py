@@ -1,6 +1,16 @@
 import os, sys, shutil, sysconfig, argparse, subprocess
 from pathlib import Path
 
+def StringToBool (v):
+	if isinstance(v, bool):
+		return v
+	if v.lower() in ('yes', 'true', 't', 'y', '1'):
+		return True
+	elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+		return False
+	else:
+		raise argparse.ArgumentTypeError('Boolean value expected.')
+
 parser = argparse.ArgumentParser(
 	description = "A robust compiler for Codon projects.",
 	formatter_class = argparse.RawTextHelpFormatter
@@ -15,9 +25,15 @@ parser.add_argument(
 	type = Path,
 	help = "Path to the output executable."
 )
+parser.add_argument(
+	"debug",
+	type = StringToBool,
+	help = "Use debug mode."
+)
 args = parser.parse_args()
 scriptPath : Path = args.scriptPath
 exePath : Path = args.exePath
+debug : bool = args.debug
 if not scriptPath.is_file():
 	print(f"❌ Error: File not found at '{scriptPath}'")
 	sys.exit(1)
@@ -70,9 +86,13 @@ else:
 print(f"\n[3/4] Compiling '{scriptPath}' with Codon...")
 try:
 	cmd = [
-		"codon", "build", "-exe", "-release",
+		"codon", "build", "-exe",
 		"-o", exePath, str(scriptPath)
 	]
+	if debug:
+		cmd += ['-debug']
+	else:
+		cmd += ['-release']
 	subprocess.run(cmd, check = True, capture_output = True)
 	print("  ✅ Compilation finished successfully.")
 except subprocess.CalledProcessError as e:
