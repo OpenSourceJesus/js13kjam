@@ -1294,7 +1294,7 @@ def copy_surface (name, newName, pos, rot, wakeUp = True):
 	surface = surfaces[name].copy()
 	surfacesRects[newName] = surfacesRects[name].copy()
 	surfaces[newName] = surface
-	attributes[newName] = attributes[name]
+	attributes[newName] = attributes[name].copy()
 	initRots[newName] = initRots[name]
 	pivots[newName] = pivots[name]
 	offset = pygame.math.Vector2(surface.get_size()) / 2
@@ -2056,7 +2056,6 @@ def GenPython (world, datas, background = ''):
 		physicsInitCode.append(collider)
 	for joint in joints.values():
 		physicsInitCode.append(joint)
-	physicsInitCode.append('sim.step ()')
 	initCode = physicsInitCode + initCode
 	python = python.replace('# Init', '\n'.join(initCode))
 	for i, updateScript in enumerate(updateCode):
