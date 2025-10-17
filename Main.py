@@ -261,7 +261,7 @@ pivots = {}
 
 def ExportObject (ob):
 	global svgsDatas
-	if ob.hide_get() or ob in exportedObs:
+	if not ob.export or ob in exportedObs:
 		return
 	obVarName = GetVarNameForObject(ob)
 	_attributes = GetAttributes(ob)
@@ -1112,11 +1112,13 @@ def RenderMesh (*args):
 def AddImageDataForExe (ob, imgPath, pos, size):
 	surface = GetVarNameForObject(ob)
 	surfaceRect = surface + 'Rect'
-	initCodeLine = surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n'
+	initCodeClause = surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n'
 	if ob.rotation_euler.z != 0:
-		initCodeLine += surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\n'
-	initCodeLine += 'initRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect
-	initCode.insert(0, initCodeLine)
+		initCodeClause += surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\n'
+	initCodeClause += 'initRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect
+	if ob.hide_get():
+		initCodeClause += '\nhide.append("' + surface + '")'
+	initCode.insert(0, initCodeClause)
 
 def GetPivot (ob):
 	if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE':
@@ -2498,6 +2500,7 @@ bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if ou
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Unit length', min = 0, default = 1)
 bpy.types.World.debugMode = bpy.props.BoolProperty(name = 'Debug mode', default = True)
+bpy.types.Object.export = bpy.props.BoolProperty(name = 'Export', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'export'))
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundPosAndSize'))
 bpy.types.Object.pivot = bpy.props.FloatVectorProperty(name = 'Pivot point', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'pivot'))
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStroke'))
@@ -2875,6 +2878,7 @@ class ObjectPanel (bpy.types.Panel):
 		ob = ctx.active_object
 		if not ob:
 			return
+		self.layout.prop(ob, 'export')
 		if ob.type == 'CURVE' or ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
 			self.layout.prop(ob, 'roundPosAndSize')
 			self.layout.prop(ob, 'pivot')
