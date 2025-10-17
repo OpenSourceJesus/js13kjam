@@ -1273,23 +1273,17 @@ windowSize = None
 # Attributes
 off = pygame.math.Vector2()
 
-def add (v, v2) -> List[float]:
-	_v = [float(v[0]), float(v[1])]
-	_v2 = [float(v2[0]), float(v2[1])]
-	return [_v[0] + _v2[0], _v[1] + _v2[1]]
+def add (v, v2):
+	return pygame.math.Vector2(v[0] + v2[0], v[1] + v2[1])
 
-def subtract (v, v2) -> List[float]:
-	_v = [float(v[0]), float(v[1])]
-	_v2 = [float(v2[0]), float(v2[1])]
-	return [_v[0] - _v2[0], _v[1] - _v2[1]]
+def subtract (v, v2):
+	return pygame.math.Vector2(v[0] - v2[0], v[1] - v2[1])
 
-def multiply (v, f) -> List[float]:
-	_v = [float(v[0]), float(v[1])]
-	return [_v[0] * f, _v[1] * f]
+def multiply (v, f):
+	return pygame.math.Vector2(v[0] * f, v[1] * f)
 
-def divide (v, f) -> List[float]:
-	_v = [float(v[0]), float(v[1])]
-	return [_v[0] / f, _v[1] / f]
+def divide (v, f):
+	return pygame.math.Vector2(v[0] / f, v[1] / f)
 
 def magnitude (v) -> float:
 	return math.sqrt(sqr_magnitude(v))
@@ -1297,7 +1291,7 @@ def magnitude (v) -> float:
 def sqr_magnitude (v) -> float:
 	return v[0] * v[0] + v[1] * v[1]
 
-def normalize (v) -> List[float]:
+def normalize (v):
 	return divide(v, magnitude(v))
 
 def copy_surface (name, newName, pos, rot, wakeUp = True):
@@ -1331,9 +1325,9 @@ def remove_surface (name):
 	elif name in collidersIds:
 		del collidersIds[name]
 
-def ang_to_dir (ang) -> List[float]:
+def ang_to_dir (ang):
 	ang = math.radians(ang)
-	return [float(math.cos(ang)), float(math.sin(ang))]
+	return pygame.math.Vector2(math.cos(ang), math.sin(ang))
 
 def rotate (surface, rot, pivot, offset):
 	rotatedSurface = pygame.transform.rotate(surface, -rot)
