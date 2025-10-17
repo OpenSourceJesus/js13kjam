@@ -660,7 +660,7 @@ def ExportObject (ob):
 					size.x *= imgSize.x / imgSize.y
 				else:
 					size.y *= imgSize.y / imgSize.x
-				AddImageDataForExe (ob, imgPath.replace(TMP_DIR, '.'), pos, size)
+				AddImageDataForExe (ob, imgPath.replace(TMP_DIR, '.'), pos, size, ob.color[3])
 			ob.rotation_mode = prevRotMode
 			ob.data.save(filepath = imgPath)
 			if imgPath not in imgsPaths:
@@ -1044,7 +1044,7 @@ def RenderCurve (*args):
 	pos.y *= -1
 	_min, _max = GetRectMinMax(ob)
 	size = _max - _min
-	AddImageDataForExe (ob, '.' + renderPath[renderPath.rfind('/') :], pos, size)
+	AddImageDataForExe (ob, '.' + renderPath[renderPath.rfind('/') :], pos, size, 1)
 	scene.collection.objects.unlink(cam)
 	bpy.data.objects.remove(cam)
 
@@ -1109,10 +1109,14 @@ def RenderMesh (*args):
 			if mat2 in prevMatClrs:
 				mat2.diffuse_color = prevMatClrs[mat2]
 
-def AddImageDataForExe (ob, imgPath, pos, size):
+def AddImageDataForExe (ob, imgPath, pos, size, opacity):
 	surface = GetVarNameForObject(ob)
 	surfaceRect = surface + 'Rect'
-	initCodeClause = surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n' + surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n'
+	tint = [int(c * 255) for c in ob.tint]
+	initCodeClause = surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n'
+	if tint + [opacity] != [255, 255, 255, 1]:
+		initCodeClause += 'tintSurface = pygame.Surface(' + surface + '.get_size()).convert_alpha()\ntintSurface.fill((' + str(tint[0]) + ', ' + str(tint[1]) + ', ' + str(tint[2]) + ', ' + str(opacity * 255) + '))\n' + surface + '.blit(tintSurface, (0, 0), special_flags = pygame.BLEND_RGBA_MULT)\n'
+	initCodeClause += surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n'
 	if ob.rotation_euler.z != 0:
 		initCodeClause += surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\n'
 	initCodeClause += 'initRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect
@@ -1150,7 +1154,7 @@ def HandleCopyObject (ob, pos):
 				imgPath = TMP_DIR + '/' + imgName
 				if imgPath not in imgsPaths:
 					imgsPaths.append(imgPath)
-				AddImageDataForExe (ob, imgPath.replace(TMP_DIR, '.'), GetImagePosition(ob), ob.scale * ob.empty_display_size)
+				AddImageDataForExe (ob, imgPath.replace(TMP_DIR, '.'), GetImagePosition(ob), ob.scale * ob.empty_display_size, ob.color[3])
 		prevRotMode = ob.rotation_mode
 		ob.rotation_mode = 'XYZ'
 		datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1]), TryChangeToInt(math.degrees(ob.rotation_euler.z)), GetAttributes(ob)])
@@ -1344,7 +1348,7 @@ class Game:
 		pygame.display.set_caption(title)
 		self.clock = pygame.time.Clock()
 		self.running = True
-		self.dt = 0.0
+		self.dt = self.clock.tick(60) / 1000
 
 	def run (self):
 		while self.running:
@@ -2461,6 +2465,11 @@ def OnUpdateProperty (self, ctx, propName):
 		if ob != self:
 			setattr(ob, propName, getattr(self, propName))
 
+def OnUpdateTint (self, ctx):
+	for ob in ctx.selected_objects:
+		ob.color = list(ob.tint) + [ob.color[3]]
+	OnUpdateProperty (ob, ctx, 'tint')
+
 def Update ():
 	canUpdateProps = True
 	for ob in bpy.data.objects:
@@ -2515,7 +2524,7 @@ bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position
 bpy.types.Object.pivot = bpy.props.FloatVectorProperty(name = 'Pivot point', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'pivot'))
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStroke'))
 bpy.types.Object.strokeWidth = bpy.props.FloatProperty(name = 'Stroke width', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeWidth'))
-bpy.types.Object.strokeClr = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, min = 0, max = 1, default = [0, 0, 0, 1])
+bpy.types.Object.strokeClr = bpy.props.FloatVectorProperty(name = 'Stroke color', subtype = 'COLOR', size = 4, min = 0, max = 1, default = [0, 0, 0, 1], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeClr'))
 bpy.types.Object.gradientFill = bpy.props.PointerProperty(name = 'Fill with light', type = bpy.types.Light, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'gradientFill'))
 bpy.types.Object.capType = bpy.props.EnumProperty(name = 'Stroke cap type', items = CAP_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'capType'))
 bpy.types.Object.joinType = bpy.props.EnumProperty(name = 'Stroke corner type', items = JOIN_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'joinType'))
@@ -2606,6 +2615,7 @@ bpy.types.Object.jointLen = bpy.props.FloatProperty(name = 'Length', min = 0, up
 bpy.types.Object.charControllerExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'charControllerExists'))
 bpy.types.Object.contactOff = bpy.props.FloatProperty(name = 'Contact offset', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'contactOff'))
 bpy.types.Object.resPercent = bpy.props.IntProperty(name = 'Resolution percent', min = 0, max = 100, default = 100, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'resPercent'))
+bpy.types.Object.tint = bpy.props.FloatVectorProperty(name = 'Tint', subtype = 'COLOR', size = 3, min = 0, max = 1, default = [1, 1, 1], update = lambda ob, ctx : OnUpdateTint (ob, ctx))
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -3036,6 +3046,20 @@ class LightPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'clr1Alpha')
 		self.layout.prop(ob, 'clrPositions')
 		self.layout.prop(ob, 'subtractive')
+
+@bpy.utils.register_class
+class ImagePanel (bpy.types.Panel):
+	bl_idname = 'IMAGE_PT_Image_Panel'
+	bl_label = 'Image'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'data'
+
+	def draw (self, ctx):
+		ob = ctx.active_object
+		if not ob or ob.type != 'EMPTY' or ob.empty_display_type != 'IMAGE':
+			return
+		self.layout.prop(ob, 'tint')
 
 @bpy.utils.register_class
 class RigidBodyPanel (bpy.types.Panel):
