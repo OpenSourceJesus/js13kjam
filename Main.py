@@ -1258,6 +1258,7 @@ collidersIds = {}
 jointsIds = {}
 # Physics Section End
 surfaces = {}
+hide = []
 surfacesRects = {}
 initRots = {}
 screen = None
@@ -1365,18 +1366,19 @@ class Game:
 	def render (self):
 # Background
 		for name, surface in surfaces.items():
-			if name in rigidBodiesIds:
-				rigidBody = rigidBodiesIds[name]
-				pos = sim.GetRigidBodyPosition(rigidBody)
-				rot = sim.GetRigidBodyRotation(rigidBody)
-				width, height = surface.get_size()
-				pivot = pivots[name]
-				offset = pygame.math.Vector2(pivot[0] * width, pivot[1] * height) - pygame.math.Vector2(width, height) / 2
-				rotatedSurface, rect = rotate(surface, rot + initRots[name], pos, offset)
-				screen.blit(rotatedSurface, (rect.left - off.x, rect.top - off.y))
-			else:
-				pos = surfacesRects[name].topleft
-				screen.blit(surface.copy(), (pos[0] - off.x, pos[1] - off.y))
+			if name not in hide:
+				if name in rigidBodiesIds:
+					rigidBody = rigidBodiesIds[name]
+					pos = sim.GetRigidBodyPosition(rigidBody)
+					rot = sim.GetRigidBodyRotation(rigidBody)
+					width, height = surface.get_size()
+					pivot = pivots[name]
+					offset = pygame.math.Vector2(pivot[0] * width, pivot[1] * height) - pygame.math.Vector2(width, height) / 2
+					rotatedSurface, rect = rotate(surface, rot + initRots[name], pos, offset)
+					screen.blit(rotatedSurface, (rect.left - off.x, rect.top - off.y))
+				else:
+					pos = surfacesRects[name].topleft
+					screen.blit(surface.copy(), (pos[0] - off.x, pos[1] - off.y))
 		pygame.display.flip()
 
 pygame.init()
