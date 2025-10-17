@@ -811,9 +811,11 @@ def RegisterPhysics (ob):
 				collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
 			else:
 				for attachTo in attachColliderTo:
-					collider += colliderName + GetVarNameForObject(attachTo) + ' = world.createCollider(' + colliderDescName + ', ' + GetVarNameForObject(attachTo) + 'RigidBody);\n'
+					attachToVarName = GetVarNameForObject(attachTo)
+					collider += colliderName + attachToVarName + ' = world.createCollider(' + colliderDescName + ', ' + attachToVarName + 'RigidBody);\n'
 					if ob.isSensor:
-						collider += colliderName + GetVarNameForObject(attachTo) + '.setSensor(true);\n'
+						collider += colliderName + attachToVarName + '.setSensor(true);\n'
+					collider += 'collidersIds["' + colliderName + attachToVarName + '"] = ' + colliderName + attachToVarName + ';\n'
 			colliders[ob] = collider
 		if ob.jointExists:
 			jointName = obVarName + 'Joint'
@@ -959,6 +961,7 @@ def RegisterPhysics (ob):
 						collider = colliderName + attachToVarName + ' = sim.AddRoundConvexHullCollider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.convexHullBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.shapeType == 'heightfield':
 						collider = colliderName + attachToVarName + ' = sim.AddRoundConvexHullCollider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+					collider += '\ncollidersIds["' + colliderName + attachToVarName + '"] = ' + colliderName + attachToVarName
 			colliders[ob] = collider
 		if ob.jointExists:
 			jointName = obVarName + 'Joint'
@@ -1296,12 +1299,14 @@ def copy_surface (name, newName, pos, rot, wakeUp = True):
 	surfaces[newName] = surface
 	attributes[newName] = attributes[name].copy()
 	initRots[newName] = initRots[name]
-	pivots[newName] = pivots[name]
+	pivots[newName] = pivots[name].copy()
 	offset = pygame.math.Vector2(surface.get_size()) / 2
 	offset[1] *= -1
 	offset = offset.rotate(rot)
 	if name in rigidBodiesIds:
 		rigidBodiesIds[newName] = sim.CopyRigidBody(rigidBodiesIds[name], pos + offset, rot, wakeUp)
+		for i, collider in enumerate(sim.GetRigidBodyColliders(rigidBodiesIds[newName])):
+			collidersIds[newName + ':' + str(i)] = collider
 	else:
 		surface = pygame.transform.rotate(surface, rot)
 		initRots[newName] = rot
