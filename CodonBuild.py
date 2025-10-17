@@ -112,5 +112,3 @@ print("\n✨ Process Complete! ✨")
 print("\nYour self-contained executable is ready.")
 print("You can now run your application with the command:")
 print(f"  .{exePath}")
-cmd = f"{exePath}"
-subprocess.check_call(cmd.split())

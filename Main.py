@@ -660,7 +660,7 @@ def ExportObject (ob):
 					size.x *= imgSize.x / imgSize.y
 				else:
 					size.y *= imgSize.y / imgSize.x
-				AddImageDataForExe (ob, imgPath, pos, size)
+				AddImageDataForExe (ob, imgPath.replace(TMP_DIR, '.'), pos, size)
 			ob.rotation_mode = prevRotMode
 			ob.data.save(filepath = imgPath)
 			if imgPath not in imgsPaths:
@@ -1044,7 +1044,7 @@ def RenderCurve (*args):
 	pos.y *= -1
 	_min, _max = GetRectMinMax(ob)
 	size = _max - _min
-	AddImageDataForExe (ob, renderPath, pos, size)
+	AddImageDataForExe (ob, '.' + renderPath[renderPath.rfind('/') :], pos, size)
 	scene.collection.objects.unlink(cam)
 	bpy.data.objects.remove(cam)
 
@@ -1150,7 +1150,7 @@ def HandleCopyObject (ob, pos):
 				imgPath = TMP_DIR + '/' + imgName
 				if imgPath not in imgsPaths:
 					imgsPaths.append(imgPath)
-				AddImageDataForExe (ob, imgPath, GetImagePosition(ob), ob.scale * ob.empty_display_size)
+				AddImageDataForExe (ob, imgPath.replace(TMP_DIR, '.'), GetImagePosition(ob), ob.scale * ob.empty_display_size)
 		prevRotMode = ob.rotation_mode
 		ob.rotation_mode = 'XYZ'
 		datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1]), TryChangeToInt(math.degrees(ob.rotation_euler.z)), GetAttributes(ob)])
@@ -2156,12 +2156,11 @@ def BuildExe (world):
 	exePath = exePath.replace('\\', '/')
 	if not exePath:
 		exePath = TMP_DIR + '/' + bpy.path.basename(bpy.data.filepath).replace('.blend', '')
-	# if not exePath.endswith('.exe'):
-	# 	exePath += '.exe'
+	if not exePath.endswith('.exe'):
+		exePath += '.exe'
 	cmd = 'python3 CodonBuild.py ' + pythonPath + ' ' + exePath + ' ' + str(world.debugMode)
 	print(cmd)
 	os.system(cmd)
-	# subprocess.check_call(cmd.split())
 	zipPath = os.path.expanduser(world.zipPath)
 	zipPath = zipPath.replace('\\', '/')
 	if not zipPath.endswith('.zip'):
@@ -2171,10 +2170,21 @@ def BuildExe (world):
 		zip.write(exePath, GetFileName(exePath))
 		for imgPath in imgsPaths:
 			zip.write(imgPath, GetFileName(imgPath))
-		# zip.extractall(zipPath.replace('.zip', ''))
+		zip.extractall(zipPath.replace('.zip', ''))
 	zip = open(zipPath, 'rb').read()
 	buildInfo['zip'] = zipPath
 	buildInfo['zip-size'] = len(zip)
+	os.remove(exePath)
+	indexOfExeNameStart = exePath.rfind('/') + 1
+	if indexOfExeNameStart == -1:
+		indexOfExeNameStart = 0
+	exePath = zipPath.replace('.zip', '') + '/' + exePath[indexOfExeNameStart :]
+	cmd = 'chmod +x ' + exePath
+	print(cmd)
+	subprocess.check_call(cmd.split())
+	cmd = exePath
+	print(cmd)
+	subprocess.check_call(cmd.split(), cwd = zipPath.replace('.zip', ''))
 	PostBuild ()
 
 def BuildUnity (world):
