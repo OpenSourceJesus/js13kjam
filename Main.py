@@ -268,7 +268,7 @@ def ExportObject (ob):
 	_attributes = GetAttributes(ob)
 	if _attributes != {}:
 		for key, value in _attributes.items():
-			_attributes[key] = str(value)
+			_attributes[key] = str(value).replace("'", '"')
 		attributes[obVarName] = _attributes
 	RegisterPhysics (ob)
 	world = bpy.data.worlds[0]
@@ -1326,7 +1326,7 @@ def sqr_magnitude (v) -> float:
 def normalize (v):
 	return divide(v, magnitude(v))
 
-def copy_surface (name, newName, pos, rot, wakeUp = True):
+def copy_surface (name, newName, pos, rot = 0, wakeUp = True):
 	surface = surfaces[name].copy()
 	surfacesRects[newName] = surfacesRects[name].copy()
 	surfaces[newName] = surface
