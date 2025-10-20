@@ -96,15 +96,14 @@ def GetScripts (ob, isAPI : bool):
 	type = 'runtime'
 	if isAPI:
 		type = 'api'
-	for i in range(GetLastUsedPropertyIndex(ob, type + 'ScriptDisable', MAX_SCRIPTS_PER_OBJECT)):
-		if getattr(ob, type + 'ScriptDisable%i' %i):
-			continue
-		txt = getattr(ob, type + 'Script%i' %i)
-		if txt:
-			if isAPI:
-				scripts.append((txt.as_string(), getattr(ob, 'apiScriptType%i' %i)))
-			else:
-				scripts.append((txt.as_string(), getattr(ob, 'initScript%i' %i), getattr(ob, 'runtimeScriptType%i' %i)))
+	for i in range(MAX_SCRIPTS_PER_OBJECT):
+		if not getattr(ob, type + 'ScriptDisable%i' %i):
+			txt = getattr(ob, type + 'Script%i' %i)
+			if txt:
+				if isAPI:
+					scripts.append((txt.as_string(), getattr(ob, 'apiScriptType%i' %i)))
+				else:
+					scripts.append((txt.as_string(), getattr(ob, 'initScript%i' %i), getattr(ob, 'runtimeScriptType%i' %i)))
 	return scripts
 
 def TryChangeToInt (f : float):
@@ -679,11 +678,9 @@ def RegisterPhysics (ob):
 	rigidBodyName = obVarName + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	attachColliderTo = []
-	for i in range(GetLastUsedPropertyIndex(ob, 'attachTo', MAX_ATTACH_COLLIDER_CNT)):
-		_attachColliderTo = getattr(ob, 'attachTo%i' %i)
-		if not getattr(ob, 'attach%i' %i):
-			break
-		attachColliderTo.append(_attachColliderTo)
+	for i in range(MAX_ATTACH_COLLIDER_CNT):
+		if getattr(ob, 'attach%i' %i):
+			attachColliderTo.append(getattr(ob, 'attachTo%i' %i))
 	collisionGroupMembership = 0
 	for i, enabled in enumerate(ob.collisionGroupMembership):
 		if enabled:
@@ -1975,9 +1972,8 @@ def GenJs (world):
 			colliderName = GetVarNameForObject(key) + 'Collider'
 			attachTo = []
 			for i in range(MAX_ATTACH_COLLIDER_CNT):
-				_attachTo = getattr(key, 'attachTo%i' %i)
 				if getattr(key, 'attach%i' %i):
-					attachTo.append(_attachTo)
+					attachTo.append(getattr(key, 'attachTo%i' %i))
 			if attachTo == []:
 				vars += 'var ' + colliderName + ';\n'
 			else:
@@ -2990,18 +2986,18 @@ class JS13KBPanel (bpy.types.Panel):
 		if buildInfo['zip-size']:
 			self.layout.label(text = buildInfo['zip'])
 			if buildInfo['zip-size'] <= 1024 * 13:
-				self.layout.label(text = 'zip bytes=%i' %( buildInfo['zip-size'] ))
+				self.layout.label(text = 'zip bytes=%s' %( buildInfo['zip-size'] ))
 			else:
-				self.layout.label(text = 'zip KB=%i' %( buildInfo['zip-size'] / 1024 ))
-			self.layout.label(text = 'html-size=%i' %buildInfo['html-size'])
-			self.layout.label(text = 'js-size=%i' %buildInfo['js-size'])
-			self.layout.label(text = 'js-gz-size=%i' %buildInfo['js-gz-size'])
+				self.layout.label(text = 'zip KB=%s' %( buildInfo['zip-size'] / 1024 ))
+			self.layout.label(text = 'html-size=%s' %buildInfo['html-size'])
+			self.layout.label(text = 'js-size=%s' %buildInfo['js-size'])
+			self.layout.label(text = 'js-gz-size=%s' %buildInfo['js-gz-size'])
 		if buildInfo['html-size']:
 			self.layout.label(text = buildInfo['html'])
 			if buildInfo['html-size'] < 1024*16:
-				self.layout.label(text = 'html bytes=%i' %( buildInfo['html-size'] ))
+				self.layout.label(text = 'html bytes=%s' %( buildInfo['html-size'] ))
 			else:
-				self.layout.label(text = 'html KB=%i' %( buildInfo['html-size'] / 1024 ))
+				self.layout.label(text = 'html KB=%s' %( buildInfo['html-size'] / 1024 ))
 
 @bpy.utils.register_class
 class ObjectPanel (bpy.types.Panel):
