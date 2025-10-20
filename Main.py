@@ -96,8 +96,8 @@ def GetScripts (ob, isAPI : bool):
 	type = 'runtime'
 	if isAPI:
 		type = 'api'
-	for i in range(MAX_SCRIPTS_PER_OBJECT):
-		if getattr(ob, type + 'Script%iDisable' %i):
+	for i in range(GetLastUsedPropertyIndex(ob, type + 'ScriptDisable', MAX_SCRIPTS_PER_OBJECT)):
+		if getattr(ob, type + 'ScriptDisable%i' %i):
 			continue
 		txt = getattr(ob, type + 'Script%i' %i)
 		if txt:
@@ -679,7 +679,7 @@ def RegisterPhysics (ob):
 	rigidBodyName = obVarName + 'RigidBody'
 	rigidBodyDescName = rigidBodyName + 'Desc'
 	attachColliderTo = []
-	for i in range(MAX_ATTACH_COLLIDER_CNT):
+	for i in range(GetLastUsedPropertyIndex(ob, 'attachTo', MAX_ATTACH_COLLIDER_CNT)):
 		_attachColliderTo = getattr(ob, 'attachTo%i' %i)
 		if not getattr(ob, 'attach%i' %i):
 			break
@@ -745,53 +745,46 @@ def RegisterPhysics (ob):
 			elif ob.shapeType == 'polyline':
 				collider += '['
 				for i in range(MAX_SHAPE_POINTS):
-					if not getattr(ob, 'usePolylinePoint%i' %i):
-						break
-					point = getattr(ob, 'polylinePoint%i' %i)
-					collider += str(point[0]) + ', ' + str(point[1]) + ', '
+					if getattr(ob, 'usePolylinePoint%i' %i):
+						point = getattr(ob, 'polylinePoint%i' %i)
+						collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += '], ['
 				for i in range(MAX_SHAPE_POINTS):
-					if not getattr(ob, 'usePolylineIdx%i' %i):
-						break
-					idx = getattr(ob, 'polylineIdx%i' %i)
-					collider += str(idx[0]) + ', ' + str(idx[1]) + ', '
+					if getattr(ob, 'usePolylineIdx%i' %i):
+						idx = getattr(ob, 'polylineIdx%i' %i)
+						collider += str(idx[0]) + ', ' + str(idx[1]) + ', '
 				collider += ']'
 			elif ob.shapeType == 'trimesh':
 				collider += '['
 				for i in range(MAX_SHAPE_POINTS):
-					if not getattr(ob, 'useTrimeshPoint%i' %i):
-						break
-					point = getattr(ob, 'trimeshPoint%i' %i)
-					collider += str(point[0]) + ', ' + str(point[1]) + ', '
+					if getattr(ob, 'useTrimeshPoint%i' %i):
+						point = getattr(ob, 'trimeshPoint%i' %i)
+						collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += '], ['
 				for i in range(MAX_SHAPE_POINTS):
-					if not getattr(ob, 'useTrimeshIdx%i' %i):
-						break
-					idx = getattr(ob, 'trimeshIdx%i' %i)
-					collider += str(idx[0]) + ', ' + str(idx[1]) + ', '
+					if getattr(ob, 'useTrimeshIdx%i' %i):
+						idx = getattr(ob, 'trimeshIdx%i' %i)
+						collider += str(idx[0]) + ', ' + str(idx[1]) + ', '
 				collider += ']'
 			elif ob.shapeType == 'convexHull':
 				collider += '['
 				for i in range(MAX_SHAPE_POINTS):
-					if not getattr(ob, 'useConvexHullPoint%i' %i):
-						break
-					point = getattr(ob, 'convexHullPoint%i' %i)
-					collider += str(point[0]) + ', ' + str(point[1]) + ', '
+					if getattr(ob, 'useConvexHullPoint%i' %i):
+						point = getattr(ob, 'convexHullPoint%i' %i)
+						collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += ']'
 			elif ob.shapeType == 'roundConvexHull':
 				collider += '['
 				for i in range(MAX_SHAPE_POINTS):
-					if not getattr(ob, 'useRoundConvexHullPoint%i' %i):
-						break
-					point = getattr(ob, 'roundConvexHullPoint%i' %i)
-					collider += str(point[0]) + ', ' + str(point[1]) + ', '
+					if getattr(ob, 'useRoundConvexHullPoint%i' %i):
+						point = getattr(ob, 'roundConvexHullPoint%i' %i)
+						collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += '], ' + str(ob.convexHullBorderRadius)
 			elif ob.shapeType == 'heightfield':
 				collider += '['
 				for i in range(MAX_SHAPE_POINTS):
-					if not getattr(ob, 'useHeight%i' %i):
-						break
-					collider += str(getattr(ob, 'height%i' %i))
+					if getattr(ob, 'useHeight%i' %i):
+						collider += str(getattr(ob, 'height%i' %i))
 				collider += '], ' + ToVector2String(ob.heightfieldScale)
 			collider += ')'
 			if ob.location.x != 0 or ob.location.y != 0:
@@ -868,42 +861,36 @@ def RegisterPhysics (ob):
 		if ob.colliderExists:
 			polylinePnts = []
 			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'usePolylinePoint%i' %i):
-					break
-				pnt = getattr(ob, 'polylinePoint%i' %i)
-				polylinePnts.append(list(pnt))
+				if getattr(ob, 'usePolylinePoint%i' %i):
+					pnt = getattr(ob, 'polylinePoint%i' %i)
+					polylinePnts.append(list(pnt))
 			polylineIdxs = []
 			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'usePolylineIdx%i' %i):
-					break
-				idx = getattr(ob, 'polylineIdx%i' %i)
-				polylineIdxs.append(list(idx))
+				if getattr(ob, 'usePolylineIdx%i' %i):
+					idx = getattr(ob, 'polylineIdx%i' %i)
+					polylineIdxs.append(list(idx))
 			polylineIdxsStr = ''
 			if polylineIdxs != []:
 				polylineIdxsStr = str(polylineIdxs)
 			trimeshPnts = []
 			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'useTrimeshPoint%i' %i):
-					break
-				pnt = getattr(ob, 'trimeshPoint%i' %i)
-				trimeshPnts.append(list(pnt))
+				if getattr(ob, 'useTrimeshPoint%i' %i):
+					pnt = getattr(ob, 'trimeshPoint%i' %i)
+					trimeshPnts.append(list(pnt))
 			trimeshIdxs = []
 			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'useTrimeshIdx%i' %i):
-					break
-				idx = getattr(ob, 'trimeshIdx%i' %i)
-				trimeshIdxs.append(list(idx))
+				if getattr(ob, 'useTrimeshIdx%i' %i):
+					idx = getattr(ob, 'trimeshIdx%i' %i)
+					trimeshIdxs.append(list(idx))
 			convexHullPnts = []
 			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'useConvexHullPoint%i' %i):
-					break
-				pnt = getattr(ob, 'convexHullPoint%i' %i)
-				convexHullPnts.append(list(pnt))
+				if getattr(ob, 'useConvexHullPoint%i' %i):
+					pnt = getattr(ob, 'convexHullPoint%i' %i)
+					convexHullPnts.append(list(pnt))
 			heights = []
 			for i in range(MAX_SHAPE_POINTS):
-				if not getattr(ob, 'useHeight%i' %i):
-					break
-				heights.append(getattr(ob, 'height%i' %i))
+				if getattr(ob, 'useHeight%i' %i):
+					heights.append(getattr(ob, 'height%i' %i))
 			colliderName = obVarName + 'Collider'
 			if attachColliderTo == []:
 				if ob.shapeType == 'ball':
@@ -1989,9 +1976,8 @@ def GenJs (world):
 			attachTo = []
 			for i in range(MAX_ATTACH_COLLIDER_CNT):
 				_attachTo = getattr(key, 'attachTo%i' %i)
-				if not getattr(key, 'attach%i' %i):
-					break
-				attachTo.append(_attachTo)
+				if getattr(key, 'attach%i' %i):
+					attachTo.append(_attachTo)
 			if attachTo == []:
 				vars += 'var ' + colliderName + ';\n'
 			else:
@@ -2481,6 +2467,12 @@ def OnDrawPivots (self, ctx):
 		ob.rotation_mode = prevRotMode
 	gpu.state.blend_set('NONE')
 
+def GetLastUsedPropertyIndex (ob, usePropName, propCnt, minIdx = 0) -> int:
+	for i in range(propCnt - 1, minIdx - 1, -1):
+		if getattr(ob, usePropName + str(i)):
+			return i
+	return -1
+
 canUpdateProps = True
 def OnUpdateProperty (self, ctx, propName):
 	global canUpdateProps
@@ -2508,17 +2500,17 @@ def Update ():
 		if idxOfPeriod != -1:
 			for ob in bpy.data.objects:
 				for i in range(MAX_SCRIPTS_PER_OBJECT):
-					attachedTxt = getattr(ob, 'apiScript%s' %i)
+					attachedTxt = getattr(ob, 'apiScript%i' %i)
 					if attachedTxt == txt:
 						for origTxt in bpy.data.texts:
 							if origTxt.name == txt.name[: idxOfPeriod]:
-								setattr(ob, 'apiScript%s' %i, origTxt)
+								setattr(ob, 'apiScript%i' %i, origTxt)
 								break
-					attachedTxt = getattr(ob, 'runtimeScript%s' %i)
+					attachedTxt = getattr(ob, 'runtimeScript%i' %i)
 					if attachedTxt == txt:
 						for origTxt in bpy.data.texts:
 							if origTxt.name == txt.name[: idxOfPeriod]:
-								setattr(ob, 'runtimeScript%s' %i, origTxt)
+								setattr(ob, 'runtimeScript%i' %i, origTxt)
 								break
 			bpy.data.texts.remove(txt)
 	return 0.1
@@ -2646,127 +2638,127 @@ bpy.types.Object.tint = bpy.props.FloatVectorProperty(name = 'Tint', subtype = '
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
 		bpy.types.Object,
-		'apiScript%s' %i,
-		bpy.props.PointerProperty(name = 'API script%s' %i, type = bpy.types.Text, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'API script%s' %i))
+		'apiScript%i' %i,
+		bpy.props.PointerProperty(name = 'API script%i' %i, type = bpy.types.Text, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'API script%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'apiScript%sDisable' %i,
-		bpy.props.BoolProperty(name = 'Disable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'apiScript%sDisable' %i))
+		'apiScriptDisable%i' %i,
+		bpy.props.BoolProperty(name = 'Disable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'apiScriptDisable%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'runtimeScript%s' %i,
-		bpy.props.PointerProperty(name = 'Runtime script%s' %i, type = bpy.types.Text, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScript%s' %i))
+		'runtimeScript%i' %i,
+		bpy.props.PointerProperty(name = 'Runtime script%i' %i, type = bpy.types.Text, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScript%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'apiScriptType%s' %i,
-		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'apiScriptType%s' %i))
+		'apiScriptType%i' %i,
+		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'apiScriptType%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'runtimeScript%sDisable' %i,
-		bpy.props.BoolProperty(name = 'Disable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScript%sDisable' %i))
+		'runtimeScriptDisable%i' %i,
+		bpy.props.BoolProperty(name = 'Disable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScriptDisable%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'initScript%s' %i,
-		bpy.props.BoolProperty(name = 'Is init', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'initScript%s' %i))
+		'initScript%i' %i,
+		bpy.props.BoolProperty(name = 'Is init', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'initScript%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'runtimeScriptType%s' %i,
-		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScriptType%s' %i))
+		'runtimeScriptType%i' %i,
+		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScriptType%i' %i))
 	)
 for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
-		'polylinePoint%s' %i,
-		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'polylinePoint%s' %i))
+		'polylinePoint%i' %i,
+		bpy.props.FloatVectorProperty(name = 'Point%i' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'polylinePoint%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'usePolylinePoint%s' %i,
-		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'usePolylinePoint%s' %i))
+		'usePolylinePoint%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'usePolylinePoint%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'polylineIdx%s' %i,
-		bpy.props.IntVectorProperty(name = 'Index%s' %i, size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'polylineIdx%s' %i))
+		'polylineIdx%i' %i,
+		bpy.props.IntVectorProperty(name = 'Index%i' %i, size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'polylineIdx%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'usePolylineIdx%s' %i,
-		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'usePolylineIdx%s' %i))
+		'usePolylineIdx%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'usePolylineIdx%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'trimeshPoint%s' %i,
-		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trimeshPoint%s' %i))
+		'trimeshPoint%i' %i,
+		bpy.props.FloatVectorProperty(name = 'Point%i' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trimeshPoint%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'useTrimeshPoint%s' %i,
-		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useTrimeshPoint%s' %i))
+		'useTrimeshPoint%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useTrimeshPoint%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'trimeshIdx%s' %i,
-		bpy.props.IntVectorProperty(name = 'Index%s' %i, size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trimeshIdx%s' %i))
+		'trimeshIdx%i' %i,
+		bpy.props.IntVectorProperty(name = 'Index%i' %i, size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trimeshIdx%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'useTrimeshIdx%s' %i,
-		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useTrimeshIdx%s' %i))
+		'useTrimeshIdx%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useTrimeshIdx%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'convexHullPoint%s' %i,
-		bpy.props.FloatVectorProperty(name = 'Point%s' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'convexHullPoint%s' %i))
+		'convexHullPoint%i' %i,
+		bpy.props.FloatVectorProperty(name = 'Point%i' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'convexHullPoint%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'useConvexHullPoint%s' %i,
-		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useConvexHullPoint%s' %i))
+		'useConvexHullPoint%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useConvexHullPoint%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'height%s' %i,
-		bpy.props.FloatProperty(name = 'Point%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'height%s' %i))
+		'height%i' %i,
+		bpy.props.FloatProperty(name = 'Point%i' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'height%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'useHeight%s' %i,
-		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useHeight%s' %i))
+		'useHeight%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useHeight%i' %i))
 	)
 for i in range(MAX_ATTACH_COLLIDER_CNT):
 	setattr(
 		bpy.types.Object,
-		'attachTo%s' %i,
-		bpy.props.PointerProperty(name = 'Rigid body%s' %i, type = bpy.types.Object, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'attachTo%s' %i))
+		'attachTo%i' %i,
+		bpy.props.PointerProperty(name = 'Rigid body%i' %i, type = bpy.types.Object, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'attachTo%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'attach%s' %i,
-		bpy.props.BoolProperty(name = 'Attach to rigid body%s' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'attach%s' %i))
+		'attach%i' %i,
+		bpy.props.BoolProperty(name = 'Attach to rigid body%i' %i, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'attach%i' %i))
 	)
 for i in range(MAX_POTRACE_PASSES_PER_OBJECT_MAT):
 	setattr(
 		bpy.types.Object,
 		'minVisibleClrValue%i' %i,
-		bpy.props.FloatProperty(name = 'Min visible color value', min = 0, max = 1, default = .01, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minVisibleClrValue%s' %i))
+		bpy.props.FloatProperty(name = 'Min visible color value', min = 0, max = 1, default = .01, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minVisibleClrValue%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
 		'tintOutput%i' %i,
-		bpy.props.FloatVectorProperty(name = 'Tint output', subtype = 'COLOR', size = 4, min = 0, default = [1, 1, 1, 1], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'tintOutput%s' %i))
+		bpy.props.FloatVectorProperty(name = 'Tint output', subtype = 'COLOR', size = 4, min = 0, default = [1, 1, 1, 1], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'tintOutput%i' %i))
 	)
 	if i > 0:
 		setattr(
 			bpy.types.Object,
 			'useMinVisibleClrValue%i' %i,
-			bpy.props.BoolProperty(name = 'Use', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinVisibleClrValue%s' %i))
+			bpy.props.BoolProperty(name = 'Use', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinVisibleClrValue%i' %i))
 		)
 for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 	setattr(
@@ -2997,19 +2989,19 @@ class JS13KBPanel (bpy.types.Panel):
 		row.prop(ctx.world, 'invalidHtml')
 		if buildInfo['zip-size']:
 			self.layout.label(text = buildInfo['zip'])
-			if buildInfo['zip-size'] <= 1024*13:
-				self.layout.label(text = 'zip bytes=%s' %( buildInfo['zip-size'] ))
+			if buildInfo['zip-size'] <= 1024 * 13:
+				self.layout.label(text = 'zip bytes=%i' %( buildInfo['zip-size'] ))
 			else:
-				self.layout.label(text = 'zip KB=%s' %( buildInfo['zip-size'] / 1024 ))
-			self.layout.label(text = 'html-size=%s' %buildInfo['html-size'])
-			self.layout.label(text = 'js-size=%s' %buildInfo['js-size'])
-			self.layout.label(text = 'js-gz-size=%s' %buildInfo['js-gz-size'])
+				self.layout.label(text = 'zip KB=%i' %( buildInfo['zip-size'] / 1024 ))
+			self.layout.label(text = 'html-size=%i' %buildInfo['html-size'])
+			self.layout.label(text = 'js-size=%i' %buildInfo['js-size'])
+			self.layout.label(text = 'js-gz-size=%i' %buildInfo['js-gz-size'])
 		if buildInfo['html-size']:
 			self.layout.label(text = buildInfo['html'])
 			if buildInfo['html-size'] < 1024*16:
-				self.layout.label(text = 'html bytes=%s' %( buildInfo['html-size'] ))
+				self.layout.label(text = 'html bytes=%i' %( buildInfo['html-size'] ))
 			else:
-				self.layout.label(text = 'html KB=%s' %( buildInfo['html-size'] / 1024 ))
+				self.layout.label(text = 'html KB=%i' %( buildInfo['html-size'] / 1024 ))
 
 @bpy.utils.register_class
 class ObjectPanel (bpy.types.Panel):
@@ -3082,43 +3074,26 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'posPingPong')
 			self.layout.prop(ob, 'resPercent')
 		if ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
-			for i in range(MAX_POTRACE_PASSES_PER_OBJECT_MAT):
+			for i in range(GetLastUsedPropertyIndex(ob, 'useMinVisibleClrValue', MAX_POTRACE_PASSES_PER_OBJECT_MAT) + 2, 1):
 				row = self.layout.row()
-				row.prop(ob, 'minVisibleClrValue%s' %i)
-				row.prop(ob, 'tintOutput%s' %i)
+				row.prop(ob, 'minVisibleClrValue%i' %i)
+				row.prop(ob, 'tintOutput%i' %i)
 				if i > 0:
-					row.prop(ob, 'useMinVisibleClrValue%s' %i)
-					if not getattr(ob, 'useMinVisibleClrValue%s' %i):
-						break
-			foundUnassignedCam = False
-			for i in range(MAX_RENDER_CAMS_PER_OBJECT):
-				hasProp = getattr(ob, 'renderCam%s' %i)
-				if hasProp or not foundUnassignedCam:
-					self.layout.prop(ob, 'renderCam%s' %i)
-				if not foundUnassignedCam:
-					foundUnassignedCam = not hasProp
+					row.prop(ob, 'useMinVisibleClrValue%i' %i)
+			for i in range(GetLastUsedPropertyIndex(ob, 'renderCam', MAX_RENDER_CAMS_PER_OBJECT) + 2):
+				self.layout.prop(ob, 'renderCam%i' %i)
 		self.layout.label(text = 'Scripts')
-		foundUnassignedScript = False
-		for i in range(MAX_SCRIPTS_PER_OBJECT):
-			hasProp = getattr(ob, 'apiScript%s' %i)
-			if hasProp or not foundUnassignedScript:
-				row = self.layout.row()
-				row.prop(ob, 'apiScript%s' %i)
-				row.prop(ob, 'apiScriptType%s' %i)
-				row.prop(ob, 'apiScript%sDisable' %i)
-			if not foundUnassignedScript:
-				foundUnassignedScript = not hasProp
-		foundUnassignedScript = False
-		for i in range(MAX_SCRIPTS_PER_OBJECT):
-			hasProp = getattr(ob, 'runtimeScript%s' %i)
-			if hasProp or not foundUnassignedScript:
-				row = self.layout.row()
-				row.prop(ob, 'runtimeScript%s' %i)
-				row.prop(ob, 'initScript%s' %i)
-				row.prop(ob, 'runtimeScriptType%s' %i)
-				row.prop(ob, 'runtimeScript%sDisable' %i)
-			if not foundUnassignedScript:
-				foundUnassignedScript = not hasProp
+		for i in range(GetLastUsedPropertyIndex(ob, 'apiScript', MAX_SCRIPTS_PER_OBJECT) + 2):
+			row = self.layout.row()
+			row.prop(ob, 'apiScript%i' %i)
+			row.prop(ob, 'apiScriptType%i' %i)
+			row.prop(ob, 'apiScriptDisable%i' %i)
+		for i in range(GetLastUsedPropertyIndex(ob, 'runtimeScript', MAX_SCRIPTS_PER_OBJECT) + 2):
+			row = self.layout.row()
+			row.prop(ob, 'runtimeScript%i' %i)
+			row.prop(ob, 'initScript%i' %i)
+			row.prop(ob, 'runtimeScriptType%i' %i)
+			row.prop(ob, 'runtimeScriptDisable%i' %i)
 
 @bpy.utils.register_class
 class AttributesPanel (bpy.types.Panel):
@@ -3132,82 +3107,58 @@ class AttributesPanel (bpy.types.Panel):
 		ob = ctx.active_object
 		if not ob:
 			return
-		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		for i in range(GetLastUsedPropertyIndex(ob, 'useBool', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'boolName%i' %i)
 			row.prop(ob, 'boolVal%i' %i)
 			row.prop(ob, 'useBool%i' %i)
-			if not getattr(ob, 'useBool%i' %i):
-				break
-		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		for i in range(GetLastUsedPropertyIndex(ob, 'useInt', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'intName%i' %i)
 			row.prop(ob, 'intVal%i' %i)
 			row.prop(ob, 'useInt%i' %i)
-			if not getattr(ob, 'useInt%i' %i):
-				break
-		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		for i in range(GetLastUsedPropertyIndex(ob, 'useFloat', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'floatName%i' %i)
 			row.prop(ob, 'floatVal%i' %i)
 			row.prop(ob, 'useFloat%i' %i)
-			if not getattr(ob, 'useFloat%i' %i):
-				break
-		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		for i in range(GetLastUsedPropertyIndex(ob, 'useString', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'stringName%i' %i)
 			row.prop(ob, 'stringVal%i' %i)
 			row.prop(ob, 'useString%i' %i)
-			if not getattr(ob, 'useString%i' %i):
-				break
-		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		for i in range(GetLastUsedPropertyIndex(ob, 'useBoolArray', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'boolArrayName%i' %i)
 			row.prop(ob, 'useBoolArray%i' %i)
-			if not getattr(ob, 'useBoolArray%i' %i):
-				break
-			for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
+			for i2 in range(GetLastUsedPropertyIndex(ob, 'useBoolArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
 				row = self.layout.row()
 				row.prop(ob, 'boolArrayVal%i%i' %(i, i2))
 				row.prop(ob, 'useBoolArray%i%i' %(i, i2))
-				if not getattr(ob, 'useBoolArray%i%i' %(i, i2)):
-					break
-		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		for i in range(GetLastUsedPropertyIndex(ob, 'useIntArray', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'intArrayName%i' %i)
 			row.prop(ob, 'useIntArray%i' %i)
-			if not getattr(ob, 'useIntArray%i' %i):
-				break
-			for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
+			for i2 in range(GetLastUsedPropertyIndex(ob, 'useIntArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
 				row = self.layout.row()
 				row.prop(ob, 'intArrayVal%i%i' %(i, i2))
 				row.prop(ob, 'useIntArray%i%i' %(i, i2))
-				if not getattr(ob, 'useIntArray%i%i' %(i, i2)):
-					break
-		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		for i in range(GetLastUsedPropertyIndex(ob, 'useFloatArray', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'floatArrayName%i' %i)
 			row.prop(ob, 'useFloatArray%i' %i)
-			if not getattr(ob, 'useFloatArray%i' %i):
-				break
-			for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
+			for i2 in range(GetLastUsedPropertyIndex(ob, 'useFloatArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
 				row = self.layout.row()
 				row.prop(ob, 'floatArrayVal%i%i' %(i, i2))
 				row.prop(ob, 'useFloatArray%i%i' %(i, i2))
-				if not getattr(ob, 'useFloatArray%i%i' %(i, i2)):
-					break
-		for i in range(MAX_ATTRIBUTES_PER_OBJECT):
+		for i in range(GetLastUsedPropertyIndex(ob, 'useStringArray', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'stringArrayName%i' %i)
 			row.prop(ob, 'useStringArray%i' %i)
-			if not getattr(ob, 'useStringArray%i' %i):
-				break
-			for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
+			for i2 in range(GetLastUsedPropertyIndex(ob, 'useStringArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
 				row = self.layout.row()
 				row.prop(ob, 'stringArrayVal%i%i' %(i, i2))
 				row.prop(ob, 'useStringArray%i%i' %(i, i2))
-				if not getattr(ob, 'useStringArray%i%i' %(i, i2)):
-					break
 
 @bpy.utils.register_class
 class LightPanel (bpy.types.Panel):
