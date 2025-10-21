@@ -1363,6 +1363,7 @@ class Game:
 		self.clock = pygame.time.Clock()
 		self.running = True
 		self.dt = self.clock.tick(60) / 1000
+		self.frame = 0
 
 	def run (self):
 		while self.running:
@@ -1370,6 +1371,7 @@ class Game:
 			self.update ()
 			self.render ()
 			self.dt = self.clock.tick(60) / 1000
+			self.frame += 1
 
 	def handle_events (self):
 		for event in pygame.event.get():
@@ -1402,11 +1404,11 @@ class Game:
 		pygame.display.flip()
 
 pygame.init()
+game = Game()
 screen = pygame.display.set_mode(flags = pygame.FULLSCREEN)
 windowSize = pygame.display.get_window_size()
 # API
 # Init
-game = Game()
 game.run ()'''
 JS_SUFFIX = '''
 var i = 0;
