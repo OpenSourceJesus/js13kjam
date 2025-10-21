@@ -742,8 +742,8 @@ def RegisterPhysics (ob):
 			elif ob.shapeType == 'polyline':
 				collider += '['
 				for i in range(MAX_SHAPE_POINTS):
-					if getattr(ob, 'usePolylinePoint%i' %i):
-						point = getattr(ob, 'polylinePoint%i' %i)
+					if getattr(ob, 'usePolylinePnt%i' %i):
+						point = getattr(ob, 'polylinePnt%i' %i)
 						collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += '], ['
 				for i in range(MAX_SHAPE_POINTS):
@@ -754,8 +754,8 @@ def RegisterPhysics (ob):
 			elif ob.shapeType == 'trimesh':
 				collider += '['
 				for i in range(MAX_SHAPE_POINTS):
-					if getattr(ob, 'useTrimeshPoint%i' %i):
-						point = getattr(ob, 'trimeshPoint%i' %i)
+					if getattr(ob, 'useTrimeshPnt%i' %i):
+						point = getattr(ob, 'trimeshPnt%i' %i)
 						collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += '], ['
 				for i in range(MAX_SHAPE_POINTS):
@@ -766,15 +766,15 @@ def RegisterPhysics (ob):
 			elif ob.shapeType == 'convexHull':
 				collider += '['
 				for i in range(MAX_SHAPE_POINTS):
-					if getattr(ob, 'useConvexHullPoint%i' %i):
-						point = getattr(ob, 'convexHullPoint%i' %i)
+					if getattr(ob, 'useConvexHullPnt%i' %i):
+						point = getattr(ob, 'convexHullPnt%i' %i)
 						collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += ']'
 			elif ob.shapeType == 'roundConvexHull':
 				collider += '['
 				for i in range(MAX_SHAPE_POINTS):
-					if getattr(ob, 'useRoundConvexHullPoint%i' %i):
-						point = getattr(ob, 'roundConvexHullPoint%i' %i)
+					if getattr(ob, 'useRoundConvexHullPnt%i' %i):
+						point = getattr(ob, 'roundConvexHullPnt%i' %i)
 						collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += '], ' + str(ob.convexHullBorderRadius)
 			elif ob.shapeType == 'heightfield':
@@ -858,8 +858,8 @@ def RegisterPhysics (ob):
 		if ob.colliderExists:
 			polylinePnts = []
 			for i in range(MAX_SHAPE_POINTS):
-				if getattr(ob, 'usePolylinePoint%i' %i):
-					pnt = getattr(ob, 'polylinePoint%i' %i)
+				if getattr(ob, 'usePolylinePnt%i' %i):
+					pnt = getattr(ob, 'polylinePnt%i' %i)
 					polylinePnts.append(list(pnt))
 			polylineIdxs = []
 			for i in range(MAX_SHAPE_POINTS):
@@ -869,10 +869,13 @@ def RegisterPhysics (ob):
 			polylineIdxsStr = ''
 			if polylineIdxs != []:
 				polylineIdxsStr = str(polylineIdxs)
+				if len(polylineIdxs) == 1:
+					polylineIdxsStr = '[' + polylineIdxsStr + ']'
+				polylineIdxsStr =', ' + polylineIdxsStr
 			trimeshPnts = []
 			for i in range(MAX_SHAPE_POINTS):
-				if getattr(ob, 'useTrimeshPoint%i' %i):
-					pnt = getattr(ob, 'trimeshPoint%i' %i)
+				if getattr(ob, 'useTrimeshPnt%i' %i):
+					pnt = getattr(ob, 'trimeshPnt%i' %i)
 					trimeshPnts.append(list(pnt))
 			trimeshIdxs = []
 			for i in range(MAX_SHAPE_POINTS):
@@ -881,8 +884,8 @@ def RegisterPhysics (ob):
 					trimeshIdxs.append(list(idx))
 			convexHullPnts = []
 			for i in range(MAX_SHAPE_POINTS):
-				if getattr(ob, 'useConvexHullPoint%i' %i):
-					pnt = getattr(ob, 'convexHullPoint%i' %i)
+				if getattr(ob, 'useConvexHullPnt%i' %i):
+					pnt = getattr(ob, 'convexHullPnt%i' %i)
 					convexHullPnts.append(list(pnt))
 			heights = []
 			for i in range(MAX_SHAPE_POINTS):
@@ -907,9 +910,9 @@ def RegisterPhysics (ob):
 				elif ob.shapeType == 'roundTriangle':
 					collider = colliderName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.shapeType == 'polyline':
-					collider = colliderName + ' = sim.add_polyline_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')' + ', ' + polylineIdxsStr
+					collider = colliderName + ' = sim.add_polyline_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + polylineIdxsStr + ')'
 				elif ob.shapeType == 'trimesh':
-					collider = colliderName + ' = sim.add_trimesh_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(trimeshPnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')' + ', ' + str(trimeshIdxs)
+					collider = colliderName + ' = sim.add_trimesh_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(trimeshPnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + str(trimeshIdxs) + ')'
 				elif ob.shapeType == 'convexHull':
 					collider = colliderName + ' = sim.add_convex_hull_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.shapeType == 'roundConvexHull':
@@ -937,7 +940,7 @@ def RegisterPhysics (ob):
 					elif ob.shapeType == 'roundTriangle':
 						collider = colliderName + attachToVarName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.shapeType == 'polyline':
-						collider = colliderName + attachToVarName + ' = sim.add_polyline_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + polylineIdxsStr + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_polyline_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + polylineIdxsStr + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.shapeType == 'trimesh':
 						collider = colliderName + attachToVarName + ' = sim.add_trimesh_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(trimeshPnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + str(trimeshIdxs) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.shapeType == 'convexHull':
@@ -1317,18 +1320,15 @@ def copy_surface (name, newName, pos, rot = 0, wakeUp = True):
 	attributes[newName] = attributes[name].copy()
 	initRots[newName] = initRots[name]
 	pivots[newName] = pivots[name].copy()
-	offset = pygame.math.Vector2(surface.get_size()) / 2
-	offset[1] *= -1
-	offset = offset.rotate(rot)
 	if name in rigidBodiesIds:
-		rigidBodiesIds[newName] = sim.copy_rigid_body(rigidBodiesIds[name], pos + offset, rot, wakeUp)
+		rigidBodiesIds[newName] = sim.copy_rigid_body(rigidBodiesIds[name], pos, rot, wakeUp)
 		for i, collider in enumerate(sim.get_rigid_body_colliders(rigidBodiesIds[newName])):
 			collidersIds[newName + ':' + str(i)] = collider
 	else:
 		surface = pygame.transform.rotate(surface, rot)
 		initRots[newName] = rot
 		if name in collidersIds:
-			collidersIds[newName] = sim.copy_collider(collidersIds[name], pos + offset, rot, wakeUp)
+			collidersIds[newName] = sim.copy_collider(collidersIds[name], pos, rot, wakeUp)
 
 def remove_surface (name):
 	del surfaces[name]
@@ -2257,7 +2257,7 @@ def OnDrawColliders (self, ctx):
 	shader = gpu.shader.from_builtin('UNIFORM_COLOR')
 	shader.bind()
 	shader.uniform_float('color', VISUALIZER_CLR)
-	for ob in self.objects:
+	for ob in self.obs:
 		if not ob or not ob.colliderExists:
 			continue
 		matrix = ob.matrix_world
@@ -2424,8 +2424,41 @@ def OnDrawColliders (self, ctx):
 		# 		pnt2 = matrix @ pnt2
 		# 		pnt3 = matrix @ pnt3
 		# 		verts = [pnt, pnt2, pnt3]
-		# 	batch = batch_for_shader(shader, 'LINE_LOOP', {"pos" : verts})
+		# 	batch = batch_for_shader(shader, 'LINE_LOOP', {'pos' : verts})
 		# 	batch.draw(shader)
+		elif ob.shapeType == 'polyline':
+			pnts = []
+			idxs = []
+			for i in range(MAX_SHAPE_POINTS):
+				if getattr(ob, 'usePolylinePnt%i' %i):
+					pnts.append(matrix @ Vector(list(getattr(ob, 'polylinePnt%i' %i)) + [0]))
+				if getattr(ob, 'usePolylineIdx%i' %i):
+					idxs.append(list(getattr(ob, 'polylineIdx%i' %i)))
+			if idxs == []:
+				batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : pnts})
+			else:
+				batch = batch_for_shader(shader, 'LINES', {'pos' : pnts}, indices = idxs)
+			batch.draw(shader)
+		elif ob.shapeType == 'trimesh':
+			pnts = []
+			idxs = []
+			for i in range(MAX_SHAPE_POINTS):
+				if getattr(ob, 'useTrimeshPnt%i' %i):
+					pnts.append(matrix @ Vector(list(getattr(ob, 'trimeshPnt%i' %i)) + [0]))
+				if getattr(ob, 'useTrimeshIdx%i' %i):
+					idxs.append(list(getattr(ob, 'trimeshIdx%i' %i)))
+			if idxs == []:
+				batch = batch_for_shader(shader, 'TRI_STRIP', {'pos' : pnts})
+			else:
+				batch = batch_for_shader(shader, 'TRIS', {'pos' : pnts}, indices = idxs)
+			batch.draw(shader)
+		elif ob.shapeType == 'convexHull':
+			pnts = []
+			for i in range(MAX_SHAPE_POINTS):
+				if getattr(ob, 'useConvexHullPnt%i' %i):
+					pnts.append(matrix @ Vector(list(getattr(ob, 'convexHullPnt%i' %i)) + [0]))
+			batch = batch_for_shader(shader, 'LINE_LOOP', {'pos' : pnts})
+			batch.draw(shader)
 	gpu.state.blend_set('NONE')
 
 def OnDrawPivots (self, ctx):
@@ -2434,7 +2467,7 @@ def OnDrawPivots (self, ctx):
 	shader = gpu.shader.from_builtin('UNIFORM_COLOR')
 	shader.bind()
 	shader.uniform_float('color', VISUALIZER_CLR)
-	for ob in self.objects:
+	for ob in self.obs:
 		prevRotMode = ob.rotation_mode
 		ob.rotation_mode = 'XYZ'
 		matrix = Matrix.LocRotScale(Vector((0, 0, 0)), ob.rotation_euler, Vector((1, 1, 1)))
@@ -2462,6 +2495,47 @@ def OnDrawPivots (self, ctx):
 		batch.draw(shader)
 		ob.rotation_mode = prevRotMode
 	gpu.state.blend_set('NONE')
+
+def OnDrawColliderHandles (self, ctx):
+	for ob in self.obs:
+		for handle in [child for child in ob.children if child.name.startswith(ob.name + '_Handle')]:
+			try:
+				if ob.shapeType == 'ball':
+					pass
+				elif ob.shapeType == 'halfspace':
+					pass
+				elif ob.shapeType == 'cuboid':
+					pass
+				elif ob.shapeType == 'roundCuboid':
+					pass
+				elif ob.shapeType == 'capsule':
+					pass
+				elif ob.shapeType == 'segment':
+					pass
+				elif ob.shapeType == 'triangle':
+					pass
+				elif ob.shapeType == 'roundTriangle':
+					pass
+				elif ob.shapeType == 'polyline':
+					pass
+				elif ob.shapeType == 'trimesh':
+					pass
+				elif ob.shapeType == 'convexHull':
+					handleIdxStr = handle.name.rsplit('_Handle', 1)[-1]
+					handleIdx = int(handleIdxStr)
+					newPos = handle.location
+					propName = f'convexHullPnt{handleIdx}'
+					currVal = getattr(ob, propName)
+					if (currVal[0] != newPos.x) or (currVal[1] != newPos.y):
+						print('YAY')
+						setattr(ob, propName, (newPos.x, newPos.y))
+				elif ob.shapeType == 'roundConvexHull':
+					pass
+				elif ob.shapeType == 'heightField':
+					pass
+			except (ValueError, IndexError, AttributeError):
+				print('YAY')
+				continue
 
 def GetLastUsedPropertyIndex (ob, usePropName, propCnt, minIdx = 0) -> int:
 	for i in range(propCnt - 1, minIdx - 1, -1):
@@ -2670,13 +2744,13 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 for i in range(MAX_SHAPE_POINTS):
 	setattr(
 		bpy.types.Object,
-		'polylinePoint%i' %i,
-		bpy.props.FloatVectorProperty(name = 'Point%i' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'polylinePoint%i' %i))
+		'polylinePnt%i' %i,
+		bpy.props.FloatVectorProperty(name = 'Point%i' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'polylinePnt%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'usePolylinePoint%i' %i,
-		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'usePolylinePoint%i' %i))
+		'usePolylinePnt%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'usePolylinePnt%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
@@ -2690,13 +2764,13 @@ for i in range(MAX_SHAPE_POINTS):
 	)
 	setattr(
 		bpy.types.Object,
-		'trimeshPoint%i' %i,
-		bpy.props.FloatVectorProperty(name = 'Point%i' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trimeshPoint%i' %i))
+		'trimeshPnt%i' %i,
+		bpy.props.FloatVectorProperty(name = 'Point%i' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trimeshPnt%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'useTrimeshPoint%i' %i,
-		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useTrimeshPoint%i' %i))
+		'useTrimeshPnt%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useTrimeshPnt%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
@@ -2710,13 +2784,13 @@ for i in range(MAX_SHAPE_POINTS):
 	)
 	setattr(
 		bpy.types.Object,
-		'convexHullPoint%i' %i,
-		bpy.props.FloatVectorProperty(name = 'Point%i' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'convexHullPoint%i' %i))
+		'convexHullPnt%i' %i,
+		bpy.props.FloatVectorProperty(name = 'Point%i' %i, size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'convexHullPnt%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'useConvexHullPoint%i' %i,
-		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useConvexHullPoint%i' %i))
+		'useConvexHullPnt%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useConvexHullPnt%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
@@ -3127,34 +3201,38 @@ class AttributesPanel (bpy.types.Panel):
 			row = self.layout.row()
 			row.prop(ob, 'boolArrayName%i' %i)
 			row.prop(ob, 'useBoolArray%i' %i)
-			for i2 in range(GetLastUsedPropertyIndex(ob, 'useBoolArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
-				row = self.layout.row()
-				row.prop(ob, 'boolArrayVal%i%i' %(i, i2))
-				row.prop(ob, 'useBoolArray%i%i' %(i, i2))
+			if getattr(ob, 'useBoolArray%i' %i):
+				for i2 in range(GetLastUsedPropertyIndex(ob, 'useBoolArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
+					row = self.layout.row()
+					row.prop(ob, 'boolArrayVal%i%i' %(i, i2))
+					row.prop(ob, 'useBoolArray%i%i' %(i, i2))
 		for i in range(GetLastUsedPropertyIndex(ob, 'useIntArray', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'intArrayName%i' %i)
 			row.prop(ob, 'useIntArray%i' %i)
-			for i2 in range(GetLastUsedPropertyIndex(ob, 'useIntArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
-				row = self.layout.row()
-				row.prop(ob, 'intArrayVal%i%i' %(i, i2))
-				row.prop(ob, 'useIntArray%i%i' %(i, i2))
+			if getattr(ob, 'useIntArray%i' %i):
+				for i2 in range(GetLastUsedPropertyIndex(ob, 'useIntArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
+					row = self.layout.row()
+					row.prop(ob, 'intArrayVal%i%i' %(i, i2))
+					row.prop(ob, 'useIntArray%i%i' %(i, i2))
 		for i in range(GetLastUsedPropertyIndex(ob, 'useFloatArray', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'floatArrayName%i' %i)
 			row.prop(ob, 'useFloatArray%i' %i)
-			for i2 in range(GetLastUsedPropertyIndex(ob, 'useFloatArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
-				row = self.layout.row()
-				row.prop(ob, 'floatArrayVal%i%i' %(i, i2))
-				row.prop(ob, 'useFloatArray%i%i' %(i, i2))
+			if getattr(ob, 'useFloatArray%i' %i):
+				for i2 in range(GetLastUsedPropertyIndex(ob, 'useFloatArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
+					row = self.layout.row()
+					row.prop(ob, 'floatArrayVal%i%i' %(i, i2))
+					row.prop(ob, 'useFloatArray%i%i' %(i, i2))
 		for i in range(GetLastUsedPropertyIndex(ob, 'useStringArray', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'stringArrayName%i' %i)
 			row.prop(ob, 'useStringArray%i' %i)
-			for i2 in range(GetLastUsedPropertyIndex(ob, 'useStringArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
-				row = self.layout.row()
-				row.prop(ob, 'stringArrayVal%i%i' %(i, i2))
-				row.prop(ob, 'useStringArray%i%i' %(i, i2))
+			if getattr(ob, 'useStringArray%i' %i):
+				for i2 in range(GetLastUsedPropertyIndex(ob, 'useStringArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
+					row = self.layout.row()
+					row.prop(ob, 'stringArrayVal%i%i' %(i, i2))
+					row.prop(ob, 'useStringArray%i%i' %(i, i2))
 
 @bpy.utils.register_class
 class LightPanel (bpy.types.Panel):
@@ -3258,9 +3336,9 @@ class ColliderPanel (bpy.types.Panel):
 		elif ob.shapeType == 'polyline':
 			for i in range(MAX_SHAPE_POINTS):
 				row = self.layout.row()
-				row.prop(ob, 'polylinePoint%i' %i)
-				row.prop(ob, 'usePolylinePoint%i' %i)
-				if not getattr(ob, 'usePolylinePoint%i' %i):
+				row.prop(ob, 'polylinePnt%i' %i)
+				row.prop(ob, 'usePolylinePnt%i' %i)
+				if not getattr(ob, 'usePolylinePnt%i' %i):
 					break
 			for i in range(MAX_SHAPE_POINTS):
 				row = self.layout.row()
@@ -3271,9 +3349,9 @@ class ColliderPanel (bpy.types.Panel):
 		elif ob.shapeType == 'trimesh':
 			for i in range(MAX_SHAPE_POINTS):
 				row = self.layout.row()
-				row.prop(ob, 'trimeshPoint%i' %i)
-				row.prop(ob, 'useTrimeshPoint%i' %i)
-				if not getattr(ob, 'useTrimeshPoint%i' %i):
+				row.prop(ob, 'trimeshPnt%i' %i)
+				row.prop(ob, 'useTrimeshPnt%i' %i)
+				if not getattr(ob, 'useTrimeshPnt%i' %i):
 					break
 			for i in range(MAX_SHAPE_POINTS):
 				row = self.layout.row()
@@ -3284,16 +3362,16 @@ class ColliderPanel (bpy.types.Panel):
 		elif ob.shapeType == 'convexHull':
 			for i in range(MAX_SHAPE_POINTS):
 				row = self.layout.row()
-				row.prop(ob, 'convexHullPoint%i' %i)
-				row.prop(ob, 'useConvexHullPoint%i' %i)
-				if not getattr(ob, 'useConvexHullPoint%i' %i):
+				row.prop(ob, 'convexHullPnt%i' %i)
+				row.prop(ob, 'useConvexHullPnt%i' %i)
+				if not getattr(ob, 'useConvexHullPnt%i' %i):
 					break
 		elif ob.shapeType == 'roundConvexHull':
 			for i in range(MAX_SHAPE_POINTS):
 				row = self.layout.row()
-				row.prop(ob, 'convexHullPoint%i' %i)
-				row.prop(ob, 'useConvexHullPoint%i' %i)
-				if not getattr(ob, 'useConvexHullPoint%i' %i):
+				row.prop(ob, 'convexHullPnt%i' %i)
+				row.prop(ob, 'useConvexHullPnt%i' %i)
+				if not getattr(ob, 'useConvexHullPnt%i' %i):
 					break
 			self.layout.prop(ob, 'convexHullBorderRadius')
 		elif ob.shapeType == 'heightfield':
@@ -3401,8 +3479,8 @@ class DrawColliders (bpy.types.Operator):
 			if DrawColliders.handle:
 				DrawColliders.isRunning = False
 				return {'FINISHED'}
-			self.objects = ctx.selected_objects
-			if not self.objects:
+			self.obs = ctx.selected_objects
+			if not self.obs:
 				self.report({'INFO'}, 'No objects selected.')
 				return {'CANCELLED'}
 			args = (self, ctx)
@@ -3437,8 +3515,8 @@ class DrawPivots (bpy.types.Operator):
 			if DrawPivots.handle:
 				DrawPivots.isRunning = False
 				return {'FINISHED'}
-			self.objects = ctx.selected_objects
-			if not self.objects:
+			self.obs = ctx.selected_objects
+			if not self.obs:
 				self.report({'INFO'}, 'No objects selected.')
 				return {'CANCELLED'}
 			args = (self, ctx)
@@ -3463,33 +3541,130 @@ class VisualizersPanel (bpy.types.Panel):
 			layout.operator('view3d.draw_colliders', text = 'Stop Visualizing Colliders', depress = True)
 		else:
 			layout.operator('view3d.draw_colliders', text = 'Visualize Colliders', depress = False)
+		if ColliderHandles.isRunning:
+			layout.operator('view3d.collider_handles', text = 'Stop Editing Collider', depress = True)
+		else:
+			layout.operator('view3d.collider_handles', text = 'Edit Collider', depress = False)
 		if DrawPivots.isRunning:
 			layout.operator('view3d.draw_pivots', text = 'Stop Visualizing Pivots', depress = True)
 		else:
 			layout.operator('view3d.draw_pivots', text = 'Visualize Pivots', depress = False)
 
-classes = (
+class ColliderHandles (bpy.types.Operator):
+	bl_idname = 'view3d.collider_handles'
+	bl_label = 'Edit Colliders'
+	handle = None
+	isRunning = False
+
+	@classmethod
+	def poll (cls, ctx):
+		ob = ctx.object
+		return ob and ob.colliderExists
+
+	def modal (self, ctx, event):
+		if not ColliderHandles.isRunning:
+			bpy.types.SpaceView3D.draw_handler_remove(ColliderHandles.handle, 'WINDOW')
+			ColliderHandles.handle = None
+			for ob in self.obs:
+				removeHandles = [child for child in ob.children if child.name.startswith(ob.name + '_Handle')]
+				for removeHandle in removeHandles:
+					bpy.data.objects.remove(removeHandle, do_unlink = True)
+			ctx.area.tag_redraw()
+			return {'CANCELLED'}
+		ctx.area.tag_redraw()
+		if event.type in {'RIGHTMOUSE', 'ESC'}:
+			ColliderHandles.isRunning = False
+			return {'PASS_THROUGH'}
+		return {'PASS_THROUGH'}
+
+	def invoke (self, ctx, event):
+		if ctx.area.type == 'VIEW_3D':
+			if ColliderHandles.handle:
+				ColliderHandles.isRunning = False
+				return {'FINISHED'}
+			self.obs = ctx.selected_objects
+			if not self.obs:
+				self.report({'INFO'}, "No objects selected; can't run operator")
+				return {'CANCELLED'}
+			for ob in self.obs:
+				if ob.shapeType == 'ball':
+					pass
+				elif ob.shapeType == 'halfspace':
+					pass
+				elif ob.shapeType == 'cuboid':
+					pass
+				elif ob.shapeType == 'roundCuboid':
+					pass
+				elif ob.shapeType == 'capsule':
+					pass
+				elif ob.shapeType == 'segment':
+					pass
+				elif ob.shapeType == 'triangle':
+					pass
+				elif ob.shapeType == 'roundTriangle':
+					pass
+				elif ob.shapeType == 'polyline':
+					pass
+				elif ob.shapeType == 'trimesh':
+					pass
+				elif ob.shapeType == 'convexHull':
+					for i in range(MAX_SHAPE_POINTS):
+						usePnt = getattr(ob, f'useConvexHullPnt{i}')
+						if usePnt:
+							localPnt = getattr(ob, f'convexHullPnt{i}')
+							handle = bpy.data.objects.new(ob.name + f'_Handle{i}', None)
+							handle.empty_display_type = 'CUBE'
+							handle.empty_display_size = 0.1
+							handle.location = (localPnt[0], localPnt[1], 0)
+							handle.parent = ob
+							ctx.collection.objects.link(handle)
+				elif ob.shapeType == 'roundConvexHull':
+					pass
+				elif ob.shapeType == 'heightField':
+					pass
+			self.report({'INFO'}, 'Made handles for collider(s)')
+			args = (self, ctx)
+			ColliderHandles.handle = bpy.types.SpaceView3D.draw_handler_add(OnDrawColliderHandles, args, 'WINDOW', 'POST_VIEW')
+			ColliderHandles.isRunning = True
+			ctx.window_manager.modal_handler_add(self)
+			return {'RUNNING_MODAL'}
+		else:
+			self.report({'WARNING'}, "View3D not found; can't run operator")
+			return {'CANCELLED'}
+		return {'FINISHED'}
+
+REGISTER_CLASSES = (
 	DrawColliders,
 	DrawPivots,
-	VisualizersPanel
+	VisualizersPanel,
+	ColliderHandles,
 )
 
-def register():
-	for cls in classes:
-		bpy.utils.register_class(cls)
-	DrawColliders.handle = None
-	DrawColliders.is_running = False
+VIEW_3D_OPERATORS = (
+	DrawColliders,
+	DrawPivots,
+	ColliderHandles,
+)
 
-def unregister():
+def register ():
+	for cls in REGISTER_CLASSES:
+		bpy.utils.register_class(cls)
+	for cls in VIEW_3D_OPERATORS:
+		cls.handle = None
+		cls.isRunning = False
+
+def unregister ():
 	if DrawColliders.handle:
 		bpy.types.SpaceView3D.draw_handler_remove(DrawColliders.handle, 'WINDOW')
-	DrawColliders.isRunning = False
-	DrawColliders.handle = None
-	for cls in reversed(classes):
+		bpy.types.SpaceView3D.draw_handler_remove(DrawPivots.handle, 'WINDOW')
+	for cls in VIEW_3D_OPERATORS:
+		cls.handle = None
+		cls.isRunning = False
+	for cls in reversed(REGISTER_CLASSES):
 		bpy.utils.unregister_class(cls)
 
 if __name__ == '__main__':
-	register()
+	register ()
 
 for arg in sys.argv:
 	if arg.startswith('-o='):
