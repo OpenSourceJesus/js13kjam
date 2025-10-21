@@ -1186,29 +1186,29 @@ def GetAttributes (ob):
 		if getattr(ob, 'useBoolArray%i' %i):
 			arr = []
 			for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
-				if getattr(ob, 'useBoolArray%i%i' %(i, i2)):
-					arr.append(getattr(ob, 'boolArrayVal%i%i' %(i, i2)))
+				if getattr(ob, 'useBoolArray%i,%i' %(i, i2)):
+					arr.append(getattr(ob, 'boolArrayVal%i,%i' %(i, i2)))
 			output[getattr(ob, 'boolArrayName%i' %i)] = arr
 	for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 		if getattr(ob, 'useIntArray%i' %i):
 			arr = []
 			for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
-				if getattr(ob, 'useIntArray%i%i' %(i, i2)):
-					arr.append(getattr(ob, 'intArrayVal%i%i' %(i, i2)))
+				if getattr(ob, 'useIntArray%i,%i' %(i, i2)):
+					arr.append(getattr(ob, 'intArrayVal%i,%i' %(i, i2)))
 			output[getattr(ob, 'intArrayName%i' %i)] = arr
 	for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 		if getattr(ob, 'useFloatArray%i' %i):
 			arr = []
 			for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
-				if getattr(ob, 'useFloatArray%i%i' %(i, i2)):
-					arr.append(getattr(ob, 'floatArrayVal%i%i' %(i, i2)))
+				if getattr(ob, 'useFloatArray%i,%i' %(i, i2)):
+					arr.append(getattr(ob, 'floatArrayVal%i,%i' %(i, i2)))
 			output[getattr(ob, 'floatArrayName%i' %i)] = arr
 	for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 		if getattr(ob, 'useStringArray%i' %i):
 			arr = []
 			for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
-				if getattr(ob, 'useStringArray%i%i' %(i, i2)):
-					arr.append(getattr(ob, 'stringArrayVal%i%i' %(i, i2)))
+				if getattr(ob, 'useStringArray%i,%i' %(i, i2)):
+					arr.append(getattr(ob, 'stringArrayVal%i,%i' %(i, i2)))
 			output[getattr(ob, 'stringArrayName%i' %i)] = arr
 	return output
 
@@ -2889,13 +2889,13 @@ for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 	for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
 		setattr(
 			bpy.types.Object,
-			'boolArrayVal%i%i' %(i, i2),
-			bpy.props.BoolProperty(name = 'Bool array value%i%i' %(i, i2), update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'boolArrayVal%i%i' %(i, i2)))
+			'boolArrayVal%i,%i' %(i, i2),
+			bpy.props.BoolProperty(name = 'Bool array value%i,%i' %(i, i2), update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'boolArrayVal%i,%i' %(i, i2)))
 		)
 		setattr(
 			bpy.types.Object,
-			'useBoolArray%i%i' %(i, i2),
-			bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useBoolArray%i%i' %(i, i2)))
+			'useBoolArray%i,%i' %(i, i2),
+			bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useBoolArray%i,%i' %(i, i2)))
 		)
 	setattr(
 		bpy.types.Object,
@@ -2910,13 +2910,13 @@ for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 	for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
 		setattr(
 			bpy.types.Object,
-			'intArrayVal%i%i' %(i, i2),
-			bpy.props.IntProperty(name = 'Int array value%i%i' %(i, i2), update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'intArrayVal%i%i' %(i, i2)))
+			'intArrayVal%i,%i' %(i, i2),
+			bpy.props.IntProperty(name = 'Int array value%i,%i' %(i, i2), update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'intArrayVal%i,%i' %(i, i2)))
 		)
 		setattr(
 			bpy.types.Object,
-			'useIntArray%i%i' %(i, i2),
-			bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useIntArray%i%i' %(i, i2)))
+			'useIntArray%i,%i' %(i, i2),
+			bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useIntArray%i,%i' %(i, i2)))
 		)
 	setattr(
 		bpy.types.Object,
@@ -2931,13 +2931,13 @@ for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 	for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
 		setattr(
 			bpy.types.Object,
-			'floatArrayVal%i%i' %(i, i2),
-			bpy.props.FloatProperty(name = 'Float array value%i%i' %(i, i2), update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'floatArrayVal%i%i' %(i, i2)))
+			'floatArrayVal%i,%i' %(i, i2),
+			bpy.props.FloatProperty(name = 'Float array value%i,%i' %(i, i2), update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'floatArrayVal%i,%i' %(i, i2)))
 		)
 		setattr(
 			bpy.types.Object,
-			'useFloatArray%i%i' %(i, i2),
-			bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useFloatArray%i%i' %(i, i2)))
+			'useFloatArray%i,%i' %(i, i2),
+			bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useFloatArray%i,%i' %(i, i2)))
 		)
 	setattr(
 		bpy.types.Object,
@@ -2952,13 +2952,13 @@ for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 	for i2 in range(MAX_ELTS_IN_ATTRIBUTES_ARR):
 		setattr(
 			bpy.types.Object,
-			'stringArrayVal%i%i' %(i, i2),
-			bpy.props.StringProperty(name = 'String array value%i%i' %(i, i2), update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'stringArrayVal%i%i' %(i, i2)))
+			'stringArrayVal%i,%i' %(i, i2),
+			bpy.props.StringProperty(name = 'String array value%i,%i' %(i, i2), update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'stringArrayVal%i,%i' %(i, i2)))
 		)
 		setattr(
 			bpy.types.Object,
-			'useStringArray%i%i' %(i, i2),
-			bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStringArray%i%i' %(i, i2)))
+			'useStringArray%i,%i' %(i, i2),
+			bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStringArray%i,%i' %(i, i2)))
 		)
 	setattr(
 		bpy.types.Object,
@@ -3192,37 +3192,37 @@ class AttributesPanel (bpy.types.Panel):
 			row.prop(ob, 'boolArrayName%i' %i)
 			row.prop(ob, 'useBoolArray%i' %i)
 			if getattr(ob, 'useBoolArray%i' %i):
-				for i2 in range(GetLastUsedPropertyIndex(ob, 'useBoolArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
+				for i2 in range(GetLastUsedPropertyIndex(ob, 'useBoolArray%i,' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
 					row = self.layout.row()
-					row.prop(ob, 'boolArrayVal%i%i' %(i, i2))
-					row.prop(ob, 'useBoolArray%i%i' %(i, i2))
+					row.prop(ob, 'boolArrayVal%i,%i' %(i, i2))
+					row.prop(ob, 'useBoolArray%i,%i' %(i, i2))
 		for i in range(GetLastUsedPropertyIndex(ob, 'useIntArray', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'intArrayName%i' %i)
 			row.prop(ob, 'useIntArray%i' %i)
 			if getattr(ob, 'useIntArray%i' %i):
-				for i2 in range(GetLastUsedPropertyIndex(ob, 'useIntArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
+				for i2 in range(GetLastUsedPropertyIndex(ob, 'useIntArray%i,' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
 					row = self.layout.row()
-					row.prop(ob, 'intArrayVal%i%i' %(i, i2))
-					row.prop(ob, 'useIntArray%i%i' %(i, i2))
+					row.prop(ob, 'intArrayVal%i,%i' %(i, i2))
+					row.prop(ob, 'useIntArray%i,%i' %(i, i2))
 		for i in range(GetLastUsedPropertyIndex(ob, 'useFloatArray', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'floatArrayName%i' %i)
 			row.prop(ob, 'useFloatArray%i' %i)
 			if getattr(ob, 'useFloatArray%i' %i):
-				for i2 in range(GetLastUsedPropertyIndex(ob, 'useFloatArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
+				for i2 in range(GetLastUsedPropertyIndex(ob, 'useFloatArray%i,' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
 					row = self.layout.row()
-					row.prop(ob, 'floatArrayVal%i%i' %(i, i2))
-					row.prop(ob, 'useFloatArray%i%i' %(i, i2))
+					row.prop(ob, 'floatArrayVal%i,%i' %(i, i2))
+					row.prop(ob, 'useFloatArray%i,%i' %(i, i2))
 		for i in range(GetLastUsedPropertyIndex(ob, 'useStringArray', MAX_ATTRIBUTES_PER_OBJECT) + 2):
 			row = self.layout.row()
 			row.prop(ob, 'stringArrayName%i' %i)
 			row.prop(ob, 'useStringArray%i' %i)
 			if getattr(ob, 'useStringArray%i' %i):
-				for i2 in range(GetLastUsedPropertyIndex(ob, 'useStringArray%i' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
+				for i2 in range(GetLastUsedPropertyIndex(ob, 'useStringArray%i,' %i, MAX_ELTS_IN_ATTRIBUTES_ARR) + 2):
 					row = self.layout.row()
-					row.prop(ob, 'stringArrayVal%i%i' %(i, i2))
-					row.prop(ob, 'useStringArray%i%i' %(i, i2))
+					row.prop(ob, 'stringArrayVal%i,%i' %(i, i2))
+					row.prop(ob, 'useStringArray%i,%i' %(i, i2))
 
 @bpy.utils.register_class
 class LightPanel (bpy.types.Panel):
