@@ -1271,7 +1271,7 @@ buildInfo = {
 	'js-gz-size' : None,
 }
 
-PYTHON = '''from python import os, math, pygame, typing, PyRapier2d
+PYTHON = '''from python import os, sys, math, pygame, typing, PyRapier2d
 from typing import List
 
 os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
@@ -1288,6 +1288,10 @@ surfacesRects = {}
 initRots = {}
 screen = None
 windowSize = None
+if sys.platform == 'win32':
+	TMP_DIR = os.path.expanduser('~\\AppData\\Local\\Temp')
+else:
+	TMP_DIR = '/tmp'
 # Pivots
 # Attributes
 off = pygame.math.Vector2()
