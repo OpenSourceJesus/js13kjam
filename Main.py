@@ -734,11 +734,11 @@ def RegisterPhysics (ob):
 			elif ob.shapeType == 'capsule':
 				collider += str(ob.capsuleHeight / 2) + ', ' + str(ob.capsuleRadius)
 			elif ob.shapeType == 'segment':
-				collider += ToVector2String(ob.segmentPos1) + ', ' + ToVector2String(ob.segmentPos2)
+				collider += ToVector2String(ob.segmentPnt0) + ', ' + ToVector2String(ob.segmentPnt1)
 			elif ob.shapeType == 'triangle':
-				collider += ToVector2String(ob.trianglePos1) + ', ' + ToVector2String(ob.trianglePos2) + ', ' + ToVector2String(ob.trianglePos3)
+				collider += ToVector2String(ob.trianglePnt0) + ', ' + ToVector2String(ob.trianglePnt1) + ', ' + ToVector2String(ob.trianglePnt2)
 			elif ob.shapeType == 'roundTriangle':
-				collider += ToVector2String(ob.trianglePos1) + ', ' + ToVector2String(ob.trianglePos2) + ', ' + ToVector2String(ob.trianglePos3) + ', ' + str(ob.triangleBorderRadius)
+				collider += ToVector2String(ob.trianglePnt0) + ', ' + ToVector2String(ob.trianglePnt1) + ', ' + ToVector2String(ob.trianglePnt2) + ', ' + str(ob.triangleBorderRadius)
 			elif ob.shapeType == 'polyline':
 				collider += '['
 				for i in range(MAX_SHAPE_PNTS):
@@ -904,11 +904,11 @@ def RegisterPhysics (ob):
 				elif ob.shapeType == 'capsule':
 					collider = colliderName + ' = sim.add_capsule_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.shapeType == 'segment':
-					collider = colliderName + ' = sim.add_segment_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPos1)) + ', ' + str(list(ob.segmentPos2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_segment_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPnt0)) + ', ' + str(list(ob.segmentPnt1)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.shapeType == 'triangle':
-					collider = colliderName + ' = sim.add_triangle_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_triangle_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePnt0)) + ', ' + str(list(ob.trianglePnt1)) + ', ' + str(list(ob.trianglePnt2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.shapeType == 'roundTriangle':
-					collider = colliderName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePnt0)) + ', ' + str(list(ob.trianglePnt1)) + ', ' + str(list(ob.trianglePnt2)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.shapeType == 'polyline':
 					collider = colliderName + ' = sim.add_polyline_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + polylineIdxsStr + ')'
 				elif ob.shapeType == 'trimesh':
@@ -934,11 +934,11 @@ def RegisterPhysics (ob):
 					elif ob.shapeType == 'capsule':
 						collider = colliderName + attachToVarName + ' = sim.add_capsule_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.shapeType == 'segment':
-						collider = colliderName + attachToVarName + ' = sim.add_segment_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPos1)) + ', ' + str(list(ob.segmentPos2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_segment_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPnt0)) + ', ' + str(list(ob.segmentPnt1)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.shapeType == 'triangle':
-						collider = colliderName + attachToVarName + ' = sim.add_triangle_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_triangle_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePnt0)) + ', ' + str(list(ob.trianglePnt1)) + ', ' + str(list(ob.trianglePnt2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.shapeType == 'roundTriangle':
-						collider = colliderName + attachToVarName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePos1)) + ', ' + str(list(ob.trianglePos2)) + ', ' + str(list(ob.trianglePos3)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePnt0)) + ', ' + str(list(ob.trianglePnt1)) + ', ' + str(list(ob.trianglePnt2)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.shapeType == 'polyline':
 						collider = colliderName + attachToVarName + ' = sim.add_polyline_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + polylineIdxsStr + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.shapeType == 'trimesh':
@@ -2366,21 +2366,21 @@ def OnDrawColliders (self, ctx):
 				batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : verts})
 				batch.draw(shader)
 		elif ob.shapeType == 'segment':
-			pnt = matrix @ Vector(list(ob.segmentPos1))
-			pnt2 = matrix @ Vector(list(ob.segmentPos2))
+			pnt = matrix @ Vector(list(ob.segmentPnt0))
+			pnt2 = matrix @ Vector(list(ob.segmentPnt1))
 			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
 			batch.draw(shader)
 		elif ob.shapeType == 'triangle':
-			pnt = matrix @ Vector(list(ob.trianglePos1) + [0])
-			pnt2 = matrix @ Vector(list(ob.trianglePos2) + [0])
-			pnt3 = matrix @ Vector(list(ob.trianglePos3) + [0])
+			pnt = matrix @ Vector(list(ob.trianglePnt0) + [0])
+			pnt2 = matrix @ Vector(list(ob.trianglePnt1) + [0])
+			pnt3 = matrix @ Vector(list(ob.trianglePnt2) + [0])
 			batch = batch_for_shader(shader, 'LINE_LOOP', {'pos' : [pnt, pnt2, pnt3]})
 			batch.draw(shader)
 		# elif ob.shapeType == 'roundTriangle':
 		# 	try:
-		# 		pnt = Vector(list(ob.trianglePos1) + [0])
-		# 		pnt2 = Vector(list(ob.trianglePos2) + [0])
-		# 		pnt3 = Vector(list(ob.trianglePos3) + [0])
+		# 		pnt = Vector(list(ob.trianglePnt0) + [0])
+		# 		pnt2 = Vector(list(ob.trianglePnt1) + [0])
+		# 		pnt3 = Vector(list(ob.trianglePnt2) + [0])
 		# 		radius = ob.triangleBorderRadius
 		# 		v12, v21 = (pnt2 - pnt).normalized(), (pnt - pnt2).normalized()
 		# 		v23, v32 = (pnt3 - pnt2).normalized(), (pnt2 - pnt3).normalized()
@@ -2651,7 +2651,7 @@ bpy.types.Object.cuboidBorderRadius = bpy.props.FloatProperty(name = 'Border rad
 bpy.types.Object.capsuleHeight = bpy.props.FloatProperty(name = 'Height', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'capsuleHeight'))
 bpy.types.Object.capsuleRadius = bpy.props.FloatProperty(name = 'Radius', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'capsuleRadius'))
 bpy.types.Object.isVertical = bpy.props.BoolProperty(name = 'Is vertical', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'isVertical'))
-bpy.types.Object.segmentPos0 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'segmentPnt0'))
+bpy.types.Object.segmentPnt0 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'segmentPnt0'))
 bpy.types.Object.segmentPnt1 = bpy.props.FloatVectorProperty(name = 'Position 2', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'segmentPnt1'))
 bpy.types.Object.trianglePnt0 = bpy.props.FloatVectorProperty(name = 'Position 1', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trianglePnt0'))
 bpy.types.Object.trianglePnt1 = bpy.props.FloatVectorProperty(name = 'Position 2', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'trianglePnt1'))
