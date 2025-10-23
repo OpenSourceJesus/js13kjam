@@ -258,6 +258,8 @@ exportType = None
 vars = []
 attributes = {}
 pivots = {}
+globals = []
+renderCode = []
 
 def ExportObject (ob):
 	global svgsDatas
@@ -855,6 +857,8 @@ def RegisterPhysics (ob):
 			rigidBodyName = obVarName + 'RigidBody'
 			rigidBody = rigidBodyName + ' = sim.add_rigid_body(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ', ' + str(ob.canSleep) + ', ' + str(ob.continuousCollideDetect) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
 			rigidBodies[ob] = rigidBody
+			vars.append(rigidBodyName + ' = -1')
+			globals.append(rigidBodyName)
 		if ob.colliderExists:
 			polylinePnts = []
 			for i in range(MAX_SHAPE_PNTS):
@@ -920,6 +924,8 @@ def RegisterPhysics (ob):
 				elif ob.shapeType == 'heightfield':
 					collider = colliderName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
+				vars.append(colliderName + ' = -1')
+				globals.append(colliderName)
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
@@ -950,6 +956,8 @@ def RegisterPhysics (ob):
 					elif ob.shapeType == 'heightfield':
 						collider = colliderName + attachToVarName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					collider += '\ncollidersIds["' + colliderName + attachToVarName + '"] = ' + colliderName + attachToVarName
+					vars.append(colliderName + attachToVarName + ' = -1')
+					globals.append(colliderName + attachToVarName)
 			colliders[ob] = collider
 		if ob.jointExists:
 			jointName = obVarName + 'Joint'
@@ -964,6 +972,8 @@ def RegisterPhysics (ob):
 			elif ob.joinType == 'rope':
 				joint = jointName + ' = sim.add_rope_joint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(list(ob.jointLen)) + ')'
 			joint += '\njointsIds["' + obVarName + '"] = ' + jointName
+			vars.append(jointName + ' = -1')
+			globals.append(jointName)
 			joints[ob] = joint
 	ob.rotation_mode = prevRotMode
 
@@ -1101,16 +1111,16 @@ def AddImageDataForExe (ob, imgPath, pos, size, opacity):
 	surface = GetVarNameForObject(ob)
 	surfaceRect = surface + 'Rect'
 	tint = [int(c * 255) for c in ob.tint]
-	initCodeClause = surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n'
+	renderCodeClause = surface + ' = pygame.image.load("' + imgPath + '").convert_alpha()\n'
 	if tint + [opacity] != [255, 255, 255, 1]:
-		initCodeClause += 'tintSurface = pygame.Surface(' + surface + '.get_size()).convert_alpha()\ntintSurface.fill((' + str(tint[0]) + ', ' + str(tint[1]) + ', ' + str(tint[2]) + ', ' + str(opacity * 255) + '))\n' + surface + '.blit(tintSurface, (0, 0), special_flags = pygame.BLEND_RGBA_MULT)\n'
-	initCodeClause += surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n'
+		renderCodeClause += 'tintSurface = pygame.Surface(' + surface + '.get_size()).convert_alpha()\ntintSurface.fill((' + str(tint[0]) + ', ' + str(tint[1]) + ', ' + str(tint[2]) + ', ' + str(opacity * 255) + '))\n' + surface + '.blit(tintSurface, (0, 0), special_flags = pygame.BLEND_RGBA_MULT)\n'
+	renderCodeClause += surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n'
 	if ob.rotation_euler.z != 0:
-		initCodeClause += surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\n'
-	initCodeClause += 'initRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect
+		renderCodeClause += surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\n'
+	renderCodeClause += 'initRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect
 	if ob.hide_get():
-		initCodeClause += '\nhide.append("' + surface + '")'
-	initCode.insert(0, initCodeClause)
+		renderCodeClause += '\nhide.append("' + surface + '")'
+	renderCode.append(renderCodeClause)
 
 def GetPivot (ob):
 	if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE':
@@ -1222,7 +1232,7 @@ def GetPathDelta (fromPathData, toPathData):
 	return output
 
 def GetBlenderData ():
-	global vars, clrs, datas, joints, pivots, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, rigidBodies, colliders, attributes, charControllers
+	global vars, clrs, datas, joints, pivots, globals, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, renderCode, rigidBodies, colliders, attributes, charControllers
 	vars = []
 	attributes = {}
 	pivots = {}
@@ -1240,6 +1250,8 @@ def GetBlenderData ():
 	initCode = []
 	updateCode = []
 	svgsDatas = {}
+	globals = []
+	renderCode = []
 	sortedObs = sorted(bpy.data.objects, key = lambda ob : ob.location.z)
 	for ob in sortedObs:
 		ExportObject (ob)
@@ -1274,7 +1286,7 @@ buildInfo = {
 PYTHON = '''from python import os, sys, math, pygame, typing, PyRapier2d
 from typing import List
 
-os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
+os.environ['SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS'] = '1'
 
 # Physics Section Start
 sim = PyRapier2d.Simulation()
@@ -1317,32 +1329,44 @@ def sqr_magnitude (v) -> float:
 def normalize (v):
 	return divide(v, magnitude(v))
 
-def copy_surface (name, newName, pos, rot = 0, wakeUp = True):
-	surface = surfaces[name].copy()
-	surfacesRects[newName] = surfacesRects[name].copy()
-	surfaces[newName] = surface
-	attributes[newName] = attributes[name].copy()
-	initRots[newName] = initRots[name]
-	pivots[newName] = pivots[name].copy()
+def copy_object (name, newName, pos, rot = 0, wakeUp = True):
+	global pivots, initRots, surfaces, surfacesRects, collidersIds, rigidBodiesIds
+	if name in pivots:
+		surface = surfaces[name].copy()
+		surfacesRects[newName] = surfacesRects[name].copy()
+		surfaces[newName] = surface
+		pivots[newName] = pivots[name].copy()
+		initRots[newName] = initRots[name]
+	if name in attributes:
+		attributes[newName] = attributes[name].copy()
 	if name in rigidBodiesIds:
 		rigidBodiesIds[newName] = sim.copy_rigid_body(rigidBodiesIds[name], pos, rot, wakeUp)
 		for i, collider in enumerate(sim.get_rigid_body_colliders(rigidBodiesIds[newName])):
 			collidersIds[newName + ':' + str(i)] = collider
 	else:
-		surface = pygame.transform.rotate(surface, rot)
-		initRots[newName] = rot
+		if name in pivots:
+			surface = pygame.transform.rotate(surface, rot)
+			initRots[newName] = rot
 		if name in collidersIds:
 			collidersIds[newName] = sim.copy_collider(collidersIds[name], pos, rot, wakeUp)
 
-def remove_surface (name):
-	del surfaces[name]
-	del surfacesRects[name]
-	del attributes[name]
-	del initRots[name]
-	del pivots[name]
+def remove_object (name, removeColliders = True, wakeUp = True):
+	if name in pivots:
+		del surfaces[name]
+		del surfacesRects[name]
+		del initRots[name]
+		del pivots[name]
+	if name in attributes:
+		del attributes[name]
 	if name in rigidBodiesIds:
+		rigidBody = rigidBodiesIds[name]
+		if removeColliders:
+			for i in range(len(sim.get_rigid_body_colliders(rigidBody))):
+				del collidersIds[name + ':' + str(i)]
+		sim.remove_rigid_body (rigidBody, removeColliders)
 		del rigidBodiesIds[name]
 	elif name in collidersIds:
+		sim.remove_collider (collidersIds[name], wakeUp)
 		del collidersIds[name]
 
 def ang_to_dir (ang):
@@ -1354,6 +1378,12 @@ def rotate (surface, rot, pivot, offset):
 	rotatedOff = offset.rotate(rot)
 	rect = rotatedSurface.get_rect(center = pivot - rotatedOff)
 	return rotatedSurface, rect
+
+def degrees (ang):
+	return float(math.degrees(ang))
+
+def radians (ang):
+	return float(math.radians(ang))
 
 # Vars
 
@@ -1378,8 +1408,25 @@ class Game:
 			if event.type == pygame.QUIT:
 				self.running = False
 
+	def init (self):
+		global sim, off, hide, pivots, initRots, surfaces, jointsIds, attributes, collidersIds, surfacesRects, rigidBodiesIds
+# Globals
+		sim = PyRapier2d.Simulation()
+		rigidBodiesIds = {}
+		collidersIds = {}
+		jointsIds = {}
+		surfaces = {}
+		hide = []
+		surfacesRects = {}
+		initRots = {}
+		off = pygame.math.Vector2()
+# Init Pivots And Attributes
+# Init Physics
+# Init Rendering
+
 	def update (self):
 		global off
+# Globals
 # Physics Section Start
 		sim.step ()
 # Physics Section End
@@ -1392,6 +1439,9 @@ class Game:
 				if name in rigidBodiesIds:
 					rigidBody = rigidBodiesIds[name]
 					pos = sim.get_rigid_body_position(rigidBody)
+					if pos == None:
+						del rigidBodiesIds[name]
+						continue
 					rot = sim.get_rigid_body_rotation(rigidBody)
 					width, height = surface.get_size()
 					pivot = pivots[name]
@@ -1404,11 +1454,12 @@ class Game:
 		pygame.display.flip()
 
 pygame.init()
-game = Game()
 screen = pygame.display.set_mode(flags = pygame.FULLSCREEN)
 windowSize = pygame.display.get_window_size()
+game = Game()
+game.init ()
 # API
-# Init
+# Init User Code
 game.run ()'''
 JS_SUFFIX = '''
 var i = 0;
@@ -2076,20 +2127,32 @@ def GenPython (world, datas, background = ''):
 	gravity = [0, 0]
 	if bpy.context.scene.use_gravity:
 		gravity = list(bpy.context.scene.gravity)
-	physicsInitCode = ['sim.set_length_unit (' + str(world.unitLen) + ')\nsim.set_gravity (' + str(gravity[0]) + ', ' + str(gravity[1]) + ')']
+	physicsInitClauses = ['sim.set_length_unit (' + str(world.unitLen) + ')\nsim.set_gravity (' + str(gravity[0]) + ', ' + str(gravity[1]) + ')']
 	for rigidBody in rigidBodies.values():
-		physicsInitCode.append(rigidBody)
+		physicsInitClauses.append(rigidBody)
 	for collider in colliders.values():
-		physicsInitCode.append(collider)
+		physicsInitClauses.append(collider)
 	for joint in joints.values():
-		physicsInitCode.append(joint)
-	initCode = physicsInitCode + initCode
-	python = python.replace('# Init', '\n'.join(initCode))
+		physicsInitClauses.append(joint)
+	physicsInitCode = ''
+	for clause in physicsInitClauses:
+		for line in clause.split('\n'):
+			physicsInitCode += '		' + line + '\n'
+	for i, renderClause in enumerate(renderCode):
+		_renderClause = ''
+		for line in renderClause.split('\n'):
+			_renderClause += '		' + line + '\n'
+		renderCode[i] = _renderClause
+	python = python.replace('# Init Pivots And Attributes', '		pivots = ' + str(pivots) + '\n		attributes = ' + str(attributes))
+	python = python.replace('# Init Physics', physicsInitCode)
+	python = python.replace('# Init Rendering', '\n'.join(renderCode))
+	python = python.replace('# Init User Code', '\n'.join(initCode))
 	for i, updateScript in enumerate(updateCode):
 		_updateScript = ''
 		for line in updateScript.split('\n'):
 			_updateScript += '		' + line + '\n'
 		updateCode[i] = _updateScript
+	python = python.replace('# Globals', '		global ' + ', '.join(globals))
 	python = python.replace('# Update', '\n'.join(updateCode))
 	python = python.replace('# Background', '		screen.fill(' + str(Multiply(list(world.color), [255] * 3)) + ')')
 	buildInfo['exe-size'] = len(python)
