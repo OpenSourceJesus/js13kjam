@@ -273,6 +273,7 @@ def ExportObject (ob):
 			_attributes[key] = str(value).replace("'", '"')
 		attributes[obVarName] = _attributes
 	RegisterPhysics (ob)
+	RegisterParticleSystem (ob)
 	world = bpy.data.worlds[0]
 	SCALE = world.exportScale
 	off = Vector(world.exportOff)
@@ -978,6 +979,122 @@ def RegisterPhysics (ob):
 			joints[ob] = joint
 	ob.rotation_mode = prevRotMode
 
+def RegisterParticleSystem (ob):
+	obVarName = GetVarNameForObject(ob)
+	if not ob.particleSystemExists or not ob.particle:
+		return
+	pos = GetObjectPosition(ob)
+	minRate = ob.minEmitRate if ob.useMinMaxEmitSpeed else ob.emitRate
+	maxRate = ob.maxEmitRate if ob.useMinMaxEmitSpeed else ob.emitRate
+	speedMin = ob.minEmitSpeed if ob.useMinMaxEmitSpeed else ob.emitSpeed
+	speedMax = ob.maxEmitSpeed if ob.useMinMaxEmitSpeed else ob.emitSpeed
+	rotMin = ob.minEmitRot if ob.useMinMaxEmitRot else math.degrees(-ob.rotation_euler.z)
+	rotMax = ob.maxEmitRot if ob.useMinMaxEmitRot else math.degrees(-ob.rotation_euler.z)
+	sizeMin = ob.minEmitSize if ob.useMinMaxEmitSize else 1
+	sizeMax = ob.minEmitSize if ob.useMinMaxEmitSize else 1
+	particleId = ob.particle.name
+	if exportType == 'html':
+		init_snippet = f'''
+var EM_{obVarName} = {{
+  acc : 0,
+  rate : [{minRate}, {maxRate}],
+  life : [{ob.minLife}, {ob.maxLife}],
+  speed : [{speedMin}, {speedMax}],
+  rot : [{rotMin}, {rotMax}],
+  size : [{sizeMin}, {sizeMax}],
+  origin : {pos},
+  particleId : '{particleId}',
+  enable : {ob.particleSystemEnable}
+}};
+var PS_{obVarName} = [];
+'''
+		update_snippet = f'''
+(function() {{
+	var e = EM_{obVarName};
+	if (!e.enable) return;
+	e.acc += $.dt * e.rate;
+	while (e.acc >= 1)
+	{{
+		var ang = random(0, 2 * Math.PI);
+		var sp = random(e.speed[0], e.speed[1]);
+		var dir = ang_to_dir(ang);
+		var id = e.particleId + '__' + Date.now() + '__' + Math.random().toString(36).slice(2);
+		$.copy_node (e.particleId, id, [e.origin[0], e.origin[1]]);
+		PS_{obVarName}.push({{
+			id : id,
+			pos : [e.origin[0], e.origin[1]],
+			vel : [dir[0]*sp, dir[1]*sp],
+			life : random(e.life[0], e.life[1])
+		}});
+		e.acc -= 1;
+	}}
+	for (var i = PS_{obVarName}.length - 1; i >= 0; --i)
+	{{
+		var p = PS_{obVarName}[i];
+		p.life -= $.dt;
+		if (p.life <= 0)
+		{{
+			var node = document.getElementById(p.id);
+			if (node)
+				$.remove (node);
+			PS_{obVarName}.splice(i, 1);
+			continue;
+		}}
+		p.pos[0] += p.vel[0] * $.dt;
+		p.pos[1] += p.vel[1] * $.dt;
+		var node = document.getElementById(p.id);
+		if (node)
+			node.style.transform = 'translate(' + p.pos[0] + 'px,' + p.pos[1] + 'px)';
+	}}
+}})();
+'''
+		initCode.append(init_snippet)
+		updateCode.append(update_snippet)
+	elif exportType == 'exe':
+		init_snippet = f'''
+EM_{obVarName} = dict(
+	acc = 0.0,
+	rate = [{minRate}, {maxRate}],
+	life = [{ob.minLife}, {ob.maxLife}],
+	speed = ({speedMin}, {speedMax}),
+	rot = ({rotMin}, {rotMax}),
+	size = ({sizeMin}, {sizeMax}),
+	origin = {pos},
+	particleId = '{particleId}',
+	enable = True
+)
+PS_{obVarName} = []
+'''
+		update_snippet = f'''
+e = EM_{obVarName}
+if e['enable']:
+	e['acc'] += self.dt * e['rate']
+	while e['acc'] >= 1:
+		sp = random.uniform(e['speed'][0], e['speed'][1])
+		ang = random.uniform(0, math.tau)
+		vel = [math.cos(ang) * sp, math.sin(ang) * sp]
+		id = e['particleId'] + '__' + str(self.frame) + '__' + str(int(random.uniform(0, 1e9)))
+		copy_object (e['particleId'], pid, e['origin'])
+		surfacesRects[id].topleft = (e['origin'][0], e['origin'][1])
+		PS_{obVarName}.append(dict(id = id, pos = [float(e['origin'][0]), float(e['origin'][1])],
+			vel = vel, life = random.uniform(e['life'][0], e['life'][1])))
+		e['acc'] -= 1
+	i = len(PS_{obVarName}) - 1
+	while i >= 0:
+		p = PS_{obVarName}[i]
+		p['life'] -= self.dt
+		if p['life'] <= 0:
+			remove_object(p['id'])
+			PS_{obVarName}.pop(i)
+		else:
+			p['pos'][0] += p['vel'][0] * self.dt
+			p['pos'][1] += p['vel'][1] * self.dt
+			surfacesRects[p['id']].topleft = (int(p['pos'][0]), int(p['pos'][1]))
+		i -= 1
+'''
+		initCode.append(init_snippet)
+		updateCode.append(update_snippet)
+
 def RenderObject (ob, newOb, renderFunc, *args):
 	scene = bpy.context.scene
 	prevCam = scene.camera
@@ -1449,6 +1566,24 @@ class Game:
 					pos = surfacesRects[name].topleft
 					screen.blit(surface, (pos[0] - off.x, pos[1] - off.y))
 		pygame.display.flip()
+
+class ParticleSystem:
+	def __init__ (self, obName : str, particleName : str, rate : float, life : float, speed : float, rot : float, size : float):
+		self.obName = obName
+		self.particleName = particleName
+		self.rate = rate
+		self.life = life
+		self.speed = speed
+		self.rot = rot
+		self.size = size
+		self.particles = []
+
+	def update (self):
+		for particle in self.particles:
+			particle.update()
+			if particle.life <= 0:
+				self.particles.remove(particle)
+				remove_object (particle.id)
 
 pygame.init()
 screen = pygame.display.set_mode(flags = pygame.FULLSCREEN)
@@ -2758,23 +2893,39 @@ bpy.types.Object.resPercent = bpy.props.IntProperty(name = 'Resolution percent',
 bpy.types.Object.tint = bpy.props.FloatVectorProperty(name = 'Tint', subtype = 'COLOR', size = 3, min = 0, max = 1, default = [1, 1, 1], update = lambda ob, ctx : OnUpdateTint (ob, ctx))
 bpy.types.Object.particleSystemExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'particleSystemExists'))
 bpy.types.Object.particleSystemEnable = bpy.props.BoolProperty(name = 'Enable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'particleSystemEnable'))
+bpy.types.Object.particle = bpy.props.PointerProperty(name = 'Particle', type = bpy.types.Object, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'particle'))
 bpy.types.Object.prewarmDur = bpy.props.FloatProperty(name = 'Prewarm duration', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'prewarmDur'))
+bpy.types.Object.useMinMaxEmitRate = bpy.props.BoolProperty(name = 'Use min and max emit rate', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitRate'))
+bpy.types.Object.minEmitRate = bpy.props.FloatProperty(name = 'Min emit rate', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitRate'))
+bpy.types.Object.maxEmitRate = bpy.props.FloatProperty(name = 'Max emit rate', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitRate'))
 bpy.types.Object.emitRate = bpy.props.FloatProperty(name = 'Emit rate', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitRate'))
 bpy.types.Object.useMinMaxEmitSpeed = bpy.props.BoolProperty(name = 'Use min and max initial particle speed', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitSpeed'))
 bpy.types.Object.emitSpeed = bpy.props.FloatProperty(name = 'Initial particle speed', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitSpeed'))
 bpy.types.Object.minEmitSpeed = bpy.props.FloatProperty(name = 'Min initial particle speed', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitSpeed'))
 bpy.types.Object.maxEmitSpeed = bpy.props.FloatProperty(name = 'Max initial particle speed', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitSpeed'))
-bpy.types.Object.useMinMaxEmitRot = bpy.props.FloatProperty(name = 'Use min and max initial particle rotation', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitRot'))
-bpy.types.Object.minEmitRot = bpy.props.FloatProperty(name = 'Min initial particle rotation', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitRot'))
-bpy.types.Object.maxEmitRot = bpy.props.FloatProperty(name = 'Max initial particle rotation', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitRot'))
-bpy.types.Object.useMinMaxEmitSize = bpy.props.FloatProperty(name = 'Use min and max initial particle size', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitSize'))
+bpy.types.Object.useMinMaxLife = bpy.props.BoolProperty(name = 'Use min and max initial particle lifetime', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxLife'))
+bpy.types.Object.minLife = bpy.props.FloatProperty(name = 'Min initial particle lifetime', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minLife'))
+bpy.types.Object.maxLife = bpy.props.FloatProperty(name = 'Max initial particle lifetime', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxLife'))
+bpy.types.Object.life = bpy.props.FloatProperty(name = 'Initial particle lifetime', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'life'))
+bpy.types.Object.emitSpeed = bpy.props.FloatProperty(name = 'Initial particle speed', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitSpeed'))
+bpy.types.Object.minEmitSpeed = bpy.props.FloatProperty(name = 'Min initial particle speed', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitSpeed'))
+bpy.types.Object.maxEmitSpeed = bpy.props.FloatProperty(name = 'Max initial particle speed', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitSpeed'))
+bpy.types.Object.useMinMaxEmitRot = bpy.props.BoolProperty(name = 'Use min and max initial particle rotation', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitRot'))
+bpy.types.Object.minEmitRot = bpy.props.FloatProperty(name = 'Min initial particle rotation', min = 0, max = 360, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitRot'))
+bpy.types.Object.maxEmitRot = bpy.props.FloatProperty(name = 'Max initial particle rotation', min = 0, max = 360, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitRot'))
+bpy.types.Object.useMinMaxEmitSize = bpy.props.BoolProperty(name = 'Use min and max initial particle size', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitSize'))
 bpy.types.Object.minEmitSize = bpy.props.FloatProperty(name = 'Min initial particle size', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitSize'))
 bpy.types.Object.maxEmitSize = bpy.props.FloatProperty(name = 'Max initial particle size', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitSize'))
+bpy.types.Object.emitTint = bpy.props.FloatVectorProperty(name = 'Initial particle tint', subtype = 'COLOR', size = 4, min = 0, max = 1, default = [1, 1, 1, 1], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitTint'))
 bpy.types.Object.emitShapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitShapeType'))
+bpy.types.Object.useMinMaxEmitRadiusNormalized = bpy.props.BoolProperty(name = 'Use min and max shape radius normalized', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitRadiusNormalized'))
+bpy.types.Object.minEmitRadiusNormalized = bpy.props.FloatProperty(name = 'Min shape radius normalized', min = 0, max = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitRadiusNormalized'))
+bpy.types.Object.maxEmitRadiusNormalized = bpy.props.FloatProperty(name = 'Max shape radius normalized', min = 0, max = 1, default = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitRadiusNormalized'))
+bpy.types.Object.emitRadiusNormalized = bpy.props.FloatProperty(name = 'Shape radius normalized', min = 0, max = 1, default = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitRadiusNormalized'))
 bpy.types.Object.useMinMaxLinearDrag = bpy.props.BoolProperty(name = 'Use min and max linear drag', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxLinearDrag'))
 bpy.types.Object.minLinearDrag = bpy.props.FloatProperty(name = 'Min linear drag', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minLinearDrag'))
 bpy.types.Object.maxLinearDrag = bpy.props.FloatProperty(name = 'Max linear drag', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxLinearDrag'))
-bpy.types.Object.useMinMaxAngDrag = bpy.props.BoolProperty(name = 'Use min and max ang drag', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxAngDrag'))
+bpy.types.Object.useMinMaxAngDrag = bpy.props.BoolProperty(name = 'Use min and max angular drag', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxAngDrag'))
 bpy.types.Object.minAngDrag = bpy.props.FloatProperty(name = 'Min angular drag', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minAngDrag'))
 bpy.types.Object.maxAngDrag = bpy.props.FloatProperty(name = 'Max angular drag', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxAngDrag'))
 bpy.types.Object.useMinMaxGravityScale = bpy.props.BoolProperty(name = 'Use min and max gravity scale', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxGravityScale'))
@@ -3358,9 +3509,21 @@ class ParticleSystemPanel (bpy.types.Panel):
 		if not ob.particleSystemExists:
 			return
 		self.layout.prop(ob, 'particleSystemEnable')
+		self.layout.prop(ob, 'particle')
 		self.layout.prop(ob, 'prewarmDur')
 		self.layout.label(text = 'Emission')
-		self.layout.prop(ob, 'emitRate')
+		self.layout.prop(ob, 'useMinMaxEmitRate')
+		if ob.useMinMaxEmitRate:
+			self.layout.prop(ob, 'minEmitRate')
+			self.layout.prop(ob, 'maxEmitRate')
+		else:
+			self.layout.prop(ob, 'emitRate')
+		self.layout.prop(ob, 'useMinMaxLife')
+		if ob.useMinMaxLife:
+			self.layout.prop(ob, 'minLife')
+			self.layout.prop(ob, 'maxLife')
+		else:
+			self.layout.prop(ob, 'life')
 		self.layout.prop(ob, 'useMinMaxEmitSpeed')
 		if ob.useMinMaxEmitSpeed:
 			self.layout.prop(ob, 'minEmitSpeed')
@@ -3375,20 +3538,28 @@ class ParticleSystemPanel (bpy.types.Panel):
 		if ob.useMinMaxEmitSize:
 			self.layout.prop(ob, 'minEmitSize')
 			self.layout.prop(ob, 'maxEmitSize')
-		self.layout.prop(ob, 'emitColor')
+		self.layout.prop(ob, 'emitTint')
 		self.layout.label(text = 'Shape')
 		self.layout.prop(ob, 'emitShapeType')
+		self.layout.prop(ob, 'useMinMaxEmitRadiusNormalized')
+		if ob.useMinMaxEmitRadiusNormalized:
+			self.layout.prop(ob, 'minEmitRadiusNormalized')
+			self.layout.prop(ob, 'maxEmitRadiusNormalized')
+		else:
+			self.layout.prop(ob, 'emitRadiusNormalized')
 		self.layout.label(text = 'Physics')
 		self.layout.prop(ob, 'useMinMaxGravityScale')
-		if ob.useMinMaxLinearDrag:
-			self.layout.prop(ob, 'minLinearDrag')
-			self.layout.prop(ob, 'maxLinearDrag')
-		if ob.useMinMaxAngDrag:
-			self.layout.prop(ob, 'minAngDrag')
-			self.layout.prop(ob, 'maxAngDrag')
 		if ob.useMinMaxGravityScale:
 			self.layout.prop(ob, 'minGravityScale')
 			self.layout.prop(ob, 'maxGravityScale')
+		self.layout.prop(ob, 'useMinMaxLinearDrag')
+		if ob.useMinMaxLinearDrag:
+			self.layout.prop(ob, 'minLinearDrag')
+			self.layout.prop(ob, 'maxLinearDrag')
+		self.layout.prop(ob, 'useMinMaxAngDrag')
+		if ob.useMinMaxAngDrag:
+			self.layout.prop(ob, 'minAngDrag')
+			self.layout.prop(ob, 'maxAngDrag')
 
 @bpy.utils.register_class
 class RigidBodyPanel (bpy.types.Panel):
