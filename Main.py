@@ -250,6 +250,7 @@ charControllers = {}
 pathsDatas = []
 imgs = {}
 imgsPaths = []
+particleSystems = {}
 initCode = []
 updateCode = []
 apiCode = ''
@@ -724,24 +725,24 @@ def RegisterPhysics (ob):
 		if ob.colliderExists:
 			colliderName = obVarName + 'Collider'
 			colliderDescName = colliderName + 'Desc'
-			collider = 'var ' + colliderDescName + ' = RAPIER.ColliderDesc.' + ob.shapeType + '('
-			if ob.shapeType == 'ball':
+			collider = 'var ' + colliderDescName + ' = RAPIER.ColliderDesc.' + ob.colliderShapeType + '('
+			if ob.colliderShapeType == 'ball':
 				collider += str(ob.radius)
-			elif ob.shapeType == 'halfspace':
+			elif ob.colliderShapeType == 'halfspace':
 				collider += ToVector2String(ob.normal)
-			elif ob.shapeType == 'cuboid':
+			elif ob.colliderShapeType == 'cuboid':
 				collider += str(ob.size[0] / 2) + ', ' + str(ob.size[1] / 2)
-			elif ob.shapeType == 'roundCuboid':
+			elif ob.colliderShapeType == 'roundCuboid':
 				collider += str(ob.size[0] / 2) + ', ' + str(ob.size[1] / 2) + ', ' + str(ob.cuboidBorderRadius)
-			elif ob.shapeType == 'capsule':
+			elif ob.colliderShapeType == 'capsule':
 				collider += str(ob.capsuleHeight / 2) + ', ' + str(ob.capsuleRadius)
-			elif ob.shapeType == 'segment':
+			elif ob.colliderShapeType == 'segment':
 				collider += ToVector2String(ob.segmentPnt0) + ', ' + ToVector2String(ob.segmentPnt1)
-			elif ob.shapeType == 'triangle':
+			elif ob.colliderShapeType == 'triangle':
 				collider += ToVector2String(ob.trianglePnt0) + ', ' + ToVector2String(ob.trianglePnt1) + ', ' + ToVector2String(ob.trianglePnt2)
-			elif ob.shapeType == 'roundTriangle':
+			elif ob.colliderShapeType == 'roundTriangle':
 				collider += ToVector2String(ob.trianglePnt0) + ', ' + ToVector2String(ob.trianglePnt1) + ', ' + ToVector2String(ob.trianglePnt2) + ', ' + str(ob.triangleBorderRadius)
-			elif ob.shapeType == 'polyline':
+			elif ob.colliderShapeType == 'polyline':
 				collider += '['
 				for i in range(MAX_SHAPE_PNTS):
 					if getattr(ob, 'usePolylinePnt%i' %i):
@@ -753,7 +754,7 @@ def RegisterPhysics (ob):
 						idx = getattr(ob, 'polylineIdx%i' %i)
 						collider += str(idx[0]) + ', ' + str(idx[1]) + ', '
 				collider += ']'
-			elif ob.shapeType == 'trimesh':
+			elif ob.colliderShapeType == 'trimesh':
 				collider += '['
 				for i in range(MAX_SHAPE_PNTS):
 					if getattr(ob, 'useTrimeshPnt%i' %i):
@@ -765,21 +766,21 @@ def RegisterPhysics (ob):
 						idx = getattr(ob, 'trimeshIdx%i' %i)
 						collider += str(idx[0]) + ', ' + str(idx[1]) + ', '
 				collider += ']'
-			elif ob.shapeType == 'convexHull':
+			elif ob.colliderShapeType == 'convexHull':
 				collider += '['
 				for i in range(MAX_SHAPE_PNTS):
 					if getattr(ob, 'useConvexHullPnt%i' %i):
 						point = getattr(ob, 'convexHullPnt%i' %i)
 						collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += ']'
-			elif ob.shapeType == 'roundConvexHull':
+			elif ob.colliderShapeType == 'roundConvexHull':
 				collider += '['
 				for i in range(MAX_SHAPE_PNTS):
 					if getattr(ob, 'useRoundConvexHullPnt%i' %i):
 						point = getattr(ob, 'roundConvexHullPnt%i' %i)
 						collider += str(point[0]) + ', ' + str(point[1]) + ', '
 				collider += '], ' + str(ob.convexHullBorderRadius)
-			elif ob.shapeType == 'heightfield':
+			elif ob.colliderShapeType == 'heightfield':
 				collider += '['
 				for i in range(MAX_SHAPE_PNTS):
 					if getattr(ob, 'useHeight%i' %i):
@@ -897,31 +898,31 @@ def RegisterPhysics (ob):
 					heights.append(getattr(ob, 'height%i' %i))
 			colliderName = obVarName + 'Collider'
 			if attachColliderTo == []:
-				if ob.shapeType == 'ball':
+				if ob.colliderShapeType == 'ball':
 					collider = colliderName + ' = sim.add_ball_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
-				elif ob.shapeType == 'halfspace':
+				elif ob.colliderShapeType == 'halfspace':
 					collider = colliderName + ' = sim.add_halfspace_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
-				elif ob.shapeType == 'cuboid':
+				elif ob.colliderShapeType == 'cuboid':
 					collider = colliderName + ' = sim.add_cuboid_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
-				elif ob.shapeType == 'roundCuboid':
+				elif ob.colliderShapeType == 'roundCuboid':
 					collider = colliderName + ' = sim.add_round_cuboid_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.cuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
-				elif ob.shapeType == 'capsule':
+				elif ob.colliderShapeType == 'capsule':
 					collider = colliderName + ' = sim.add_capsule_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
-				elif ob.shapeType == 'segment':
+				elif ob.colliderShapeType == 'segment':
 					collider = colliderName + ' = sim.add_segment_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPnt0)) + ', ' + str(list(ob.segmentPnt1)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
-				elif ob.shapeType == 'triangle':
+				elif ob.colliderShapeType == 'triangle':
 					collider = colliderName + ' = sim.add_triangle_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePnt0)) + ', ' + str(list(ob.trianglePnt1)) + ', ' + str(list(ob.trianglePnt2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
-				elif ob.shapeType == 'roundTriangle':
+				elif ob.colliderShapeType == 'roundTriangle':
 					collider = colliderName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePnt0)) + ', ' + str(list(ob.trianglePnt1)) + ', ' + str(list(ob.trianglePnt2)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
-				elif ob.shapeType == 'polyline':
+				elif ob.colliderShapeType == 'polyline':
 					collider = colliderName + ' = sim.add_polyline_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + polylineIdxsStr + ')'
-				elif ob.shapeType == 'trimesh':
+				elif ob.colliderShapeType == 'trimesh':
 					collider = colliderName + ' = sim.add_trimesh_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(trimeshPnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + str(trimeshIdxs) + ')'
-				elif ob.shapeType == 'convexHull':
+				elif ob.colliderShapeType == 'convexHull':
 					collider = colliderName + ' = sim.add_convex_hull_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
-				elif ob.shapeType == 'roundConvexHull':
+				elif ob.colliderShapeType == 'roundConvexHull':
 					collider = colliderName + ' = sim.add_round_convex_hull_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.convexHullBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
-				elif ob.shapeType == 'heightfield':
+				elif ob.colliderShapeType == 'heightfield':
 					collider = colliderName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
 				vars.append(colliderName + ' = (-1, -1)')
@@ -929,31 +930,31 @@ def RegisterPhysics (ob):
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
-					if ob.shapeType == 'ball':
+					if ob.colliderShapeType == 'ball':
 						collider = colliderName + attachToVarName + ' = sim.add_ball_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'halfspace':
+					elif ob.colliderShapeType == 'halfspace':
 						collider = colliderName + attachToVarName + ' = sim.add_halfspace_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'cuboid':
+					elif ob.colliderShapeType == 'cuboid':
 						collider = colliderName + attachToVarName + ' = sim.add_cuboid_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'roundCuboid':
+					elif ob.colliderShapeType == 'roundCuboid':
 						collider = colliderName + attachToVarName + ' = sim.add_round_cuboid_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.size)) + ', ' + str(ob.cuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'capsule':
+					elif ob.colliderShapeType == 'capsule':
 						collider = colliderName + attachToVarName + ' = sim.add_capsule_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.capsuleHeight) + ', ' + str(ob.capsuleRadius) + ', ' + str(ob.isVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'segment':
+					elif ob.colliderShapeType == 'segment':
 						collider = colliderName + attachToVarName + ' = sim.add_segment_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.segmentPnt0)) + ', ' + str(list(ob.segmentPnt1)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'triangle':
+					elif ob.colliderShapeType == 'triangle':
 						collider = colliderName + attachToVarName + ' = sim.add_triangle_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePnt0)) + ', ' + str(list(ob.trianglePnt1)) + ', ' + str(list(ob.trianglePnt2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'roundTriangle':
+					elif ob.colliderShapeType == 'roundTriangle':
 						collider = colliderName + attachToVarName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.trianglePnt0)) + ', ' + str(list(ob.trianglePnt1)) + ', ' + str(list(ob.trianglePnt2)) + ', ' + str(ob.triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'polyline':
+					elif ob.colliderShapeType == 'polyline':
 						collider = colliderName + attachToVarName + ' = sim.add_polyline_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + polylineIdxsStr + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'trimesh':
+					elif ob.colliderShapeType == 'trimesh':
 						collider = colliderName + attachToVarName + ' = sim.add_trimesh_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(trimeshPnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + str(trimeshIdxs) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'convexHull':
+					elif ob.colliderShapeType == 'convexHull':
 						collider = colliderName + attachToVarName + ' = sim.add_convex_hull_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'roundConvexHull':
+					elif ob.colliderShapeType == 'roundConvexHull':
 						collider = colliderName + attachToVarName + ' = sim.add_round_convex_hull_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.convexHullBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					elif ob.shapeType == 'heightfield':
+					elif ob.colliderShapeType == 'heightfield':
 						collider = colliderName + attachToVarName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					collider += '\ncollidersIds["' + colliderName + attachToVarName + '"] = ' + colliderName + attachToVarName
 					vars.append(colliderName + attachToVarName + ' = (-1, -1)')
@@ -1232,7 +1233,7 @@ def GetPathDelta (fromPathData, toPathData):
 	return output
 
 def GetBlenderData ():
-	global vars, clrs, datas, joints, pivots, globals, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, renderCode, rigidBodies, colliders, attributes, charControllers
+	global vars, clrs, datas, joints, pivots, globals, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, renderCode, rigidBodies, colliders, attributes, charControllers, particleSystems
 	vars = []
 	attributes = {}
 	pivots = {}
@@ -1247,6 +1248,7 @@ def GetBlenderData ():
 	colliders = {}
 	joints = {}
 	charControllers = {}
+	particleSystems = {}
 	initCode = []
 	updateCode = []
 	svgsDatas = {}
@@ -2330,7 +2332,7 @@ def OnDrawColliders (self, ctx):
 		rot.x = 0
 		rot.y = 0
 		matrix = Matrix.LocRotScale(pos, rot, Vector((1, 1, 1)))
-		if ob.shapeType == 'ball':
+		if ob.colliderShapeType == 'ball':
 			radius = ob.radius
 			segments = 32
 			verts = []
@@ -2339,19 +2341,19 @@ def OnDrawColliders (self, ctx):
 				verts.append(matrix @ Vector((radius * math.cos(ang), radius * math.sin(ang), 0)))
 			batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : verts})
 			batch.draw(shader)
-		elif ob.shapeType == 'halfspace':
+		elif ob.colliderShapeType == 'halfspace':
 			normal = Vector(list(ob.normal) + [0]).normalized()
 			dir = Vector(list(Rotate90(normal)) + [0])
 			pnt = matrix @ (-dir * 99999)
 			pnt2 = matrix @ (dir * 99999)
 			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
 			batch.draw(shader)
-		elif ob.shapeType == 'cuboid':
+		elif ob.colliderShapeType == 'cuboid':
 			_min, _max = -Vector((ob.size[0], ob.size[1], 0)) / 2, Vector((ob.size[0], ob.size[1], 0)) / 2
 			verts = [matrix @ v for v in [_min, Vector((_min.x, _max.y, 0)), _max, Vector((_max.x, _min.y, 0))]]
 			batch = batch_for_shader(shader, 'LINE_LOOP', {'pos' : verts})
 			batch.draw(shader)
-		elif ob.shapeType == 'roundCuboid':
+		elif ob.colliderShapeType == 'roundCuboid':
 			halfWidth = ob.size[0] / 2
 			halfHeight = ob.size[1] / 2
 			radius = ob.cuboidBorderRadius
@@ -2387,7 +2389,7 @@ def OnDrawColliders (self, ctx):
 				verts.append(matrix @ Vector((x, y, 0)))
 			batch = batch_for_shader(shader, 'LINE_LOOP', {"pos" : verts})
 			batch.draw(shader)
-		elif ob.shapeType == 'capsule':
+		elif ob.colliderShapeType == 'capsule':
 			radius = ob.capsuleRadius
 			height = ob.capsuleHeight / 2
 			localPnt = Vector((-radius, -height / 2))
@@ -2429,18 +2431,18 @@ def OnDrawColliders (self, ctx):
 					verts.append(matrix @ localVert)
 				batch = batch_for_shader(shader, 'LINE_STRIP', {'pos' : verts})
 				batch.draw(shader)
-		elif ob.shapeType == 'segment':
+		elif ob.colliderShapeType == 'segment':
 			pnt = matrix @ Vector(list(ob.segmentPnt0))
 			pnt2 = matrix @ Vector(list(ob.segmentPnt1))
 			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
 			batch.draw(shader)
-		elif ob.shapeType == 'triangle':
+		elif ob.colliderShapeType == 'triangle':
 			pnt = matrix @ Vector(list(ob.trianglePnt0) + [0])
 			pnt2 = matrix @ Vector(list(ob.trianglePnt1) + [0])
 			pnt3 = matrix @ Vector(list(ob.trianglePnt2) + [0])
 			batch = batch_for_shader(shader, 'LINE_LOOP', {'pos' : [pnt, pnt2, pnt3]})
 			batch.draw(shader)
-		# elif ob.shapeType == 'roundTriangle':
+		# elif ob.colliderShapeType == 'roundTriangle':
 		# 	try:
 		# 		pnt = Vector(list(ob.trianglePnt0) + [0])
 		# 		pnt2 = Vector(list(ob.trianglePnt1) + [0])
@@ -2490,7 +2492,7 @@ def OnDrawColliders (self, ctx):
 		# 		verts = [pnt, pnt2, pnt3]
 		# 	batch = batch_for_shader(shader, 'LINE_LOOP', {'pos' : verts})
 		# 	batch.draw(shader)
-		elif ob.shapeType == 'polyline':
+		elif ob.colliderShapeType == 'polyline':
 			pnts = []
 			idxs = []
 			for i in range(MAX_SHAPE_PNTS):
@@ -2503,7 +2505,7 @@ def OnDrawColliders (self, ctx):
 			else:
 				batch = batch_for_shader(shader, 'LINES', {'pos' : pnts}, indices = idxs)
 			batch.draw(shader)
-		elif ob.shapeType == 'trimesh':
+		elif ob.colliderShapeType == 'trimesh':
 			pnts = []
 			idxs = []
 			for i in range(MAX_SHAPE_PNTS):
@@ -2516,7 +2518,7 @@ def OnDrawColliders (self, ctx):
 			else:
 				batch = batch_for_shader(shader, 'TRIS', {'pos' : pnts}, indices = idxs)
 			batch.draw(shader)
-		elif ob.shapeType == 'convexHull':
+		elif ob.colliderShapeType == 'convexHull':
 			pnts = []
 			for i in range(MAX_SHAPE_PNTS):
 				if getattr(ob, 'useConvexHullPnt%i' %i):
@@ -2564,25 +2566,25 @@ def OnDrawColliderHandles (self, ctx):
 	for ob in self.obs:
 		for handle in [child for child in ob.children if child.name.startswith(ob.name + '_Handle')]:
 			try:
-				if ob.shapeType == 'ball':
+				if ob.colliderShapeType == 'ball':
 					pass
-				elif ob.shapeType == 'halfspace':
+				elif ob.colliderShapeType == 'halfspace':
 					pass
-				elif ob.shapeType == 'cuboid':
+				elif ob.colliderShapeType == 'cuboid':
 					pass
-				elif ob.shapeType == 'roundCuboid':
+				elif ob.colliderShapeType == 'roundCuboid':
 					pass
-				elif ob.shapeType == 'capsule':
+				elif ob.colliderShapeType == 'capsule':
 					pass
-				elif ob.shapeType == 'segment' or ob.shapeType == 'triangle' or ob.shapeType == 'roundTriangle' or ob.shapeType == 'polyline' or ob.shapeType == 'trimesh' or ob.shapeType == 'convexHull' or ob.shapeType == 'roundConvexHull':
+				elif ob.colliderShapeType == 'segment' or ob.colliderShapeType == 'triangle' or ob.colliderShapeType == 'roundTriangle' or ob.colliderShapeType == 'polyline' or ob.colliderShapeType == 'trimesh' or ob.colliderShapeType == 'convexHull' or ob.colliderShapeType == 'roundConvexHull':
 					handleIdxStr = handle.name.rsplit('_Handle', 1)[-1]
 					handleIdx = int(handleIdxStr)
 					newPos = handle.location
-					propName = f'{ob.shapeType}Pnt{handleIdx}'
+					propName = f'{ob.colliderShapeType}Pnt{handleIdx}'
 					currVal = getattr(ob, propName)
 					if (currVal[0] != newPos.x) or (currVal[1] != newPos.y):
 						setattr(ob, propName, (newPos.x, newPos.y))
-				elif ob.shapeType == 'heightField':
+				elif ob.colliderShapeType == 'heightField':
 					pass
 			except (ValueError, IndexError, AttributeError):
 				continue
@@ -2707,7 +2709,7 @@ bpy.types.Object.maxPosFrame = bpy.props.IntProperty(name = 'Max frame for posit
 bpy.types.Object.posPingPong = bpy.props.BoolProperty(name = 'Ping pong position animation', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'posPingPong'))
 bpy.types.Object.colliderExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'colliderExists'))
 bpy.types.Object.colliderEnable = bpy.props.BoolProperty(name = 'Enable', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'colliderEnable'))
-bpy.types.Object.shapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'shapeType'))
+bpy.types.Object.colliderShapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'colliderShapeType'))
 bpy.types.Object.radius = bpy.props.FloatProperty(name = 'Radius', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'radius'))
 bpy.types.Object.normal = bpy.props.FloatVectorProperty(name = 'Normal', size = 2, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'normal'))
 bpy.types.Object.size = bpy.props.FloatVectorProperty(name = 'Size', size = 2, min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'size'))
@@ -2754,6 +2756,30 @@ bpy.types.Object.charControllerExists = bpy.props.BoolProperty(name = 'Exists', 
 bpy.types.Object.contactOff = bpy.props.FloatProperty(name = 'Contact offset', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'contactOff'))
 bpy.types.Object.resPercent = bpy.props.IntProperty(name = 'Resolution percent', min = 0, max = 100, default = 100, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'resPercent'))
 bpy.types.Object.tint = bpy.props.FloatVectorProperty(name = 'Tint', subtype = 'COLOR', size = 3, min = 0, max = 1, default = [1, 1, 1], update = lambda ob, ctx : OnUpdateTint (ob, ctx))
+bpy.types.Object.particleSystemExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'particleSystemExists'))
+bpy.types.Object.particleSystemEnable = bpy.props.BoolProperty(name = 'Enable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'particleSystemEnable'))
+bpy.types.Object.prewarmDur = bpy.props.FloatProperty(name = 'Prewarm duration', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'prewarmDur'))
+bpy.types.Object.emitRate = bpy.props.FloatProperty(name = 'Emit rate', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitRate'))
+bpy.types.Object.useMinMaxEmitSpeed = bpy.props.BoolProperty(name = 'Use min and max initial particle speed', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitSpeed'))
+bpy.types.Object.emitSpeed = bpy.props.FloatProperty(name = 'Initial particle speed', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitSpeed'))
+bpy.types.Object.minEmitSpeed = bpy.props.FloatProperty(name = 'Min initial particle speed', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitSpeed'))
+bpy.types.Object.maxEmitSpeed = bpy.props.FloatProperty(name = 'Max initial particle speed', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitSpeed'))
+bpy.types.Object.useMinMaxEmitRot = bpy.props.FloatProperty(name = 'Use min and max initial particle rotation', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitRot'))
+bpy.types.Object.minEmitRot = bpy.props.FloatProperty(name = 'Min initial particle rotation', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitRot'))
+bpy.types.Object.maxEmitRot = bpy.props.FloatProperty(name = 'Max initial particle rotation', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitRot'))
+bpy.types.Object.useMinMaxEmitSize = bpy.props.FloatProperty(name = 'Use min and max initial particle size', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitSize'))
+bpy.types.Object.minEmitSize = bpy.props.FloatProperty(name = 'Min initial particle size', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitSize'))
+bpy.types.Object.maxEmitSize = bpy.props.FloatProperty(name = 'Max initial particle size', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitSize'))
+bpy.types.Object.emitShapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitShapeType'))
+bpy.types.Object.useMinMaxLinearDrag = bpy.props.BoolProperty(name = 'Use min and max linear drag', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxLinearDrag'))
+bpy.types.Object.minLinearDrag = bpy.props.FloatProperty(name = 'Min linear drag', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minLinearDrag'))
+bpy.types.Object.maxLinearDrag = bpy.props.FloatProperty(name = 'Max linear drag', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxLinearDrag'))
+bpy.types.Object.useMinMaxAngDrag = bpy.props.BoolProperty(name = 'Use min and max ang drag', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxAngDrag'))
+bpy.types.Object.minAngDrag = bpy.props.FloatProperty(name = 'Min angular drag', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minAngDrag'))
+bpy.types.Object.maxAngDrag = bpy.props.FloatProperty(name = 'Max angular drag', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxAngDrag'))
+bpy.types.Object.useMinMaxGravityScale = bpy.props.BoolProperty(name = 'Use min and max gravity scale', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxGravityScale'))
+bpy.types.Object.minGravityScale = bpy.props.FloatProperty(name = 'Min gravity scale', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minGravityScale'))
+bpy.types.Object.maxGravityScale = bpy.props.FloatProperty(name = 'Max gravity scale', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxGravityScale'))
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -3317,6 +3343,54 @@ class ImagePanel (bpy.types.Panel):
 		self.layout.prop(ob, 'tint')
 
 @bpy.utils.register_class
+class ParticleSystemPanel (bpy.types.Panel):
+	bl_idname = 'OBJECT_PT_Particle_System_Panel'
+	bl_label = 'Particle System'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'object'
+
+	def draw (self, ctx):
+		ob = ctx.active_object
+		if not ob:
+			return
+		self.layout.prop(ob, 'particleSystemExists')
+		if not ob.particleSystemExists:
+			return
+		self.layout.prop(ob, 'particleSystemEnable')
+		self.layout.prop(ob, 'prewarmDur')
+		self.layout.label(text = 'Emission')
+		self.layout.prop(ob, 'emitRate')
+		self.layout.prop(ob, 'useMinMaxEmitSpeed')
+		if ob.useMinMaxEmitSpeed:
+			self.layout.prop(ob, 'minEmitSpeed')
+			self.layout.prop(ob, 'maxEmitSpeed')
+		else:
+			self.layout.prop(ob, 'emitSpeed')
+		self.layout.prop(ob, 'useMinMaxEmitRot')
+		if ob.useMinMaxEmitRot:
+			self.layout.prop(ob, 'minEmitRot')
+			self.layout.prop(ob, 'maxEmitRot')
+		self.layout.prop(ob, 'useMinMaxEmitSize')
+		if ob.useMinMaxEmitSize:
+			self.layout.prop(ob, 'minEmitSize')
+			self.layout.prop(ob, 'maxEmitSize')
+		self.layout.prop(ob, 'emitColor')
+		self.layout.label(text = 'Shape')
+		self.layout.prop(ob, 'emitShapeType')
+		self.layout.label(text = 'Physics')
+		self.layout.prop(ob, 'useMinMaxGravityScale')
+		if ob.useMinMaxLinearDrag:
+			self.layout.prop(ob, 'minLinearDrag')
+			self.layout.prop(ob, 'maxLinearDrag')
+		if ob.useMinMaxAngDrag:
+			self.layout.prop(ob, 'minAngDrag')
+			self.layout.prop(ob, 'maxAngDrag')
+		if ob.useMinMaxGravityScale:
+			self.layout.prop(ob, 'minGravityScale')
+			self.layout.prop(ob, 'maxGravityScale')
+
+@bpy.utils.register_class
 class RigidBodyPanel (bpy.types.Panel):
 	bl_idname = 'PHYSICS_PT_Rigid_Body_Panel'
 	bl_label = 'Rigid Body'
@@ -3357,33 +3431,33 @@ class ColliderPanel (bpy.types.Panel):
 		if not ob.colliderExists:
 			return
 		self.layout.prop(ob, 'colliderEnable')
-		self.layout.prop(ob, 'shapeType')
-		if ob.shapeType == 'ball':
+		self.layout.prop(ob, 'colliderShapeType')
+		if ob.colliderShapeType == 'ball':
 			self.layout.prop(ob, 'radius')
-		elif ob.shapeType == 'halfspace':
+		elif ob.colliderShapeType == 'halfspace':
 			self.layout.prop(ob, 'normal')
-		elif ob.shapeType == 'cuboid':
+		elif ob.colliderShapeType == 'cuboid':
 			self.layout.prop(ob, 'size')
-		elif ob.shapeType == 'roundCuboid':
+		elif ob.colliderShapeType == 'roundCuboid':
 			self.layout.prop(ob, 'size')
 			self.layout.prop(ob, 'cuboidBorderRadius')
-		elif ob.shapeType == 'capsule':
+		elif ob.colliderShapeType == 'capsule':
 			self.layout.prop(ob, 'capsuleHeight')
 			self.layout.prop(ob, 'capsuleRadius')
 			self.layout.prop(ob, 'isVertical')
-		elif ob.shapeType == 'segment':
+		elif ob.colliderShapeType == 'segment':
 			self.layout.prop(ob, 'segmentPnt0')
 			self.layout.prop(ob, 'segmentPnt1')
-		elif ob.shapeType == 'triangle':
+		elif ob.colliderShapeType == 'triangle':
 			self.layout.prop(ob, 'trianglePnt0')
 			self.layout.prop(ob, 'trianglePnt1')
 			self.layout.prop(ob, 'trianglePnt2')
-		elif ob.shapeType == 'roundTriangle':
+		elif ob.colliderShapeType == 'roundTriangle':
 			self.layout.prop(ob, 'trianglePnt0')
 			self.layout.prop(ob, 'trianglePnt2')
 			self.layout.prop(ob, 'trianglePnt2')
 			self.layout.prop(ob, 'triangleBorderRadius')
-		elif ob.shapeType == 'polyline':
+		elif ob.colliderShapeType == 'polyline':
 			for i in range(MAX_SHAPE_PNTS):
 				row = self.layout.row()
 				row.prop(ob, 'polylinePnt%i' %i)
@@ -3396,7 +3470,7 @@ class ColliderPanel (bpy.types.Panel):
 				row.prop(ob, 'usePolylineIdx%i' %i)
 				if not getattr(ob, 'usePolylineIdx%i' %i):
 					break
-		elif ob.shapeType == 'trimesh':
+		elif ob.colliderShapeType == 'trimesh':
 			for i in range(MAX_SHAPE_PNTS):
 				row = self.layout.row()
 				row.prop(ob, 'trimeshPnt%i' %i)
@@ -3409,14 +3483,14 @@ class ColliderPanel (bpy.types.Panel):
 				row.prop(ob, 'useTrimeshIdx%i' %i)
 				if not getattr(ob, 'useTrimeshIdx%i' %i):
 					break
-		elif ob.shapeType == 'convexHull':
+		elif ob.colliderShapeType == 'convexHull':
 			for i in range(MAX_SHAPE_PNTS):
 				row = self.layout.row()
 				row.prop(ob, 'convexHullPnt%i' %i)
 				row.prop(ob, 'useConvexHullPnt%i' %i)
 				if not getattr(ob, 'useConvexHullPnt%i' %i):
 					break
-		elif ob.shapeType == 'roundConvexHull':
+		elif ob.colliderShapeType == 'roundConvexHull':
 			for i in range(MAX_SHAPE_PNTS):
 				row = self.layout.row()
 				row.prop(ob, 'convexHullPnt%i' %i)
@@ -3424,7 +3498,7 @@ class ColliderPanel (bpy.types.Panel):
 				if not getattr(ob, 'useConvexHullPnt%i' %i):
 					break
 			self.layout.prop(ob, 'convexHullBorderRadius')
-		elif ob.shapeType == 'heightfield':
+		elif ob.colliderShapeType == 'heightfield':
 			for i in range(MAX_SHAPE_PNTS):
 				row = self.layout.row()
 				row.prop(ob, 'height%i' %i)
@@ -3502,7 +3576,7 @@ class CharacterControllerPanel (bpy.types.Panel):
 		if not ob:
 			return
 		self.layout.prop(ob, 'charControllerExists')
-		if not ob.rigidBodyExists:
+		if not ob.charControllerExists:
 			return
 		self.layout.prop(ob, 'contactOff')
 
@@ -3637,36 +3711,36 @@ class ColliderHandles (bpy.types.Operator):
 				self.report({'INFO'}, "No objects selected; can't run operator")
 				return {'CANCELLED'}
 			for ob in self.obs:
-				isTriangle = ob.shapeType == 'triangle' or ob.shapeType == 'roundTriangle'
-				isSegmentOrTriangle = ob.shapeType == 'segment' or isTriangle
+				isTriangle = ob.colliderShapeType == 'triangle' or ob.colliderShapeType == 'roundTriangle'
+				isSegmentOrTriangle = ob.colliderShapeType == 'segment' or isTriangle
 				pntCnt = MAX_SHAPE_PNTS
-				if ob.shapeType == 'segment':
+				if ob.colliderShapeType == 'segment':
 					pntCnt = 2
 				elif isTriangle:
 					pntCnt = 3
-				if ob.shapeType == 'ball':
+				if ob.colliderShapeType == 'ball':
 					pass
-				elif ob.shapeType == 'halfspace':
+				elif ob.colliderShapeType == 'halfspace':
 					pass
-				elif ob.shapeType == 'cuboid':
+				elif ob.colliderShapeType == 'cuboid':
 					pass
-				elif ob.shapeType == 'roundCuboid':
+				elif ob.colliderShapeType == 'roundCuboid':
 					pass
-				elif ob.shapeType == 'capsule':
+				elif ob.colliderShapeType == 'capsule':
 					pass
-				elif isSegmentOrTriangle or ob.shapeType == 'polyline' or ob.shapeType == 'trimesh' or ob.shapeType == 'convexHull' or ob.shapeType == 'roundConvexHull':
+				elif isSegmentOrTriangle or ob.colliderShapeType == 'polyline' or ob.colliderShapeType == 'trimesh' or ob.colliderShapeType == 'convexHull' or ob.colliderShapeType == 'roundConvexHull':
 					for i in range(pntCnt):
 						if not isSegmentOrTriangle:
-							usePnt = getattr(ob, f'use{str(ob.shapeType)[0].upper() + str(ob.shapeType)[1 :]}Pnt{i}')
+							usePnt = getattr(ob, f'use{str(ob.colliderShapeType)[0].upper() + str(ob.colliderShapeType)[1 :]}Pnt{i}')
 						if isSegmentOrTriangle or usePnt:
-							localPnt = getattr(ob, f'{ob.shapeType}Pnt{i}')
+							localPnt = getattr(ob, f'{ob.colliderShapeType}Pnt{i}')
 							handle = bpy.data.objects.new(ob.name + f'_Handle{i}', None)
 							handle.empty_display_type = 'CUBE'
 							handle.empty_display_size = 0.1
 							handle.location = (localPnt[0], localPnt[1], 0)
 							handle.parent = ob
 							ctx.collection.objects.link(handle)
-				elif ob.shapeType == 'heightField':
+				elif ob.colliderShapeType == 'heightField':
 					pass
 			self.report({'INFO'}, 'Made handles for collider(s)')
 			args = (self, ctx)
