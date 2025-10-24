@@ -857,7 +857,7 @@ def RegisterPhysics (ob):
 			rigidBodyName = obVarName + 'RigidBody'
 			rigidBody = rigidBodyName + ' = sim.add_rigid_body(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ', ' + str(ob.canSleep) + ', ' + str(ob.continuousCollideDetect) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
 			rigidBodies[ob] = rigidBody
-			vars.append(rigidBodyName + ' = -1')
+			vars.append(rigidBodyName + ' = (-1, -1)')
 			globals.append(rigidBodyName)
 		if ob.colliderExists:
 			polylinePnts = []
@@ -924,7 +924,7 @@ def RegisterPhysics (ob):
 				elif ob.shapeType == 'heightfield':
 					collider = colliderName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
-				vars.append(colliderName + ' = -1')
+				vars.append(colliderName + ' = (-1, -1)')
 				globals.append(colliderName)
 			else:
 				for attachTo in attachColliderTo:
@@ -956,7 +956,7 @@ def RegisterPhysics (ob):
 					elif ob.shapeType == 'heightfield':
 						collider = colliderName + attachToVarName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					collider += '\ncollidersIds["' + colliderName + attachToVarName + '"] = ' + colliderName + attachToVarName
-					vars.append(colliderName + attachToVarName + ' = -1')
+					vars.append(colliderName + attachToVarName + ' = (-1, -1)')
 					globals.append(colliderName + attachToVarName)
 			colliders[ob] = collider
 		if ob.jointExists:
@@ -972,7 +972,7 @@ def RegisterPhysics (ob):
 			elif ob.joinType == 'rope':
 				joint = jointName + ' = sim.add_rope_joint(rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody1) + '"], rigidBodiesIds["' + GetVarNameForObject(ob.anchorRigidBody2) + '"], ' + str(list(ob.anchorPos1)) + ', ' + str(list(ob.anchorPos2)) + ', ' + str(list(ob.jointLen)) + ')'
 			joint += '\njointsIds["' + obVarName + '"] = ' + jointName
-			vars.append(jointName + ' = -1')
+			vars.append(jointName + ' = (-1, -1)')
 			globals.append(jointName)
 			joints[ob] = joint
 	ob.rotation_mode = prevRotMode
@@ -1298,8 +1298,6 @@ surfaces = {}
 hide = []
 surfacesRects = {}
 initRots = {}
-screen = None
-windowSize = None
 if sys.platform == 'win32':
 	TMP_DIR = os.path.expanduser('~\\AppData\\Local\\Temp')
 else:
@@ -1345,7 +1343,7 @@ def copy_object (name, newName, pos, rot = 0, wakeUp = True):
 			collidersIds[newName + ':' + str(i)] = collider
 	else:
 		if name in pivots:
-			surface = pygame.transform.rotate(surface, rot)
+			surfaces[newName] = pygame.transform.rotate(surface, rot)
 			initRots[newName] = rot
 		if name in collidersIds:
 			collidersIds[newName] = sim.copy_collider(collidersIds[name], pos, rot, wakeUp)
@@ -1439,9 +1437,6 @@ class Game:
 				if name in rigidBodiesIds:
 					rigidBody = rigidBodiesIds[name]
 					pos = sim.get_rigid_body_position(rigidBody)
-					if pos == None:
-						del rigidBodiesIds[name]
-						continue
 					rot = sim.get_rigid_body_rotation(rigidBody)
 					width, height = surface.get_size()
 					pivot = pivots[name]
@@ -1450,7 +1445,7 @@ class Game:
 					screen.blit(rotatedSurface, (rect.left - off.x, rect.top - off.y))
 				else:
 					pos = surfacesRects[name].topleft
-					screen.blit(surface.copy(), (pos[0] - off.x, pos[1] - off.y))
+					screen.blit(surface, (pos[0] - off.x, pos[1] - off.y))
 		pygame.display.flip()
 
 pygame.init()
