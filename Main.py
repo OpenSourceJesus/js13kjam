@@ -261,6 +261,7 @@ attributes = {}
 pivots = {}
 globals = []
 renderCode = []
+zOrders = {}
 
 def ExportObject (ob):
 	global svgsDatas
@@ -1055,54 +1056,12 @@ var PS_{obVarName} = [];
 		updateCode.append(updateClause)
 	elif exportType == 'exe':
 		particleSystem = f'''
-{particleSystemName} = ParticleSystem('{obVarName}', '{particleName}', {rateMin}, {rateMax}, {lifeMin}, {lifeMax}, {speedMin}, {speedMax}, {rotMin}, {rotMax}, {sizeMin}, {sizeMax}, {ob.particleSystemEnable})
+{particleSystemName} = ParticleSystem('{obVarName}', '{particleName}', {ob.prewarmDur}, {rateMin}, {rateMax}, {lifeMin}, {lifeMax}, {speedMin}, {speedMax}, {rotMin}, {rotMax}, {sizeMin}, {sizeMax}, {ob.particleSystemEnable})
 particleSystems['{particleSystemName}'] = {particleSystemName}
 '''
-		vars.append(f'{particleSystemName} = None')
+		vars.append(f'{particleSystemName} : Optional[ParticleSystem] = None')
 		globals.append(particleSystemName)
 		particleSystems.append(particleSystem)
-# 		initClause = f'''
-# EM_{obVarName} = dict(
-# 	acc = 0.0,
-# 	rate = [{minRate}, {maxRate}],
-# 	life = [{ob.minLife}, {ob.maxLife}],
-# 	speed = ({speedMin}, {speedMax}),
-# 	rot = ({rotMin}, {rotMax}),
-# 	size = ({sizeMin}, {sizeMax}),
-# 	origin = {pos},
-# 	particleId = '{particleId}',
-# 	enable = True
-# )
-# PS_{obVarName} = []
-# '''
-# 		updateClause = f'''
-# e = EM_{obVarName}
-# if e['enable']:
-# 	e['acc'] += self.dt * e['rate']
-# 	while e['acc'] >= 1:
-# 		sp = random.uniform(e['speed'][0], e['speed'][1])
-# 		ang = random.uniform(0, math.tau)
-# 		vel = [math.cos(ang) * sp, math.sin(ang) * sp]
-# 		id = e['particleId'] + '__' + str(self.frame) + '__' + str(int(random.uniform(0, 1e9)))
-# 		copy_object (e['particleId'], pid, e['origin'])
-# 		surfacesRects[id].topleft = (e['origin'][0], e['origin'][1])
-# 		PS_{obVarName}.append(dict(id = id, pos = [float(e['origin'][0]), float(e['origin'][1])],
-# 			vel = vel, life = random.uniform(e['life'][0], e['life'][1])))
-# 		e['acc'] -= 1
-# 	i = len(PS_{obVarName}) - 1
-# 	while i >= 0:
-# 		p = PS_{obVarName}[i]
-# 		p['life'] -= self.dt
-# 		if p['life'] <= 0:
-# 			remove_object (p['id'])
-# 			PS_{obVarName}.pop(i)
-# 		else:
-# 			p['pos'][0] += p['vel'][0] * self.dt
-# 			p['pos'][1] += p['vel'][1] * self.dt
-# 			surfacesRects[p['id']].topleft = (int(p['pos'][0]), int(p['pos'][1]))
-# 		i -= 1
-# '''
-# 		updateCode.append(updateClause)
 
 def RenderObject (ob, newOb, renderFunc, *args):
 	scene = bpy.context.scene
@@ -1244,7 +1203,7 @@ def AddImageDataForExe (ob, imgPath, pos, size, opacity):
 	renderCodeClause += surface + ' = pygame.transform.scale(' + surface + ', (' + str(size[0]) + ',' + str(size[1]) + '))\n'
 	if ob.rotation_euler.z != 0:
 		renderCodeClause += surface + ' = pygame.transform.rotate(' + surface + ', ' + str(math.degrees(-ob.rotation_euler.z)) + ')\n'
-	renderCodeClause += 'initRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect
+	renderCodeClause += 'initRots["' + surface + '"] = ' + str(math.degrees(-ob.rotation_euler.z)) + '\nsurfaces["' + surface + '"] = ' + surface + '\n' + surfaceRect + ' = ' + surface + '.get_rect().move(' + str(TryChangeToInt(pos.x)) + ', ' + str(TryChangeToInt(pos.y)) + ')\nsurfacesRects["' + surface + '"] = ' + surfaceRect + '\nzOrders["' + surface + '"] = ' + str(ob.location.z)
 	if ob.hide_get():
 		renderCodeClause += '\nhide.append("' + surface + '")'
 	renderCode.append(renderCodeClause)
@@ -1380,8 +1339,7 @@ def GetBlenderData ():
 	svgsDatas = {}
 	globals = []
 	renderCode = []
-	sortedObs = sorted(bpy.data.objects, key = lambda ob : ob.location.z)
-	for ob in sortedObs:
+	for ob in bpy.data.objects:
 		ExportObject (ob)
 	for ob in bpy.data.objects:
 		for scriptInfo in GetScripts(ob, True):
@@ -1411,8 +1369,9 @@ buildInfo = {
 	'js-gz-size' : None,
 }
 
-PYTHON = '''from python import os, sys, math, pygame, random, PyRapier2d
+PYTHON = '''from python import os, sys, math, pygame, random, typing, PyRapier2d
 from random import uniform
+from typing import List
 
 os.environ['SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS'] = '1'
 
@@ -1427,6 +1386,7 @@ hide = []
 surfacesRects = {}
 initRots = {}
 particleSystems = {}
+zOrders = {}
 if sys.platform == 'win32':
 	TMP_DIR = os.path.expanduser('~\\AppData\\Local\\Temp')
 else:
@@ -1463,11 +1423,11 @@ def copy_object (name, newName, pos, rot = 0, wakeUp = True):
 		surfacesRects[newName] = surfacesRects[name].copy()
 		surfaces[newName] = surface
 		pivots[newName] = pivots[name].copy()
-		initRots[newName] = initRots[name]
+		initRots[newName] = rot
 	if name in attributes:
 		attributes[newName] = attributes[name].copy()
 	if name in rigidBodiesIds:
-		rigidBodiesIds[newName] = sim.copy_rigid_body(rigidBodiesIds[name], pos, rot, wakeUp)
+		rigidBodiesIds[newName] = sim.copy_rigid_body(rigidBodiesIds[name], pos, 0, wakeUp)
 		for i, collider in enumerate(sim.get_rigid_body_colliders(rigidBodiesIds[newName])):
 			collidersIds[newName + ':' + str(i)] = collider
 	else:
@@ -1488,8 +1448,11 @@ def remove_object (name, removeColliders = True, wakeUp = True):
 	if name in rigidBodiesIds:
 		rigidBody = rigidBodiesIds[name]
 		if removeColliders:
-			for i in range(len(sim.get_rigid_body_colliders(rigidBody))):
-				del collidersIds[name + ':' + str(i)]
+			for collider in sim.get_rigid_body_colliders(rigidBody):
+				for colliderName in collidersIds:
+					if collidersIds[colliderName] == collider:
+						del collidersIds[colliderName]
+						break
 		sim.remove_rigid_body (rigidBody, removeColliders)
 		del rigidBodiesIds[name]
 	elif name in collidersIds:
@@ -1512,8 +1475,6 @@ def degrees (ang):
 def radians (ang):
 	return float(math.radians(ang))
 
-# Vars
-
 class Game:
 	def __init__ (self, title : str = 'Game'):
 		pygame.display.set_caption(title)
@@ -1521,6 +1482,7 @@ class Game:
 		self.running = True
 		self.dt = self.clock.tick(60) / 1000
 		self.frame = 0
+		self.sortedObNames : List[str] = []
 
 	def run (self):
 		while self.running:
@@ -1547,11 +1509,13 @@ class Game:
 		surfacesRects = {}
 		initRots = {}
 		particleSystems = {}
+		zOrders = {}
 		off = pygame.math.Vector2()
 # Init Pivots And Attributes
 # Init Physics
 # Init Rendering
 # Init Particle Systems
+		self.sortedObNames = [name for name, z in sorted(zOrders.items(), key = lambda item : item[1])]
 
 	def update (self):
 		global off
@@ -1560,11 +1524,15 @@ class Game:
 		sim.step ()
 # Physics Section End
 # Update
+		for particleSystem in list(particleSystems.values()):
+			if particleSystem.enable:
+				particleSystem.update (self.dt)
 
 	def render (self):
 # Background
-		for name, surface in surfaces.items():
+		for name in self.sortedObNames:
 			if name not in hide:
+				surface = surfaces[name]
 				if name in rigidBodiesIds:
 					rigidBody = rigidBodiesIds[name]
 					pos = sim.get_rigid_body_position(rigidBody)
@@ -1579,8 +1547,18 @@ class Game:
 					screen.blit(surface, (pos[0] - off.x, pos[1] - off.y))
 		pygame.display.flip()
 
+class Particle:
+	def __init__ (self, name : str = '', life : float = 0.0):
+		self.name = name
+		self.life = life
+
+	def __eq__ (self, other : Particle) -> bool:
+		if not isinstance(other, Particle):
+			return False
+		return self.name == other.name
+
 class ParticleSystem:
-	def __init__ (self, name : str, particleName : str, minRate : float, maxRate : float, minLife : float, maxLife : float, minSpeed : float, maxSpeed : float, minRot : float, maxRot : float, minSize : float, maxSize : float, enable : bool):
+	def __init__ (self, name : str, particleName : str, prewarmDur : float, minRate : float, maxRate : float, minLife : float, maxLife : float, minSpeed : float, maxSpeed : float, minRot : float, maxRot : float, minSize : float, maxSize : float, enable : bool):
 		self.name = name
 		self.particleName = particleName
 		self.minRate = minRate
@@ -1597,13 +1575,19 @@ class ParticleSystem:
 		self.rate = uniform(self.minRate, self.maxRate)
 		self.timer = 0.0
 		self.lastId = 0
-		self.particles = []
+		self.particles = [Particle()]
+		self.update (prewarmDur)
 
-	def update (self):
-		self.timer += self.dt
+	def update (self, dt : float):
+		self.timer += dt
 		if self.timer >= self.rate:
 			self.timer -= self.rate
-			self.emit()
+			self.emit ()
+		for particle in list(self.particles):
+			particle.life -= dt
+			if particle.life <= 0:
+				remove_object (particle.name)
+				self.particles.remove(particle)
 
 	def emit (self):
 		rate = uniform(self.minRate, self.maxRate)
@@ -1615,19 +1599,9 @@ class ParticleSystem:
 		self.lastId += 1
 		pos = [0, 0]
 		copy_object (self.particleName, newParticleName, pos, rot)
-		self.particles.append(Particle(newParticleName, life, self))
+		self.particles.append(Particle(newParticleName, life))
 
-class Particle:
-	def __init__ (self, name : str, life : float, particleSystem : ParticleSystem):
-		self.name = name
-		self.life = life
-		self.particleSystem = particleSystem
-
-	def update (self):
-		self.life -= game.dt
-		if self.life <= 0:
-			remove_object (self.name)
-			self.particleSystem.particles.remove(self)
+# Vars
 
 pygame.init()
 screen = pygame.display.set_mode(flags = pygame.FULLSCREEN)
