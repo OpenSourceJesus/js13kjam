@@ -121,6 +121,12 @@ def Multiply (v : list, multiply : list):
 		output.append(elmt * multiply[i])
 	return output
 
+def Divide (v : list, divide : list):
+	output = []
+	for i, elmt in enumerate(v):
+		output.append(elmt / divide[i])
+	return output
+
 def Subtract (v : list, subtract : list):
 	output = []
 	for i, elmt in enumerate(v):
@@ -863,10 +869,30 @@ def RegisterPhysics (ob):
 			vars.append(rigidBodyName + ' = (-1, -1)')
 			globals.append(rigidBodyName)
 		if ob.colliderExists:
+			matrix = ob.matrix_world
+			pos = matrix.to_translation()
+			rot = matrix.to_euler()
+			rot.x = 0
+			rot.y = 0
+			rotAndSizeMatrix = Matrix.LocRotScale(Vector((0, 0, 0)), rot, ob.scale)
+			rotatedSize = rot.to_matrix() @ ob.scale
+			maxRotatedSizeComponent = max(rotatedSize.x, rotatedSize.y)
+			radius = ob.colliderRadius * maxRotatedSizeComponent
+			normal = (rotAndSizeMatrix @ Vector(list(ob.colliderNormal) + [0])).to_2d()
+			size = (rotAndSizeMatrix @ Vector(list(ob.colliderSize) + [0])).to_2d()
+			cuboidBorderRadius = ob.colliderCuboidBorderRadius * maxRotatedSizeComponent
+			triangleBorderRadius = ob.colliderTriangleBorderRadius * maxRotatedSizeComponent
+			if ob.colliderIsVertical:
+				capsuleHeight = (rotAndSizeMatrix @ Vector((0, ob.colliderCapsuleHeight, 0))).y
+				capsuleRadius = (rotAndSizeMatrix @ Vector((ob.colliderCapsuleHeight, 0, 0))).x
+			else:
+				capsuleHeight = (rotAndSizeMatrix @ Vector((ob.colliderCapsuleHeight, 0, 0))).x
+				capsuleRadius = (rotAndSizeMatrix @ Vector((0, ob.colliderCapsuleHeight, 0))).y
 			polylinePnts = []
 			for i in range(MAX_SHAPE_PNTS):
 				if getattr(ob, 'useColliderPolylinePnt%i' %i):
 					pnt = getattr(ob, 'colliderPolylinePnt%i' %i)
+					pnt = (rotAndSizeMatrix @ Vector(list(pnt) + [0])).to_2d()
 					polylinePnts.append(list(pnt))
 			polylineIdxs = []
 			for i in range(MAX_SHAPE_PNTS):
@@ -883,6 +909,7 @@ def RegisterPhysics (ob):
 			for i in range(MAX_SHAPE_PNTS):
 				if getattr(ob, 'useColliderTrimeshPnt%i' %i):
 					pnt = getattr(ob, 'colliderTrimeshPnt%i' %i)
+					pnt = (rotAndSizeMatrix @ Vector(list(pnt) + [0])).to_2d()
 					trimeshPnts.append(list(pnt))
 			trimeshIdxs = []
 			for i in range(MAX_SHAPE_PNTS):
@@ -893,29 +920,34 @@ def RegisterPhysics (ob):
 			for i in range(MAX_SHAPE_PNTS):
 				if getattr(ob, 'useColliderConvexHullPnt%i' %i):
 					pnt = getattr(ob, 'colliderConvexHullPnt%i' %i)
+					pnt = (rotAndSizeMatrix @ Vector(list(pnt) + [0])).to_2d()
 					convexHullPnts.append(list(pnt))
 			heights = []
 			for i in range(MAX_SHAPE_PNTS):
 				if getattr(ob, 'useColliderHeight%i' %i):
-					heights.append(getattr(ob, 'colliderHeight%i' %i))
+					height = getattr(ob, 'colliderHeight%i' %i)
+					pnt = (rotAndSizeMatrix @ Vector(list(pnt) + [0])).to_2d()
+					heights.append(height)
+			convexHullBorderRadius = ob.colliderConvexHullBorderRadius * maxRotatedSizeComponent
+			heightfieldScale = (rotAndSizeMatrix @ Vector(list(ob.colliderHeightfieldScale) + [0])).to_2d()
 			colliderName = obVarName + 'Collider'
 			if attachColliderTo == []:
 				if ob.colliderShapeType == 'ball':
-					collider = colliderName + ' = sim.add_ball_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.colliderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_ball_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.colliderShapeType == 'halfspace':
-					collider = colliderName + ' = sim.add_halfspace_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderNormal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_halfspace_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.colliderShapeType == 'cuboid':
-					collider = colliderName + ' = sim.add_cuboid_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderSize)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_cuboid_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(size)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.colliderShapeType == 'roundCuboid':
-					collider = colliderName + ' = sim.add_round_cuboid_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderSize)) + ', ' + str(ob.colliderCuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_round_cuboid_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderSize)) + ', ' + str(cuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.colliderShapeType == 'capsule':
-					collider = colliderName + ' = sim.add_capsule_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.colliderCapsuleHeight) + ', ' + str(ob.colliderCapsuleRadius) + ', ' + str(ob.colliderIsVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_capsule_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(capsuleHeight) + ', ' + str(ob.colliderCapsuleRadius) + ', ' + str(ob.colliderIsVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.colliderShapeType == 'segment':
 					collider = colliderName + ' = sim.add_segment_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderSegmentPnt0)) + ', ' + str(list(ob.colliderSegmentPnt1)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.colliderShapeType == 'triangle':
 					collider = colliderName + ' = sim.add_triangle_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderTrianglePnt0)) + ', ' + str(list(ob.colliderTrianglePnt1)) + ', ' + str(list(ob.colliderTrianglePnt2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.colliderShapeType == 'roundTriangle':
-					collider = colliderName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderTrianglePnt0)) + ', ' + str(list(ob.colliderTrianglePnt1)) + ', ' + str(list(ob.colliderTrianglePnt2)) + ', ' + str(ob.colliderTriangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderTrianglePnt0)) + ', ' + str(list(ob.colliderTrianglePnt1)) + ', ' + str(list(ob.colliderTrianglePnt2)) + ', ' + str(triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.colliderShapeType == 'polyline':
 					collider = colliderName + ' = sim.add_polyline_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + polylineIdxsStr + ')'
 				elif ob.colliderShapeType == 'trimesh':
@@ -923,9 +955,9 @@ def RegisterPhysics (ob):
 				elif ob.colliderShapeType == 'convexHull':
 					collider = colliderName + ' = sim.add_convex_hull_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.colliderShapeType == 'roundConvexHull':
-					collider = colliderName + ' = sim.add_round_convex_hull_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.colliderConvexHullBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_round_convex_hull_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(convexHullBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				elif ob.colliderShapeType == 'heightfield':
-					collider = colliderName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
+					collider = colliderName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ',' + str(list(heightfieldScale)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ')'
 				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
 				vars.append(colliderName + ' = (-1, -1)')
 				globals.append(colliderName)
@@ -933,21 +965,21 @@ def RegisterPhysics (ob):
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
 					if ob.colliderShapeType == 'ball':
-						collider = colliderName + attachToVarName + ' = sim.add_ball_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.colliderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_ball_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(radius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'halfspace':
-						collider = colliderName + attachToVarName + ' = sim.add_halfspace_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderNormal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_halfspace_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(normal)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'cuboid':
-						collider = colliderName + attachToVarName + ' = sim.add_cuboid_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderSize)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_cuboid_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(size)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'roundCuboid':
-						collider = colliderName + attachToVarName + ' = sim.add_round_cuboid_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderSize)) + ', ' + str(ob.colliderCuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_round_cuboid_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(size)) + ', ' + str(cuboidBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'capsule':
-						collider = colliderName + attachToVarName + ' = sim.add_capsule_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(ob.colliderCapsuleHeight) + ', ' + str(ob.colliderCapsuleRadius) + ', ' + str(ob.colliderIsVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_capsule_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(capsuleHeight) + ', ' + str(ob.colliderCapsuleRadius) + ', ' + str(ob.colliderIsVertical) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'segment':
 						collider = colliderName + attachToVarName + ' = sim.add_segment_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderSegmentPnt0)) + ', ' + str(list(ob.colliderSegmentPnt1)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'triangle':
 						collider = colliderName + attachToVarName + ' = sim.add_triangle_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderTrianglePnt0)) + ', ' + str(list(ob.colliderTrianglePnt1)) + ', ' + str(list(ob.colliderTrianglePnt2)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'roundTriangle':
-						collider = colliderName + attachToVarName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderTrianglePnt0)) + ', ' + str(list(ob.colliderTrianglePnt1)) + ', ' + str(list(ob.colliderTrianglePnt2)) + ', ' + str(ob.colliderTriangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_round_triangle_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(list(ob.colliderTrianglePnt0)) + ', ' + str(list(ob.colliderTrianglePnt1)) + ', ' + str(list(ob.colliderTrianglePnt2)) + ', ' + str(triangleBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'polyline':
 						collider = colliderName + attachToVarName + ' = sim.add_polyline_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(polylinePnts) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + polylineIdxsStr + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'trimesh':
@@ -957,7 +989,7 @@ def RegisterPhysics (ob):
 					elif ob.colliderShapeType == 'roundConvexHull':
 						collider = colliderName + attachToVarName + ' = sim.add_round_convex_hull_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.colliderConvexHullBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'heightfield':
-						collider = colliderName + attachToVarName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
+						collider = colliderName + attachToVarName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ',' + str(list(heightfieldScale)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					collider += '\ncollidersIds["' + colliderName + attachToVarName + '"] = ' + colliderName + attachToVarName
 					vars.append(colliderName + attachToVarName + ' = (-1, -1)')
 					globals.append(colliderName + attachToVarName)
@@ -997,12 +1029,20 @@ def RegisterParticleSystem (ob):
 	rotMax = ob.maxEmitRot if ob.useMinMaxEmitRot else math.degrees(-ob.rotation_euler.z)
 	sizeMin = ob.minEmitSize if ob.useMinMaxEmitSize else 1
 	sizeMax = ob.minEmitSize if ob.useMinMaxEmitSize else 1
+	gravityScaleMin = ob.minGravityScale if ob.useMinMaxGravityScale else ob.particle.gravityScale
+	gravityScaleMax = ob.maxGravityScale if ob.useMinMaxGravityScale else ob.particle.gravityScale
+	emitRadiusNormalizedMin = ob.minEmitRadiusNormalized if ob.useMinMaxEmitRadiusNormalized else ob.emitRadiusNormalized
+	emitRadiusNormalizedMax = ob.maxEmitRadiusNormalized if ob.useMinMaxEmitRadiusNormalized else ob.emitRadiusNormalized
+	linearDragMin = ob.minLinearDrag if ob.useMinMaxLinearDrag else ob.particle.linearDrag
+	linearDragMax = ob.maxLinearDrag if ob.useMinMaxLinearDrag else ob.particle.linearDrag
+	angDragMin = ob.minAngDrag if ob.useMinMaxAngDrag else ob.particle.angDrag
+	angDragMax = ob.maxAngDrag if ob.useMinMaxAngDrag else ob.particle.angDrag
 	if exportType == 'html':
 		initClause = f'''
 var EM_{obVarName} = {{
   acc : 0,
-  rate : [{minRate}, {maxRate}],
-  life : [{ob.minLife}, {ob.maxLife}],
+  rate : [{rateMin}, {rateMax}],
+  life : [{lifeMin}, {lifeMax}],
   speed : [{speedMin}, {speedMax}],
   rot : [{rotMin}, {rotMax}],
   size : [{sizeMin}, {sizeMax}],
@@ -1055,10 +1095,11 @@ var PS_{obVarName} = [];
 		initCode.append(initClause)
 		updateCode.append(updateClause)
 	elif exportType == 'exe':
-		particleSystem = f'''
-{particleSystemName} = ParticleSystem('{obVarName}', '{particleName}', {ob.prewarmDur}, {rateMin}, {rateMax}, {lifeMin}, {lifeMax}, {speedMin}, {speedMax}, {rotMin}, {rotMax}, {sizeMin}, {sizeMax}, {ob.particleSystemEnable})
-particleSystems['{particleSystemName}'] = {particleSystemName}
-'''
+		shapeData = []
+		shapeIndices = []
+		if ob.emitShapeType == 'ball':
+			particleSystem = f'{particleSystemName} = ParticleSystem("{obVarName}", "{particleName}", {ob.particleSystemEnable}, {ob.prewarmDur}, {rateMin}, {rateMax}, {lifeMin}, {lifeMax}, {speedMin}, {speedMax}, {rotMin}, {rotMax}, {sizeMin}, {sizeMax}, {gravityScaleMin}, {gravityScaleMax}, {emitRadiusNormalizedMin}, {emitRadiusNormalizedMax}, {linearDragMin}, {linearDragMax}, {angDragMin}, {angDragMax}, {list(ob.emitTint)}, {SHAPE_TYPES.index(ob.emitShapeType)}, {-ob.rotation_euler.z}, {ob.emitRadius})'
+		particleSystem += f'\nparticleSystems["{particleSystemName}"] = {particleSystemName}'
 		vars.append(f'{particleSystemName} : Optional[ParticleSystem] = None')
 		globals.append(particleSystemName)
 		particleSystems.append(particleSystem)
@@ -1369,9 +1410,8 @@ buildInfo = {
 	'js-gz-size' : None,
 }
 
-PYTHON = '''from python import os, sys, math, pygame, random, typing, PyRapier2d
+PYTHON = '''from python import os, sys, math, pygame, random, PyRapier2d
 from random import uniform
-from typing import List
 
 os.environ['SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS'] = '1'
 
@@ -1424,8 +1464,11 @@ def copy_object (name, newName, pos, rot = 0, wakeUp = True):
 		surfaces[newName] = surface
 		pivots[newName] = pivots[name].copy()
 		initRots[newName] = rot
+		game.sortedObNames.append(newName)
 	if name in attributes:
 		attributes[newName] = attributes[name].copy()
+	if name in zOrders:
+		zOrders[newName] = zOrders[name]
 	if name in rigidBodiesIds:
 		rigidBodiesIds[newName] = sim.copy_rigid_body(rigidBodiesIds[name], pos, 0, wakeUp)
 		for i, collider in enumerate(sim.get_rigid_body_colliders(rigidBodiesIds[newName])):
@@ -1443,8 +1486,11 @@ def remove_object (name, removeColliders = True, wakeUp = True):
 		del surfacesRects[name]
 		del initRots[name]
 		del pivots[name]
+		game.sortedObNames.remove(name)
 	if name in attributes:
 		del attributes[name]
+	if name in zOrders:
+		del zOrders[name]
 	if name in rigidBodiesIds:
 		rigidBody = rigidBodiesIds[name]
 		if removeColliders:
@@ -1482,7 +1528,7 @@ class Game:
 		self.running = True
 		self.dt = self.clock.tick(60) / 1000
 		self.frame = 0
-		self.sortedObNames : List[str] = []
+		self.sortedObNames : list[str] = []
 
 	def run (self):
 		while self.running:
@@ -1558,25 +1604,42 @@ class Particle:
 		return self.name == other.name
 
 class ParticleSystem:
-	def __init__ (self, name : str, particleName : str, prewarmDur : float, minRate : float, maxRate : float, minLife : float, maxLife : float, minSpeed : float, maxSpeed : float, minRot : float, maxRot : float, minSize : float, maxSize : float, enable : bool):
+	def __init__ (self, name : str, particleName : str, enable : bool, prewarmDur : float, minRate : float, maxRate : float, minLife : float, maxLife : float, minSpeed : float, maxSpeed : float, minRot : float, maxRot : float, minSize : float, maxSize : float, minGravityScale : float, maxGravityScale : float, maxEmitRadiusNormalized : float, minEmitRadiusNormalized : float, minLinearDrag : float, maxLinearDrag : float, minAngDrag : float, maxAngDrag : float, tint : list[float], shapeType : int, shapeRot : float, ballRadius : float = 0.0):
 		self.name = name
 		self.particleName = particleName
+		self.enable = enable
+		self.rate = uniform(self.minRate, self.maxRate)
 		self.minRate = minRate
 		self.maxRate = maxRate
+		self.minSize = minSize
+		self.maxSize = maxSize
 		self.minLife = minLife
 		self.maxLife = maxLife
 		self.minSpeed = minSpeed
 		self.maxSpeed = maxSpeed
-		self.minRot = minRot
-		self.maxRot = maxRot
-		self.minSize = minSize
-		self.maxSize = maxSize
-		self.enable = enable
-		self.rate = uniform(self.minRate, self.maxRate)
+		self.minRot = math.radians(minRot)
+		self.maxRot = math.radians(maxRot)
+		self.minGravityScale = minGravityScale
+		self.maxGravityScale = maxGravityScale
+		self.maxEmitRadiusNormalized = maxEmitRadiusNormalized
+		self.minEmitRadiusNormalized = minEmitRadiusNormalized
+		self.minLinearDrag = minLinearDrag
+		self.maxLinearDrag = maxLinearDrag
+		self.minAngDrag = minAngDrag
+		self.maxAngDrag = maxAngDrag
+		self.tint = tint
+		self.shapeType = shapeType
+		self.shapeRot = math.radians(shapeRot)
+		self.ballRadius = ballRadius
 		self.timer = 0.0
 		self.lastId = 0
 		self.particles = [Particle()]
-		self.update (prewarmDur)
+		self.particles.clear()
+		while self.timer < prewarmDur:
+			self.timer += self.rate
+			self.update (self.rate)
+			self.rate = uniform(self.minRate, self.maxRate)
+		self.update (prewarmDur - self.timer)
 
 	def update (self, dt : float):
 		self.timer += dt
@@ -1597,8 +1660,17 @@ class ParticleSystem:
 		size = uniform(self.minSize, self.maxSize)
 		newParticleName = self.name + '_' + str(self.lastId)
 		self.lastId += 1
-		pos = [0, 0]
-		copy_object (self.particleName, newParticleName, pos, rot)
+		if self.name in rigidBodiesIds:
+			obPos = sim.get_rigid_body_position(rigidBodiesIds[self.name])
+		elif self.name in collidersIds:
+			obPos = sim.get_collider_position(collidersIds[self.name])
+		else:
+			obPos = [0, 0]
+		if self.shapeType == 0: # ball
+			pos = pygame.math.Vector2(obPos[0] + self.ballRadius * math.cos(rot), obPos[1] + self.ballRadius * math.sin(rot))
+		else:
+			pos = pygame.math.Vector2(0, 0)
+		copy_object (self.particleName, newParticleName, pos, self.shapeRot)
 		self.particles.append(Particle(newParticleName, life))
 
 # Vars
@@ -2489,7 +2561,7 @@ def OnDrawColliders (self, ctx):
 		rot = matrix.to_euler()
 		rot.x = 0
 		rot.y = 0
-		matrix = Matrix.LocRotScale(pos, rot, Vector((1, 1, 1)))
+		matrix = Matrix.LocRotScale(pos, rot, ob.scale)
 		if ob.colliderShapeType == 'ball':
 			radius = ob.colliderRadius
 			segments = 32
@@ -2551,24 +2623,24 @@ def OnDrawColliders (self, ctx):
 			radius = ob.colliderCapsuleRadius
 			height = ob.colliderCapsuleHeight / 2
 			localPnt = Vector((-radius, -height / 2))
-			if not ob.isVertical:
+			if not ob.colliderIsVertical:
 				localPnt = Rotate90(localPnt)
 			localPnt = Vector(list(localPnt) + [0])
 			pnt = matrix @ localPnt
 			localPnt2 = Vector((-radius, height / 2))
-			if not ob.isVertical:
+			if not ob.colliderIsVertical:
 				localPnt2 = Rotate90(localPnt2)
 			localPnt2 = Vector(list(localPnt2) + [0])
 			pnt2 = matrix @ localPnt2
 			batch = batch_for_shader(shader, 'LINES', {'pos' : [pnt, pnt2]})
 			batch.draw(shader)
 			localPnt = Vector((radius, -height / 2))
-			if not ob.isVertical:
+			if not ob.colliderIsVertical:
 				localPnt = Rotate90(localPnt)
 			localPnt = Vector(list(localPnt) + [0])
 			pnt = matrix @ localPnt
 			localPnt2 = Vector((radius, height / 2))
-			if not ob.isVertical:
+			if not ob.colliderIsVertical:
 				localPnt2 = Rotate90(localPnt2)
 			localPnt2 = Vector(list(localPnt2) + [0])
 			pnt2 = matrix @ localPnt2
@@ -2583,7 +2655,7 @@ def OnDrawColliders (self, ctx):
 					if h < 0:
 						y = -y
 					localVert = Vector((x, y + h / 2))
-					if not ob.isVertical:
+					if not ob.colliderIsVertical:
 						localVert = Rotate90(localVert)
 					localVert = Vector((list(localVert) + [0]))
 					verts.append(matrix @ localVert)
@@ -2602,10 +2674,10 @@ def OnDrawColliders (self, ctx):
 			batch.draw(shader)
 		# elif ob.colliderShapeType == 'roundTriangle':
 		# 	try:
-		# 		pnt = Vector(list(ob.trianglePnt0) + [0])
-		# 		pnt2 = Vector(list(ob.trianglePnt1) + [0])
-		# 		pnt3 = Vector(list(ob.trianglePnt2) + [0])
-		# 		radius = ob.triangleBorderRadius
+		# 		pnt = Vector(list(ob.colliderTrianglePnt0) + [0])
+		# 		pnt2 = Vector(list(ob.colliderTrianglePnt1) + [0])
+		# 		pnt3 = Vector(list(ob.colliderTrianglePnt2) + [0])
+		# 		radius = ob.colliderTriangleBorderRadius
 		# 		v12, v21 = (pnt2 - pnt).normalized(), (pnt - pnt2).normalized()
 		# 		v23, v32 = (pnt3 - pnt2).normalized(), (pnt2 - pnt3).normalized()
 		# 		v31, v13 = (pnt - pnt3).normalized(), (pnt3 - pnt).normalized()
@@ -2801,6 +2873,7 @@ JOIN_TYPES = ['arcs', 'bevl', 'miter', 'miter-clip', 'round']
 JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')]
 MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
 SHAPE_TYPE_ITEMS = [('ball', 'circle', ''), ('halfspace', 'half-space', ''), ('cuboid', 'rectangle', ''), ('roundCuboid', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('roundTriangle', 'rounded-triangle', ''), ('polyline', 'segment-series', ''), ('trimesh', 'triangle-mesh', ''), ('convexHull', 'convex-polygon', ''), ('roundConvexHull', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
+SHAPE_TYPES = ['ball', 'halfspace', 'cuboid', 'roundCuboid', 'capsule', 'segment', 'triangle', 'roundTriangle', 'polyline', 'trimesh', 'convexHull', 'roundConvexHull', 'heightfield']
 RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinematicPositionBased', 'kinematic-position-based', ''), ('kinematicVelocityBased', 'kinematic-velocity-based', '')]
 RIGID_BODY_TYPES = ['dynamic', 'fixed', 'kinematicVelocityBased', 'kinematic-velocity-based']
 JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
@@ -2941,6 +3014,7 @@ bpy.types.Object.minEmitSize = bpy.props.FloatProperty(name = 'Min initial parti
 bpy.types.Object.maxEmitSize = bpy.props.FloatProperty(name = 'Max initial particle size', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitSize'))
 bpy.types.Object.emitTint = bpy.props.FloatVectorProperty(name = 'Initial particle tint', subtype = 'COLOR', size = 4, min = 0, max = 1, default = [1, 1, 1, 1], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitTint'))
 bpy.types.Object.emitShapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitShapeType'))
+bpy.types.Object.emitRadius = bpy.props.FloatProperty(name = 'Shape type', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitRadius'))
 bpy.types.Object.useMinMaxEmitRadiusNormalized = bpy.props.BoolProperty(name = 'Use min and max shape radius normalized', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitRadiusNormalized'))
 bpy.types.Object.minEmitRadiusNormalized = bpy.props.FloatProperty(name = 'Min shape radius normalized', min = 0, max = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitRadiusNormalized'))
 bpy.types.Object.maxEmitRadiusNormalized = bpy.props.FloatProperty(name = 'Max shape radius normalized', min = 0, max = 1, default = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitRadiusNormalized'))
@@ -3925,9 +3999,9 @@ class ColliderHandles (bpy.types.Operator):
 				elif isSegmentOrTriangle or ob.colliderShapeType == 'polyline' or ob.colliderShapeType == 'trimesh' or ob.colliderShapeType == 'convexHull' or ob.colliderShapeType == 'roundConvexHull':
 					for i in range(pntCnt):
 						if not isSegmentOrTriangle:
-							usePnt = getattr(ob, f'use{str(ob.colliderShapeType)[0].upper() + str(ob.colliderShapeType)[1 :]}Pnt{i}')
+							usePnt = getattr(ob, f'useCollider{str(ob.colliderShapeType)[0].upper() + str(ob.colliderShapeType)[1 :]}Pnt{i}')
 						if isSegmentOrTriangle or usePnt:
-							localPnt = getattr(ob, f'{ob.colliderShapeType}Pnt{i}')
+							localPnt = getattr(ob, f'collider{str(ob.colliderShapeType)[0].upper() + str(ob.colliderShapeType)[1 :]}Pnt{i}')
 							handle = bpy.data.objects.new(ob.name + f'_Handle{i}', None)
 							handle.empty_display_type = 'CUBE'
 							handle.empty_display_size = 0.1
