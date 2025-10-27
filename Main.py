@@ -1025,7 +1025,7 @@ def RegisterParticleSystem (ob):
 	rotMin = ob.minEmitRot if ob.useMinMaxEmitRot else math.degrees(-ob.rotation_euler.z)
 	rotMax = ob.maxEmitRot if ob.useMinMaxEmitRot else math.degrees(-ob.rotation_euler.z)
 	sizeMin = ob.minEmitSize if ob.useMinMaxEmitSize else 1
-	sizeMax = ob.minEmitSize if ob.useMinMaxEmitSize else 1
+	sizeMax = ob.maxEmitSize if ob.useMinMaxEmitSize else 1
 	gravityScaleMin = ob.minGravityScale if ob.useMinMaxGravityScale else ob.particle.gravityScale
 	gravityScaleMax = ob.maxGravityScale if ob.useMinMaxGravityScale else ob.particle.gravityScale
 	bouncinessMin = ob.minBounciness if ob.useMinMaxBounciness else ob.particle.bounciness
@@ -1649,18 +1649,22 @@ class ParticleSystem:
 
 	def emit (self):
 		self.intvl = 1.0 / uniform(self.minRate, self.maxRate)
-		rot = uniform(self.minRot, self.maxRot)
 		size = uniform(self.minSize, self.maxSize)
 		newParticleName = self.name + ':' + str(self.lastId)
 		self.lastId += 1
 		obPos = get_object_position(self.name)
+		rot = uniform(self.minRot, self.maxRot)
 		if self.shapeType == 0: # ball
 			pos = pygame.math.Vector2(obPos[0] + self.ballRadius * math.cos(rot), obPos[1] + self.ballRadius * math.sin(rot))
 		else:
 			pos = pygame.math.Vector2(0, 0)
 		copy_object (self.particleName, newParticleName, pos, rot)
+		if newParticleName in surfaces:
+			surfaces[newParticleName] = pygame.transform.scale_by(surfaces[newParticleName], size)
 		rigidBody = rigidBodiesIds[newParticleName]
 		sim.set_gravity_scale (rigidBody, uniform(self.minGravityScale, self.maxGravityScale), False)
+		sim.set_linear_drag (rigidBody, uniform(self.minLinearDrag, self.maxLinearDrag))
+		sim.set_angular_drag (rigidBody, uniform(self.minAngDrag, self.maxAngDrag))
 		if newParticleName in collidersIds:
 			sim.set_bounciness (collidersIds[newParticleName], uniform(self.minBounciness, self.maxBounciness))
 		sim.set_rigid_body_enabled (rigidBody, True)
