@@ -987,7 +987,7 @@ def RegisterPhysics (ob):
 						collider = colliderName + attachToVarName + ' = sim.add_round_convex_hull_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.colliderConvexHullBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'heightfield':
 						collider = colliderName + attachToVarName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', [0, 0], 0, ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ',' + str(list(heightfieldScale)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					collider += '\ncollidersIds["' + colliderName + attachToVarName + '"] = ' + colliderName + attachToVarName
+					collider += '\ncollidersIds["' + obVarName + attachToVarName + '"] = ' + colliderName + attachToVarName
 					vars.append(colliderName + attachToVarName + ' = (-1, -1)')
 					globals.append(colliderName + attachToVarName)
 			colliders[ob] = collider
@@ -1096,7 +1096,7 @@ var PS_{obVarName} = [];
 		shapeIndices = []
 		if ob.emitShapeType == 'ball':
 			particleSystem = f'{particleSystemName} = ParticleSystem("{obVarName}", "{particleName}", {ob.particleSystemEnable}, {ob.prewarmDur}, {rateMin}, {rateMax}, {lifeMin}, {lifeMax}, {speedMin}, {speedMax}, {rotMin}, {rotMax}, {sizeMin}, {sizeMax}, {gravityScaleMin}, {gravityScaleMax}, {emitRadiusNormalizedMin}, {emitRadiusNormalizedMax}, {linearDragMin}, {linearDragMax}, {angDragMin}, {angDragMax}, {list(ob.emitTint)}, {SHAPE_TYPES.index(ob.emitShapeType)}, {-ob.rotation_euler.z}, {ob.emitRadius})'
-		particleSystem += f'\nparticleSystems["{particleSystemName}"] = {particleSystemName}'
+		particleSystem += f'\nparticleSystems["{obVarName}"] = {particleSystemName}'
 		vars.append(f'{particleSystemName} : Optional[ParticleSystem] = None')
 		globals.append(particleSystemName)
 		particleSystems.append(particleSystem)
@@ -1453,7 +1453,7 @@ def sqr_magnitude (v) -> float:
 def normalize (v):
 	return divide(v, magnitude(v))
 
-def copy_object (name, newName, pos, rot = 0, wakeUp = True, copyParticles = True):
+def copy_object (name, newName, pos, rot = 0, wakeUp = True, attachTo : str = '', copyParticles = True):
 	global pivots, initRots, surfaces, surfacesRects, collidersIds, rigidBodiesIds
 	if name in pivots:
 		surface = surfaces[name].copy()
@@ -1475,7 +1475,10 @@ def copy_object (name, newName, pos, rot = 0, wakeUp = True, copyParticles = Tru
 			surfaces[newName] = pygame.transform.rotate(surface, rot)
 			initRots[newName] = rot
 		if name in collidersIds:
-			collidersIds[newName] = sim.copy_collider(collidersIds[name], pos, rot, wakeUp)
+			if attachTo == '':
+				collidersIds[newName] = sim.copy_collider(collidersIds[name], pos, rot)
+			else:
+				collidersIds[newName] = sim.copy_collider(collidersIds[name], pos, rot, rigidBodiesIds[attachTo])
 	if name in particleSystems:
 		particleSystems[newName] = particleSystems[name].copy(newName, pos, rot, copyParticles)
 
@@ -1570,7 +1573,7 @@ class ParticleSystem:
 	prewarmDur : float
 	minRate : float
 	maxRate : float
-	rate : float
+	intvl : float
 	minLife : float
 	maxLife : float
 	minSpeed : float
@@ -1601,7 +1604,7 @@ class ParticleSystem:
 		self.enable = enable
 		self.minRate = minRate
 		self.maxRate = maxRate
-		self.rate = uniform(minRate, maxRate)
+		self.intvl = 1.0 / uniform(minRate, maxRate)
 		self.minSize = minSize
 		self.maxSize = maxSize
 		self.minLife = minLife
@@ -1626,15 +1629,15 @@ class ParticleSystem:
 		self.lastId = 0
 		self.particles = []
 		while self.timer < prewarmDur:
-			self.timer += self.rate
-			self.update (self.rate)
-			self.rate = uniform(self.minRate, self.maxRate)
+			self.timer += self.intvl
+			self.update (self.intvl)
+			self.intvl = 1.0 / uniform(self.minRate, self.maxRate)
 		self.update (prewarmDur - self.timer)
 
 	def update (self, dt : float):
 		self.timer += dt
-		if self.timer >= self.rate:
-			self.timer -= self.rate
+		if self.timer >= self.intvl:
+			self.timer -= self.intvl
 			self.emit ()
 		for particle in list(self.particles):
 			particle.life -= dt
@@ -1643,7 +1646,7 @@ class ParticleSystem:
 				self.particles.remove(particle)
 
 	def emit (self):
-		rate = uniform(self.minRate, self.maxRate)
+		rate = 1.0 / uniform(self.minRate, self.maxRate)
 		life = uniform(self.minLife, self.maxLife)
 		speed = uniform(self.minSpeed, self.maxSpeed)
 		rot = uniform(self.minRot, self.maxRot)
