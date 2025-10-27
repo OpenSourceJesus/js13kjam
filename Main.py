@@ -89,7 +89,8 @@ MAX_ATTACH_COLLIDER_CNT = 64
 MAX_POTRACE_PASSES_PER_OBJECT_MAT = 8
 MAX_ATTRIBUTES_PER_OBJECT = 16
 MAX_ELTS_IN_ATTRIBUTES_ARR = 16
-MAX_RENDER_CAMS_PER_OBJECT = 64
+MAX_RENDER_CAMS_PER_OBJECT = 128
+MAX_PARTICLE_SYSTEM_BURSTS = 64
 
 def GetScripts (ob, isAPI : bool):
 	scripts = []
@@ -1096,8 +1097,15 @@ var PS_{obVarName} = [];
 	elif exportType == 'exe':
 		shapeData = []
 		shapeIndices = []
+		bursts = []
+		prevBurstTime = 0.0
+		for i in range(MAX_PARTICLE_SYSTEM_BURSTS):
+			if getattr(ob, f'useBurst{i}'):
+				burstTime = getattr(ob, f'burstTime{i}')
+				bursts.append((burstTime - prevBurstTime, getattr(ob, f'burstCnt{i}')))
+				prevBurstTime = burstTime
 		if ob.emitShapeType == 'ball':
-			particleSystem = f'{particleSystemName} = ParticleSystem("{obVarName}", "{particleName}", {ob.particleSystemEnable}, {ob.prewarmDur}, {rateMin}, {rateMax}, {lifeMin}, {lifeMax}, {speedMin}, {speedMax}, {rotMin}, {rotMax}, {sizeMin}, {sizeMax}, {gravityScaleMin}, {gravityScaleMax}, {bouncinessMin}, {bouncinessMax}, {emitRadiusNormalizedMin}, {emitRadiusNormalizedMax}, {linearDragMin}, {linearDragMax}, {angDragMin}, {angDragMax}, {list(ob.emitTint)}, {SHAPE_TYPES.index(ob.emitShapeType)}, {-ob.rotation_euler.z}, {ob.emitRadius})'
+			particleSystem = f'{particleSystemName} = ParticleSystem("{obVarName}", "{particleName}", {ob.particleSystemEnable}, {ob.prewarmDur}, {rateMin}, {rateMax}, {bursts}, {lifeMin}, {lifeMax}, {speedMin}, {speedMax}, {rotMin}, {rotMax}, {sizeMin}, {sizeMax}, {gravityScaleMin}, {gravityScaleMax}, {bouncinessMin}, {bouncinessMax}, {emitRadiusNormalizedMin}, {emitRadiusNormalizedMax}, {linearDragMin}, {linearDragMax}, {angDragMin}, {angDragMax}, {list(ob.emitTint)}, {SHAPE_TYPES.index(ob.emitShapeType)}, {-ob.rotation_euler.z}, {ob.emitRadius})'
 		particleSystem += f'\nparticleSystems["{obVarName}"] = {particleSystemName}'
 		vars.append(f'{particleSystemName} : Optional[ParticleSystem] = None')
 		globals.append(particleSystemName)
@@ -1541,7 +1549,7 @@ def get_object_position (name):
 	elif name in collidersIds:
 		return sim.get_collider_position(collidersIds[name])
 	else:
-		return None
+		raise ValueError('name needs to refer to a rigid body or a collider found in rigidBodiesIds or collidersIds')
 
 def get_object_rotation (name):
 	if name in rigidBodiesIds:
@@ -1549,7 +1557,7 @@ def get_object_rotation (name):
 	elif name in collidersIds:
 		return sim.get_collider_rotation(collidersIds[name])
 	else:
-		return None
+		raise ValueError('name needs to refer to a rigid body or a collider found in rigidBodiesIds or collidersIds')
 
 class Particle:
 	name : str
@@ -1571,6 +1579,8 @@ class ParticleSystem:
 	prewarmDur : float
 	minRate : float
 	maxRate : float
+	bursts : list[tuple[float, int]]
+	currBurstIdx : int
 	intvl : float
 	minLife : float
 	maxLife : float
@@ -1598,21 +1608,23 @@ class ParticleSystem:
 	lastId : int
 	particles : list[Particle]
 
-	def __init__ (self, name : str, particleName : str, enable : bool, prewarmDur : float, minRate : float, maxRate : float, minLife : float, maxLife : float, minSpeed : float, maxSpeed : float, minRot : float, maxRot : float, minSize : float, maxSize : float, minGravityScale : float, maxGravityScale : float, minBounciness : float, maxBounciness : float, maxEmitRadiusNormalized : float, minEmitRadiusNormalized : float, minLinearDrag : float, maxLinearDrag : float, minAngDrag : float, maxAngDrag : float, tint : list[float], shapeType : int, shapeRot : float, ballRadius : float = 0.0):
+	def __init__ (self, name : str, particleName : str, enable : bool, prewarmDur : float, minRate : float, maxRate : float, bursts : list[tuple[float, int]], minLife : float, maxLife : float, minSpeed : float, maxSpeed : float, minRot : float, maxRot : float, minSize : float, maxSize : float, minGravityScale : float, maxGravityScale : float, minBounciness : float, maxBounciness : float, maxEmitRadiusNormalized : float, minEmitRadiusNormalized : float, minLinearDrag : float, maxLinearDrag : float, minAngDrag : float, maxAngDrag : float, tint : list[float], shapeType : int, shapeRot : float, ballRadius : float = 0.0):
 		self.name = name
 		self.particleName = particleName
 		self.enable = enable
 		self.minRate = minRate
 		self.maxRate = maxRate
 		self.intvl = 1.0 / uniform(minRate, maxRate)
+		self.bursts = bursts
+		self.currBurstIdx = 0
 		self.minSize = minSize
 		self.maxSize = maxSize
 		self.minLife = minLife
 		self.maxLife = maxLife
 		self.minSpeed = minSpeed
 		self.maxSpeed = maxSpeed
-		self.minRot = math.radians(minRot)
-		self.maxRot = math.radians(maxRot)
+		self.minRot = minRot
+		self.maxRot = maxRot
 		self.minGravityScale = minGravityScale
 		self.maxGravityScale = maxGravityScale
 		self.minBounciness = minBounciness
@@ -1638,8 +1650,16 @@ class ParticleSystem:
 
 	def update (self, dt : float):
 		self.timer += dt
-		if self.timer >= self.intvl:
+		if self.currBurstIdx < len(self.bursts):
+			burst = self.bursts[self.currBurstIdx]
+			if self.timer >= burst[0]:
+				self.timer -= burst[0]
+				for i in range(burst[1]):
+					self.emit ()
+				self.currBurstIdx += 1
+		if self.timer >= self.intvl and self.intvl > 0:
 			self.timer -= self.intvl
+			self.intvl = 1.0 / uniform(self.minRate, self.maxRate)
 			self.emit ()
 		for particle in list(self.particles):
 			particle.life -= dt
@@ -1648,31 +1668,33 @@ class ParticleSystem:
 				self.particles.remove(particle)
 
 	def emit (self):
-		self.intvl = 1.0 / uniform(self.minRate, self.maxRate)
 		size = uniform(self.minSize, self.maxSize)
 		newParticleName = self.name + ':' + str(self.lastId)
 		self.lastId += 1
 		obPos = get_object_position(self.name)
 		rot = uniform(self.minRot, self.maxRot)
+		normalizedRadius = uniform(self.minEmitRadiusNormalized, self.maxEmitRadiusNormalized)
+		randRad = uniform(0, 2 * math.pi)
 		if self.shapeType == 0: # ball
-			pos = pygame.math.Vector2(obPos[0] + self.ballRadius * math.cos(rot), obPos[1] + self.ballRadius * math.sin(rot))
+			pos = pygame.math.Vector2(obPos[0] + self.ballRadius * normalizedRadius * math.cos(randRad), obPos[1] + self.ballRadius * normalizedRadius * math.sin(randRad))
 		else:
 			pos = pygame.math.Vector2(0, 0)
 		copy_object (self.particleName, newParticleName, pos, rot)
 		if newParticleName in surfaces:
 			surfaces[newParticleName] = pygame.transform.scale_by(surfaces[newParticleName], size)
 		rigidBody = rigidBodiesIds[newParticleName]
+		for collider in sim.get_rigid_body_colliders(rigidBody):
+			sim.set_bounciness (collider, uniform(self.minBounciness, self.maxBounciness))
+			sim.set_collider_enabled (collider, True)
 		sim.set_gravity_scale (rigidBody, uniform(self.minGravityScale, self.maxGravityScale), False)
 		sim.set_linear_drag (rigidBody, uniform(self.minLinearDrag, self.maxLinearDrag))
 		sim.set_angular_drag (rigidBody, uniform(self.minAngDrag, self.maxAngDrag))
-		if newParticleName in collidersIds:
-			sim.set_bounciness (collidersIds[newParticleName], uniform(self.minBounciness, self.maxBounciness))
 		sim.set_rigid_body_enabled (rigidBody, True)
-		sim.set_linear_velocity (rigidBody, ang_to_dir(rot) * uniform(self.minSpeed, self.maxSpeed))
+		sim.set_linear_velocity (rigidBody, ang_to_dir(math.degrees(randRad)) * uniform(self.minSpeed, self.maxSpeed))
 		self.particles.append(Particle(newParticleName, uniform(self.minLife, self.maxLife)))
 
 	def copy (self, newName : str, pos, rot : float = 0, copyParticles : bool = True):
-		self = ParticleSystem(newName, self.particleName, self.enable, self.prewarmDur, self.minRate, self.maxRate, self.minLife, self.maxLife, self.minSpeed, self.maxSpeed, self.minRot, self.maxRot, self.minSize, self.maxSize, self.minGravityScale, self.maxGravityScale, self.minBounciness, self.maxBounciness, self.maxEmitRadiusNormalized, self.minEmitRadiusNormalized, self.minLinearDrag, self.maxLinearDrag, self.minAngDrag, self.maxAngDrag, self.tint, self.shapeType, self.shapeRot, self.ballRadius)
+		self = ParticleSystem(newName, self.particleName, self.enable, self.prewarmDur, self.minRate, self.maxRate, self.bursts, self.minLife, self.maxLife, self.minSpeed, self.maxSpeed, self.minRot, self.maxRot, self.minSize, self.maxSize, self.minGravityScale, self.maxGravityScale, self.minBounciness, self.maxBounciness, self.maxEmitRadiusNormalized, self.minEmitRadiusNormalized, self.minLinearDrag, self.maxLinearDrag, self.minAngDrag, self.maxAngDrag, self.tint, self.shapeType, self.shapeRot, self.ballRadius)
 		particleSystem = self
 		if copyParticles:
 			for particle in self.particles:
@@ -3397,6 +3419,22 @@ for i in range(MAX_RENDER_CAMS_PER_OBJECT):
 		'renderCam%i' %i,
 		bpy.props.PointerProperty(name = 'Render camera%i' %i, type = bpy.types.Camera, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'renderCam%i' %i))
 	)
+for i in range(MAX_PARTICLE_SYSTEM_BURSTS):
+	setattr(
+		bpy.types.Object,
+		'useBurst%i' %i,
+		bpy.props.BoolProperty(name = 'Include', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useBurst%i' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'burstTime%i' %i,
+		bpy.props.FloatProperty(name = 'Time since last burst', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'burstTime%i' %i))
+	)
+	setattr(
+		bpy.types.Object,
+		'burstCnt%i' %i,
+		bpy.props.IntProperty(name = 'Particle count', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'burstCnt%i' %i))
+	)
 
 @bpy.utils.register_class
 class HTMLExport (bpy.types.Operator):
@@ -3707,6 +3745,12 @@ class ParticleSystemPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'maxEmitRate')
 		else:
 			self.layout.prop(ob, 'emitRate')
+		self.layout.label(text = 'Bursts')
+		for i in range(GetLastUsedPropertyIndex(ob, 'useBurst', MAX_PARTICLE_SYSTEM_BURSTS) + 2):
+			row = self.layout.row()
+			row.prop(ob, 'burstTime%i' %i)
+			row.prop(ob, 'burstCnt%i' %i)
+			row.prop(ob, 'useBurst%i' %i)
 		self.layout.prop(ob, 'useMinMaxLife')
 		if ob.useMinMaxLife:
 			self.layout.prop(ob, 'minLife')
