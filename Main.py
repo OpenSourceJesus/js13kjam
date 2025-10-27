@@ -1028,6 +1028,8 @@ def RegisterParticleSystem (ob):
 	sizeMax = ob.minEmitSize if ob.useMinMaxEmitSize else 1
 	gravityScaleMin = ob.minGravityScale if ob.useMinMaxGravityScale else ob.particle.gravityScale
 	gravityScaleMax = ob.maxGravityScale if ob.useMinMaxGravityScale else ob.particle.gravityScale
+	bouncinessMin = ob.minBounciness if ob.useMinMaxBounciness else ob.particle.bounciness
+	bouncinessMax = ob.maxBounciness if ob.useMinMaxBounciness else ob.particle.bounciness
 	emitRadiusNormalizedMin = ob.minEmitRadiusNormalized if ob.useMinMaxEmitRadiusNormalized else ob.emitRadiusNormalized
 	emitRadiusNormalizedMax = ob.maxEmitRadiusNormalized if ob.useMinMaxEmitRadiusNormalized else ob.emitRadiusNormalized
 	linearDragMin = ob.minLinearDrag if ob.useMinMaxLinearDrag else ob.particle.linearDrag
@@ -1095,7 +1097,7 @@ var PS_{obVarName} = [];
 		shapeData = []
 		shapeIndices = []
 		if ob.emitShapeType == 'ball':
-			particleSystem = f'{particleSystemName} = ParticleSystem("{obVarName}", "{particleName}", {ob.particleSystemEnable}, {ob.prewarmDur}, {rateMin}, {rateMax}, {lifeMin}, {lifeMax}, {speedMin}, {speedMax}, {rotMin}, {rotMax}, {sizeMin}, {sizeMax}, {gravityScaleMin}, {gravityScaleMax}, {emitRadiusNormalizedMin}, {emitRadiusNormalizedMax}, {linearDragMin}, {linearDragMax}, {angDragMin}, {angDragMax}, {list(ob.emitTint)}, {SHAPE_TYPES.index(ob.emitShapeType)}, {-ob.rotation_euler.z}, {ob.emitRadius})'
+			particleSystem = f'{particleSystemName} = ParticleSystem("{obVarName}", "{particleName}", {ob.particleSystemEnable}, {ob.prewarmDur}, {rateMin}, {rateMax}, {lifeMin}, {lifeMax}, {speedMin}, {speedMax}, {rotMin}, {rotMax}, {sizeMin}, {sizeMax}, {gravityScaleMin}, {gravityScaleMax}, {bouncinessMin}, {bouncinessMax}, {emitRadiusNormalizedMin}, {emitRadiusNormalizedMax}, {linearDragMin}, {linearDragMax}, {angDragMin}, {angDragMax}, {list(ob.emitTint)}, {SHAPE_TYPES.index(ob.emitShapeType)}, {-ob.rotation_euler.z}, {ob.emitRadius})'
 		particleSystem += f'\nparticleSystems["{obVarName}"] = {particleSystemName}'
 		vars.append(f'{particleSystemName} : Optional[ParticleSystem] = None')
 		globals.append(particleSystemName)
@@ -1562,10 +1564,6 @@ class Particle:
 			return False
 		return self.name == other.name
 
-	def copy (self, newName : str, pos, rot : float = 0) -> Particle:
-		copy_object (self.name, newName, pos, rot)
-		return Particle(newName, self.life)
-
 class ParticleSystem:
 	name : str
 	particleName : str
@@ -1584,6 +1582,8 @@ class ParticleSystem:
 	maxSize : float
 	minGravityScale : float
 	maxGravityScale : float
+	minBounciness : float
+	maxBounciness : float
 	maxEmitRadiusNormalized : float
 	minEmitRadiusNormalized : float
 	minLinearDrag : float
@@ -1598,7 +1598,7 @@ class ParticleSystem:
 	lastId : int
 	particles : list[Particle]
 
-	def __init__ (self, name : str, particleName : str, enable : bool, prewarmDur : float, minRate : float, maxRate : float, minLife : float, maxLife : float, minSpeed : float, maxSpeed : float, minRot : float, maxRot : float, minSize : float, maxSize : float, minGravityScale : float, maxGravityScale : float, maxEmitRadiusNormalized : float, minEmitRadiusNormalized : float, minLinearDrag : float, maxLinearDrag : float, minAngDrag : float, maxAngDrag : float, tint : list[float], shapeType : int, shapeRot : float, ballRadius : float = 0.0):
+	def __init__ (self, name : str, particleName : str, enable : bool, prewarmDur : float, minRate : float, maxRate : float, minLife : float, maxLife : float, minSpeed : float, maxSpeed : float, minRot : float, maxRot : float, minSize : float, maxSize : float, minGravityScale : float, maxGravityScale : float, minBounciness : float, maxBounciness : float, maxEmitRadiusNormalized : float, minEmitRadiusNormalized : float, minLinearDrag : float, maxLinearDrag : float, minAngDrag : float, maxAngDrag : float, tint : list[float], shapeType : int, shapeRot : float, ballRadius : float = 0.0):
 		self.name = name
 		self.particleName = particleName
 		self.enable = enable
@@ -1615,6 +1615,8 @@ class ParticleSystem:
 		self.maxRot = math.radians(maxRot)
 		self.minGravityScale = minGravityScale
 		self.maxGravityScale = maxGravityScale
+		self.minBounciness = minBounciness
+		self.maxBounciness = maxBounciness
 		self.maxEmitRadiusNormalized = maxEmitRadiusNormalized
 		self.minEmitRadiusNormalized = minEmitRadiusNormalized
 		self.minLinearDrag = minLinearDrag
@@ -1646,9 +1648,7 @@ class ParticleSystem:
 				self.particles.remove(particle)
 
 	def emit (self):
-		rate = 1.0 / uniform(self.minRate, self.maxRate)
-		life = uniform(self.minLife, self.maxLife)
-		speed = uniform(self.minSpeed, self.maxSpeed)
+		self.intvl = 1.0 / uniform(self.minRate, self.maxRate)
 		rot = uniform(self.minRot, self.maxRot)
 		size = uniform(self.minSize, self.maxSize)
 		newParticleName = self.name + ':' + str(self.lastId)
@@ -1658,17 +1658,25 @@ class ParticleSystem:
 			pos = pygame.math.Vector2(obPos[0] + self.ballRadius * math.cos(rot), obPos[1] + self.ballRadius * math.sin(rot))
 		else:
 			pos = pygame.math.Vector2(0, 0)
-		copy_object (self.particleName, newParticleName, pos, self.shapeRot)
-		self.particles.append(Particle(newParticleName, life))
+		copy_object (self.particleName, newParticleName, pos, rot)
+		rigidBody = rigidBodiesIds[newParticleName]
+		sim.set_gravity_scale (rigidBody, uniform(self.minGravityScale, self.maxGravityScale), False)
+		if newParticleName in collidersIds:
+			sim.set_bounciness (collidersIds[newParticleName], uniform(self.minBounciness, self.maxBounciness))
+		sim.set_rigid_body_enabled (rigidBody, True)
+		sim.set_linear_velocity (rigidBody, ang_to_dir(rot) * uniform(self.minSpeed, self.maxSpeed))
+		self.particles.append(Particle(newParticleName, uniform(self.minLife, self.maxLife)))
 
 	def copy (self, newName : str, pos, rot : float = 0, copyParticles : bool = True):
-		self = ParticleSystem(newName, self.particleName, self.enable, self.prewarmDur, self.minRate, self.maxRate, self.minLife, self.maxLife, self.minSpeed, self.maxSpeed, self.minRot, self.maxRot, self.minSize, self.maxSize, self.minGravityScale, self.maxGravityScale, self.maxEmitRadiusNormalized, self.minEmitRadiusNormalized, self.minLinearDrag, self.maxLinearDrag, self.minAngDrag, self.maxAngDrag, self.tint, self.shapeType, self.shapeRot, self.ballRadius)
+		self = ParticleSystem(newName, self.particleName, self.enable, self.prewarmDur, self.minRate, self.maxRate, self.minLife, self.maxLife, self.minSpeed, self.maxSpeed, self.minRot, self.maxRot, self.minSize, self.maxSize, self.minGravityScale, self.maxGravityScale, self.minBounciness, self.maxBounciness, self.maxEmitRadiusNormalized, self.minEmitRadiusNormalized, self.minLinearDrag, self.maxLinearDrag, self.minAngDrag, self.maxAngDrag, self.tint, self.shapeType, self.shapeRot, self.ballRadius)
 		particleSystem = self
 		if copyParticles:
 			for particle in self.particles:
 				particlePos = get_object_position(particle.name)
 				particleRot = get_object_rotation(particle.name)
-				particleSystem.particles.append(particle.copy(newName + ':' + str(self.lastId), rotate_vector(particlePos, pos, rot), particleRot + rot))
+				newParticleName = newName + ':' + str(self.lastId)
+				copy_object (particle.name, newParticleName, rotate_vector(particlePos, pos, rot), particleRot + rot)
+				particleSystem.particles.append(Particle(newParticleName, particle.life))
 		particleSystems[newName] = particleSystem
 		return particleSystem
 
@@ -3105,6 +3113,9 @@ bpy.types.Object.maxAngDrag = bpy.props.FloatProperty(name = 'Max angular drag',
 bpy.types.Object.useMinMaxGravityScale = bpy.props.BoolProperty(name = 'Use min and max gravity scale', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxGravityScale'))
 bpy.types.Object.minGravityScale = bpy.props.FloatProperty(name = 'Min gravity scale', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minGravityScale'))
 bpy.types.Object.maxGravityScale = bpy.props.FloatProperty(name = 'Max gravity scale', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxGravityScale'))
+bpy.types.Object.useMinMaxBounciness = bpy.props.BoolProperty(name = 'Use min and max bounciness', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxBounciness'))
+bpy.types.Object.minBounciness = bpy.props.FloatProperty(name = 'Min bounciness', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minBounciness'))
+bpy.types.Object.maxBounciness = bpy.props.FloatProperty(name = 'Max bounciness', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxBounciness'))
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -3735,6 +3746,10 @@ class ParticleSystemPanel (bpy.types.Panel):
 		if ob.useMinMaxAngDrag:
 			self.layout.prop(ob, 'minAngDrag')
 			self.layout.prop(ob, 'maxAngDrag')
+		self.layout.prop(ob, 'useMinMaxBounciness')
+		if ob.useMinMaxBounciness:
+			self.layout.prop(ob, 'minBounciness')
+			self.layout.prop(ob, 'maxBounciness')
 
 @bpy.utils.register_class
 class RigidBodyPanel (bpy.types.Panel):
