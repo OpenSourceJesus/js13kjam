@@ -1412,6 +1412,7 @@ from random import uniform
 
 os.environ['SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS'] = '1'
 
+
 # Physics Section Start
 sim = PyRapier2d.Simulation()
 rigidBodiesIds = {}
@@ -1422,7 +1423,6 @@ surfaces = {}
 hide = []
 surfacesRects = {}
 initRots = {}
-particleSystems = {}
 zOrders = {}
 if sys.platform == 'win32':
 	TMP_DIR = os.path.expanduser('~\\AppData\\Local\\Temp')
@@ -1453,7 +1453,7 @@ def sqr_magnitude (v) -> float:
 def normalize (v):
 	return divide(v, magnitude(v))
 
-def copy_object (name, newName, pos, rot = 0, wakeUp = True):
+def copy_object (name, newName, pos, rot = 0, wakeUp = True, copyParticles = True):
 	global pivots, initRots, surfaces, surfacesRects, collidersIds, rigidBodiesIds
 	if name in pivots:
 		surface = surfaces[name].copy()
@@ -1476,8 +1476,10 @@ def copy_object (name, newName, pos, rot = 0, wakeUp = True):
 			initRots[newName] = rot
 		if name in collidersIds:
 			collidersIds[newName] = sim.copy_collider(collidersIds[name], pos, rot, wakeUp)
+	if name in particleSystems:
+		particleSystems[newName] = particleSystems[name].copy(newName, pos, rot, copyParticles)
 
-def remove_object (name, removeColliders = True, wakeUp = True):
+def remove_object (name, removeColliders = True, wakeUp = True, removeParticles = True):
 	if name in pivots:
 		del surfaces[name]
 		del surfacesRects[name]
@@ -1501,22 +1503,173 @@ def remove_object (name, removeColliders = True, wakeUp = True):
 	elif name in collidersIds:
 		sim.remove_collider (collidersIds[name], wakeUp)
 		del collidersIds[name]
+	if name in particleSystems:
+		particleSystem = particleSystems.pop(name)
+		if removeParticles:
+			for particle in particleSystem.particles:
+				remove_object (particle.name)
 
 def ang_to_dir (ang):
 	ang = math.radians(ang)
 	return pygame.math.Vector2(math.cos(ang), math.sin(ang))
 
-def rotate (surface, rot, pivot, offset):
-	rotatedSurface = pygame.transform.rotate(surface, -rot)
-	rotatedOff = offset.rotate(rot)
+def rotate_surface (surface, deg, pivot, offset):
+	rotatedSurface = pygame.transform.rotate(surface, -deg)
+	rotatedOff = offset.rotate(deg)
 	rect = rotatedSurface.get_rect(center = pivot - rotatedOff)
 	return rotatedSurface, rect
+
+def rotate_vector (v, pivot, deg):
+	deg = math.radians(deg)
+	ang = math.atan2(v[1] - pivot[1], v[0] - pivot[0]) + deg
+	return pivot + (pygame.math.Vector2(math.cos(ang), math.sin(ang)).normalize() * (pygame.math.Vector2(v) - pivot).length())
 
 def degrees (ang):
 	return float(math.degrees(ang))
 
 def radians (ang):
 	return float(math.radians(ang))
+
+def get_object_position (name):
+	if name in rigidBodiesIds:
+		return sim.get_rigid_body_position(rigidBodiesIds[name])
+	elif name in collidersIds:
+		return sim.get_collider_position(collidersIds[name])
+	else:
+		return None
+
+def get_object_rotation (name):
+	if name in rigidBodiesIds:
+		return sim.get_rigid_body_rotation(rigidBodiesIds[name])
+	elif name in collidersIds:
+		return sim.get_collider_rotation(collidersIds[name])
+	else:
+		return None
+
+class Particle:
+	name : str
+	life : float
+
+	def __init__ (self, name : str, life : float):
+		self.name = name
+		self.life = life
+
+	def __eq__ (self, other : Particle) -> bool:
+		if not isinstance(other, Particle):
+			return False
+		return self.name == other.name
+
+	def copy (self, newName : str, pos, rot : float = 0) -> Particle:
+		copy_object (self.name, newName, pos, rot)
+		return Particle(newName, self.life)
+
+class ParticleSystem:
+	name : str
+	particleName : str
+	enable : bool
+	prewarmDur : float
+	minRate : float
+	maxRate : float
+	rate : float
+	minLife : float
+	maxLife : float
+	minSpeed : float
+	maxSpeed : float
+	minRot : float
+	maxRot : float
+	minSize : float
+	maxSize : float
+	minGravityScale : float
+	maxGravityScale : float
+	maxEmitRadiusNormalized : float
+	minEmitRadiusNormalized : float
+	minLinearDrag : float
+	maxLinearDrag : float
+	minAngDrag : float
+	maxAngDrag : float
+	tint : list[float]
+	shapeType : int
+	shapeRot : float
+	ballRadius : float
+	timer : float
+	lastId : int
+	particles : list[Particle]
+
+	def __init__ (self, name : str, particleName : str, enable : bool, prewarmDur : float, minRate : float, maxRate : float, minLife : float, maxLife : float, minSpeed : float, maxSpeed : float, minRot : float, maxRot : float, minSize : float, maxSize : float, minGravityScale : float, maxGravityScale : float, maxEmitRadiusNormalized : float, minEmitRadiusNormalized : float, minLinearDrag : float, maxLinearDrag : float, minAngDrag : float, maxAngDrag : float, tint : list[float], shapeType : int, shapeRot : float, ballRadius : float = 0.0):
+		self.name = name
+		self.particleName = particleName
+		self.enable = enable
+		self.minRate = minRate
+		self.maxRate = maxRate
+		self.rate = uniform(minRate, maxRate)
+		self.minSize = minSize
+		self.maxSize = maxSize
+		self.minLife = minLife
+		self.maxLife = maxLife
+		self.minSpeed = minSpeed
+		self.maxSpeed = maxSpeed
+		self.minRot = math.radians(minRot)
+		self.maxRot = math.radians(maxRot)
+		self.minGravityScale = minGravityScale
+		self.maxGravityScale = maxGravityScale
+		self.maxEmitRadiusNormalized = maxEmitRadiusNormalized
+		self.minEmitRadiusNormalized = minEmitRadiusNormalized
+		self.minLinearDrag = minLinearDrag
+		self.maxLinearDrag = maxLinearDrag
+		self.minAngDrag = minAngDrag
+		self.maxAngDrag = maxAngDrag
+		self.tint = tint
+		self.shapeType = shapeType
+		self.shapeRot = math.radians(shapeRot)
+		self.ballRadius = ballRadius
+		self.timer = 0.0
+		self.lastId = 0
+		self.particles = []
+		while self.timer < prewarmDur:
+			self.timer += self.rate
+			self.update (self.rate)
+			self.rate = uniform(self.minRate, self.maxRate)
+		self.update (prewarmDur - self.timer)
+
+	def update (self, dt : float):
+		self.timer += dt
+		if self.timer >= self.rate:
+			self.timer -= self.rate
+			self.emit ()
+		for particle in list(self.particles):
+			particle.life -= dt
+			if particle.life <= 0:
+				remove_object (particle.name)
+				self.particles.remove(particle)
+
+	def emit (self):
+		rate = uniform(self.minRate, self.maxRate)
+		life = uniform(self.minLife, self.maxLife)
+		speed = uniform(self.minSpeed, self.maxSpeed)
+		rot = uniform(self.minRot, self.maxRot)
+		size = uniform(self.minSize, self.maxSize)
+		newParticleName = self.name + ':' + str(self.lastId)
+		self.lastId += 1
+		obPos = get_object_position(self.name)
+		if self.shapeType == 0: # ball
+			pos = pygame.math.Vector2(obPos[0] + self.ballRadius * math.cos(rot), obPos[1] + self.ballRadius * math.sin(rot))
+		else:
+			pos = pygame.math.Vector2(0, 0)
+		copy_object (self.particleName, newParticleName, pos, self.shapeRot)
+		self.particles.append(Particle(newParticleName, life))
+
+	def copy (self, newName : str, pos, rot : float = 0, copyParticles : bool = True):
+		self = ParticleSystem(newName, self.particleName, self.enable, self.prewarmDur, self.minRate, self.maxRate, self.minLife, self.maxLife, self.minSpeed, self.maxSpeed, self.minRot, self.maxRot, self.minSize, self.maxSize, self.minGravityScale, self.maxGravityScale, self.maxEmitRadiusNormalized, self.minEmitRadiusNormalized, self.minLinearDrag, self.maxLinearDrag, self.minAngDrag, self.maxAngDrag, self.tint, self.shapeType, self.shapeRot, self.ballRadius)
+		particleSystem = self
+		if copyParticles:
+			for particle in self.particles:
+				particlePos = get_object_position(particle.name)
+				particleRot = get_object_rotation(particle.name)
+				particleSystem.particles.append(particle.copy(newName + ':' + str(self.lastId), rotate_vector(particlePos, pos, rot), particleRot + rot))
+		particleSystems[newName] = particleSystem
+		return particleSystem
+
+particleSystems : dict[str, ParticleSystem] = {}
 
 class Game:
 	def __init__ (self, title : str = 'Game'):
@@ -1583,92 +1736,12 @@ class Game:
 					width, height = surface.get_size()
 					pivot = pivots[name]
 					offset = pygame.math.Vector2(pivot[0] * width, pivot[1] * height) - pygame.math.Vector2(width, height) / 2
-					rotatedSurface, rect = rotate(surface, rot + initRots[name], pos, offset)
+					rotatedSurface, rect = rotate_surface(surface, rot + initRots[name], pos, offset)
 					screen.blit(rotatedSurface, (rect.left - off.x, rect.top - off.y))
 				else:
 					pos = surfacesRects[name].topleft
 					screen.blit(surface, (pos[0] - off.x, pos[1] - off.y))
 		pygame.display.flip()
-
-class Particle:
-	def __init__ (self, name : str = '', life : float = 0.0):
-		self.name = name
-		self.life = life
-
-	def __eq__ (self, other : Particle) -> bool:
-		if not isinstance(other, Particle):
-			return False
-		return self.name == other.name
-
-class ParticleSystem:
-	def __init__ (self, name : str, particleName : str, enable : bool, prewarmDur : float, minRate : float, maxRate : float, minLife : float, maxLife : float, minSpeed : float, maxSpeed : float, minRot : float, maxRot : float, minSize : float, maxSize : float, minGravityScale : float, maxGravityScale : float, maxEmitRadiusNormalized : float, minEmitRadiusNormalized : float, minLinearDrag : float, maxLinearDrag : float, minAngDrag : float, maxAngDrag : float, tint : list[float], shapeType : int, shapeRot : float, ballRadius : float = 0.0):
-		self.name = name
-		self.particleName = particleName
-		self.enable = enable
-		self.rate = uniform(self.minRate, self.maxRate)
-		self.minRate = minRate
-		self.maxRate = maxRate
-		self.minSize = minSize
-		self.maxSize = maxSize
-		self.minLife = minLife
-		self.maxLife = maxLife
-		self.minSpeed = minSpeed
-		self.maxSpeed = maxSpeed
-		self.minRot = math.radians(minRot)
-		self.maxRot = math.radians(maxRot)
-		self.minGravityScale = minGravityScale
-		self.maxGravityScale = maxGravityScale
-		self.maxEmitRadiusNormalized = maxEmitRadiusNormalized
-		self.minEmitRadiusNormalized = minEmitRadiusNormalized
-		self.minLinearDrag = minLinearDrag
-		self.maxLinearDrag = maxLinearDrag
-		self.minAngDrag = minAngDrag
-		self.maxAngDrag = maxAngDrag
-		self.tint = tint
-		self.shapeType = shapeType
-		self.shapeRot = math.radians(shapeRot)
-		self.ballRadius = ballRadius
-		self.timer = 0.0
-		self.lastId = 0
-		self.particles = [Particle()]
-		self.particles.clear()
-		while self.timer < prewarmDur:
-			self.timer += self.rate
-			self.update (self.rate)
-			self.rate = uniform(self.minRate, self.maxRate)
-		self.update (prewarmDur - self.timer)
-
-	def update (self, dt : float):
-		self.timer += dt
-		if self.timer >= self.rate:
-			self.timer -= self.rate
-			self.emit ()
-		for particle in list(self.particles):
-			particle.life -= dt
-			if particle.life <= 0:
-				remove_object (particle.name)
-				self.particles.remove(particle)
-
-	def emit (self):
-		rate = uniform(self.minRate, self.maxRate)
-		life = uniform(self.minLife, self.maxLife)
-		speed = uniform(self.minSpeed, self.maxSpeed)
-		rot = uniform(self.minRot, self.maxRot)
-		size = uniform(self.minSize, self.maxSize)
-		newParticleName = self.name + '_' + str(self.lastId)
-		self.lastId += 1
-		if self.name in rigidBodiesIds:
-			obPos = sim.get_rigid_body_position(rigidBodiesIds[self.name])
-		elif self.name in collidersIds:
-			obPos = sim.get_collider_position(collidersIds[self.name])
-		else:
-			obPos = [0, 0]
-		if self.shapeType == 0: # ball
-			pos = pygame.math.Vector2(obPos[0] + self.ballRadius * math.cos(rot), obPos[1] + self.ballRadius * math.sin(rot))
-		else:
-			pos = pygame.math.Vector2(0, 0)
-		copy_object (self.particleName, newParticleName, pos, self.shapeRot)
-		self.particles.append(Particle(newParticleName, life))
 
 # Vars
 
@@ -3635,6 +3708,7 @@ class ParticleSystemPanel (bpy.types.Panel):
 		self.layout.prop(ob, 'emitTint')
 		self.layout.label(text = 'Shape')
 		self.layout.prop(ob, 'emitShapeType')
+		self.layout.prop(ob, 'emitRadius')
 		self.layout.prop(ob, 'useMinMaxEmitRadiusNormalized')
 		if ob.useMinMaxEmitRadiusNormalized:
 			self.layout.prop(ob, 'minEmitRadiusNormalized')
