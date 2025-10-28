@@ -263,6 +263,8 @@ exportType = None
 vars = []
 attributes = {}
 pivots = {}
+ui = []
+uiMethods = []
 globals = []
 renderCode = []
 zOrders = {}
@@ -279,6 +281,7 @@ def ExportObject (ob):
 		attributes[obVarName] = _attributes
 	RegisterPhysics (ob)
 	RegisterParticleSystem (ob)
+	RegisterUI (ob)
 	world = bpy.data.worlds[0]
 	SCALE = world.exportScale
 	off = Vector(world.exportOff)
@@ -1111,6 +1114,16 @@ var PS_{obVarName} = [];
 		globals.append(particleSystemName)
 		particleSystems.append(particleSystem)
 
+def RegisterUI (ob):
+	if not ob.uiExists:
+		return
+	obVarName = GetVarNameForObject(ob)
+	uiClause = f'ui["{obVarName}"] = UIElement("{obVarName}", {ob.uiEnable})'
+	if ob.useOnPointerEnter:
+		uiClause += f'\nuiCallbacks["{obVarName}"] = {obVarName}OnPointerEnter'
+		uiMethods.append( f'def {obVarName}OnPointerEnter () -> None:\n	{ob.onPointerEnter}')
+	ui.append(uiClause)
+
 def RenderObject (ob, newOb, renderFunc, *args):
 	scene = bpy.context.scene
 	prevCam = scene.camera
@@ -1366,7 +1379,7 @@ def GetPathDelta (fromPathData, toPathData):
 	return output
 
 def GetBlenderData ():
-	global vars, clrs, datas, joints, pivots, globals, apiCode, initCode, pathsDatas, updateCode, exportedObs, svgsDatas, renderCode, rigidBodies, colliders, attributes, charControllers, particleSystems
+	global ui, vars, clrs, datas, joints, pivots, globals, apiCode, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems
 	vars = []
 	attributes = {}
 	pivots = {}
@@ -1382,6 +1395,8 @@ def GetBlenderData ():
 	joints = {}
 	charControllers = {}
 	particleSystems = []
+	ui = []
+	uiMethods = []
 	initCode = []
 	updateCode = []
 	svgsDatas = {}
@@ -1422,7 +1437,6 @@ from random import uniform
 
 os.environ['SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS'] = '1'
 
-
 # Physics Section Start
 sim = PyRapier2d.Simulation()
 rigidBodiesIds = {}
@@ -1438,8 +1452,12 @@ if sys.platform == 'win32':
 	TMP_DIR = os.path.expanduser('~\\AppData\\Local\\Temp')
 else:
 	TMP_DIR = '/tmp'
-# Pivots
-# Attributes
+pivots = {}
+attributes = {}
+mousePos = pygame.math.Vector2()
+mousePosWorld = pygame.math.Vector2()
+prevMousePos = pygame.math.Vector2()
+prevMousePosWorld = pygame.math.Vector2()
 off = pygame.math.Vector2()
 
 def add (v, v2):
@@ -1729,7 +1747,7 @@ class Game:
 				self.running = False
 
 	def init (self):
-		global sim, off, hide, pivots, initRots, surfaces, jointsIds, attributes, collidersIds, surfacesRects, rigidBodiesIds, particleSystems
+		global ui, sim, off, hide, pivots, initRots, surfaces, jointsIds, attributes, uiCallbacks, collidersIds, surfacesRects, rigidBodiesIds, particleSystems
 # Globals
 		sim = PyRapier2d.Simulation()
 		rigidBodiesIds = {}
@@ -1742,15 +1760,19 @@ class Game:
 		particleSystems = {}
 		zOrders = {}
 		off = pygame.math.Vector2()
-# Init Pivots And Attributes
+		ui = {}
+		uiCallbacks = {}
+# Init Pivots, Attributes, UI
 # Init Physics
 # Init Rendering
 # Init Particle Systems
 		self.sortedObNames = [name for name, z in sorted(zOrders.items(), key = lambda item : item[1])]
 
 	def update (self):
-		global off
+		global off, mousePos, uiCallbacks, mousePosWorld, prevMousePos, prevMousePosWorld
 # Globals
+		mousePos = pygame.mouse.get_pos()
+		mousePosWorld = mousePos + off
 # Physics Section Start
 		sim.step ()
 # Physics Section End
@@ -1758,6 +1780,11 @@ class Game:
 		for particleSystem in list(particleSystems.values()):
 			if particleSystem.enable:
 				particleSystem.update (self.dt)
+		for name, uiOb in list(ui.items()):
+			if uiOb.enable:
+				uiOb.update ()
+		prevMousePos = mousePos
+		prevMousePosWorld = mousePosWorld
 
 	def render (self):
 # Background
@@ -1779,11 +1806,30 @@ class Game:
 		pygame.display.flip()
 
 # Vars
-
 pygame.init()
 screen = pygame.display.set_mode(flags = pygame.FULLSCREEN)
 windowSize = pygame.display.get_window_size()
 game = Game()
+class UIElement:
+	name : str
+	enable : bool
+
+	def __init__ (self, name : str, enable : bool):
+		self.name = name
+		self.enable = enable
+
+	def update (self):
+		if self.name in uiCallbacks and surfacesRects[self.name].collidepoint(mousePosWorld) and not surfacesRects[self.name].collidepoint(prevMousePosWorld):
+			uiCallbacks[self.name] ()
+
+	def copy (self, newName : str, enable : bool):
+		newUIElt = UIElement(newName, enable)
+		uiCallbacks[newName] = uiCallbacks[self.name].copy()
+		return newUIElt
+
+ui : dict[str, UIElement] = {}
+uiCallbacks : dict[str, Callable[[], None]] = {}
+# UI Methods
 game.init ()
 # API
 # Init User Code
@@ -2436,7 +2482,7 @@ def GenHtml (world, datas, background = ''):
 	return '\n'.join(o)
 
 def GenPython (world, datas, background = ''):
-	global vars, apiCode, clrs, initCode, updateCode, pathsDatas
+	global ui, vars, clrs, apiCode, initCode, updateCode, pathsDatas, uiMethods
 	python = PYTHON
 	if not usePhysics:
 		while True:
@@ -2449,8 +2495,7 @@ def GenPython (world, datas, background = ''):
 			python = python[: idxOfPhysicsSectionStart] + python[idxOfPhysicsSectionEnd :]
 	python = python.replace('# API', apiCode)
 	python = python.replace('# Vars', '\n'.join(vars))
-	python = python.replace('# Pivots', 'pivots = ' + str(pivots))
-	python = python.replace('# Attributes', 'attributes = ' + str(attributes))
+	python = python.replace('# UI Methods', '\n'.join((uiMethods)))
 	gravity = [0, 0]
 	if bpy.context.scene.use_gravity:
 		gravity = list(bpy.context.scene.gravity)
@@ -2474,7 +2519,11 @@ def GenPython (world, datas, background = ''):
 	for clause in particleSystems:
 		for line in clause.split('\n'):
 			particleSystemsCode += '		' + line + '\n'
-	python = python.replace('# Init Pivots And Attributes', '		pivots = ' + str(pivots) + '\n		attributes = ' + str(attributes))
+	uiCode = ''
+	for clause in ui:
+		for line in clause.split('\n'):
+			uiCode += '		' + line + '\n'
+	python = python.replace('# Init Pivots, Attributes, UI', f'		pivots = {pivots}\n		attributes = {attributes}\n{uiCode}')
 	python = python.replace('# Init Physics', physicsInitCode)
 	python = python.replace('# Init Rendering', '\n'.join(renderCode))
 	python = python.replace('# Init Particle Systems', particleSystemsCode)
@@ -3096,6 +3145,10 @@ bpy.types.Object.charControllerExists = bpy.props.BoolProperty(name = 'Exists', 
 bpy.types.Object.contactOff = bpy.props.FloatProperty(name = 'Contact offset', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'contactOff'))
 bpy.types.Object.resPercent = bpy.props.IntProperty(name = 'Resolution percent', min = 0, max = 100, default = 100, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'resPercent'))
 bpy.types.Object.tint = bpy.props.FloatVectorProperty(name = 'Tint', subtype = 'COLOR', size = 3, min = 0, max = 1, default = [1, 1, 1], update = lambda ob, ctx : OnUpdateTint (ob, ctx))
+bpy.types.Object.uiExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'uiExists'))
+bpy.types.Object.uiEnable = bpy.props.BoolProperty(name = 'Enable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'uiEnable'))
+bpy.types.Object.useOnPointerEnter = bpy.props.BoolProperty(name = 'Use on pointer enter', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useOnPointerEnter'))
+bpy.types.Object.onPointerEnter = bpy.props.StringProperty(name = 'On pointer enter', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'onPointerEnter'))
 bpy.types.Object.particleSystemExists = bpy.props.BoolProperty(name = 'Exists', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'particleSystemExists'))
 bpy.types.Object.particleSystemEnable = bpy.props.BoolProperty(name = 'Enable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'particleSystemEnable'))
 bpy.types.Object.particle = bpy.props.PointerProperty(name = 'Particle', type = bpy.types.Object, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'particle'))
@@ -3538,6 +3591,7 @@ class ObjectPanel (bpy.types.Panel):
 		if not ob:
 			return
 		self.layout.prop(ob, 'export')
+		self.layout.label(text = 'UI')
 		if ob.type == 'CURVE' or ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
 			self.layout.prop(ob, 'roundPosAndSize')
 			self.layout.prop(ob, 'pivot')
@@ -3616,6 +3670,28 @@ class ObjectPanel (bpy.types.Panel):
 			row.prop(ob, 'initScript%i' %i)
 			row.prop(ob, 'runtimeScriptType%i' %i)
 			row.prop(ob, 'runtimeScriptDisable%i' %i)
+
+@bpy.utils.register_class
+class UIPanel (bpy.types.Panel):
+	bl_idname = 'OBJECT_PT_UI_Panel'
+	bl_label = 'UI'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'object'
+
+	def draw (self, ctx):
+		ob = ctx.active_object
+		if not ob:
+			return
+		self.layout.prop(ob, 'uiExists')
+		if not ob.uiExists:
+			return
+		self.layout.prop(ob, 'uiEnable')
+		if not ob.uiEnable:
+			return
+		row = self.layout.row()
+		row.prop(ob, 'useOnPointerEnter')
+		row.prop(ob, 'onPointerEnter')
 
 @bpy.utils.register_class
 class AttributesPanel (bpy.types.Panel):
