@@ -1490,7 +1490,16 @@ def copy_object (name, newName, pos, rot = 0, wakeUp = True, attachTo : str = ''
 			else:
 				collidersIds[newName] = sim.copy_collider(collidersIds[name], pos, rot, rigidBodiesIds[attachTo])
 	if name in particleSystems:
-		particleSystems[newName] = particleSystems[name].copy(newName, pos, rot, copyParticles)
+		particleSystem = particleSystems[name]
+		newParticleSystem = particleSystem.copy(newName)
+		if copyParticles:
+			for particle in particleSystem.particles:
+				particlePos = get_object_position(particle.name)
+				particleRot = get_object_rotation(particle.name)
+				newParticleName = newName + ':' + str(particleSystem.lastId)
+				copy_object (particle.name, newParticleName, rotate_vector(particlePos, pos, rot), particleRot + rot)
+				newParticleSystem.particles.append(Particle(newParticleName, particle.life))
+		particleSystems[newName] = newParticleSystem
 
 def remove_object (name, removeColliders = True, wakeUp = True, removeParticles = True):
 	if name in pivots:
@@ -1498,7 +1507,7 @@ def remove_object (name, removeColliders = True, wakeUp = True, removeParticles 
 		del surfacesRects[name]
 		del initRots[name]
 		del pivots[name]
-		game.sortedObNames.remove(name)
+		game.sortedObNames = [item for item in game.sortedObNames if item != name]
 	if name in attributes:
 		del attributes[name]
 	if name in zOrders:
@@ -1506,9 +1515,9 @@ def remove_object (name, removeColliders = True, wakeUp = True, removeParticles 
 	if name in rigidBodiesIds:
 		rigidBody = rigidBodiesIds[name]
 		if removeColliders:
-			for collider in sim.get_rigid_body_colliders(rigidBody):
-				for colliderName in collidersIds:
-					if collidersIds[colliderName] == collider:
+			for removeCollider in sim.get_rigid_body_colliders(rigidBody):
+				for colliderName, collider in list(collidersIds.items()):
+					if collider == removeCollider:
 						del collidersIds[colliderName]
 						break
 		sim.remove_rigid_body (rigidBody, removeColliders)
@@ -1516,11 +1525,10 @@ def remove_object (name, removeColliders = True, wakeUp = True, removeParticles 
 	elif name in collidersIds:
 		sim.remove_collider (collidersIds[name], wakeUp)
 		del collidersIds[name]
-	if name in particleSystems:
+	if removeParticles and name in particleSystems:
 		particleSystem = particleSystems.pop(name)
-		if removeParticles:
-			for particle in particleSystem.particles:
-				remove_object (particle.name)
+		for particle in particleSystem.particles:
+			remove_object (particle.name)
 
 def ang_to_dir (ang):
 	ang = math.radians(ang)
@@ -1657,7 +1665,7 @@ class ParticleSystem:
 				for i in range(burst[1]):
 					self.emit ()
 				self.currBurstIdx += 1
-		if self.timer >= self.intvl and self.intvl > 0:
+		if self.timer >= self.intvl:
 			self.timer -= self.intvl
 			self.intvl = 1.0 / uniform(self.minRate, self.maxRate)
 			self.emit ()
@@ -1693,18 +1701,8 @@ class ParticleSystem:
 		sim.set_linear_velocity (rigidBody, ang_to_dir(math.degrees(randRad)) * uniform(self.minSpeed, self.maxSpeed))
 		self.particles.append(Particle(newParticleName, uniform(self.minLife, self.maxLife)))
 
-	def copy (self, newName : str, pos, rot : float = 0, copyParticles : bool = True):
-		self = ParticleSystem(newName, self.particleName, self.enable, self.prewarmDur, self.minRate, self.maxRate, self.bursts, self.minLife, self.maxLife, self.minSpeed, self.maxSpeed, self.minRot, self.maxRot, self.minSize, self.maxSize, self.minGravityScale, self.maxGravityScale, self.minBounciness, self.maxBounciness, self.maxEmitRadiusNormalized, self.minEmitRadiusNormalized, self.minLinearDrag, self.maxLinearDrag, self.minAngDrag, self.maxAngDrag, self.tint, self.shapeType, self.shapeRot, self.ballRadius)
-		particleSystem = self
-		if copyParticles:
-			for particle in self.particles:
-				particlePos = get_object_position(particle.name)
-				particleRot = get_object_rotation(particle.name)
-				newParticleName = newName + ':' + str(self.lastId)
-				copy_object (particle.name, newParticleName, rotate_vector(particlePos, pos, rot), particleRot + rot)
-				particleSystem.particles.append(Particle(newParticleName, particle.life))
-		particleSystems[newName] = particleSystem
-		return particleSystem
+	def copy (self, newName : str):
+		return ParticleSystem(newName, self.particleName, self.enable, self.prewarmDur, self.minRate, self.maxRate, self.bursts, self.minLife, self.maxLife, self.minSpeed, self.maxSpeed, self.minRot, self.maxRot, self.minSize, self.maxSize, self.minGravityScale, self.maxGravityScale, self.minBounciness, self.maxBounciness, self.maxEmitRadiusNormalized, self.minEmitRadiusNormalized, self.minLinearDrag, self.maxLinearDrag, self.minAngDrag, self.maxAngDrag, self.tint, self.shapeType, self.shapeRot, self.ballRadius)
 
 particleSystems : dict[str, ParticleSystem] = {}
 
