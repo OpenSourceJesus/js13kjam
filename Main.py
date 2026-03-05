@@ -419,10 +419,7 @@ def ExportObject (ob):
 					data.append(ob.posPingPong)
 					data.append(TryChangeToInt(size.x))
 					data.append(TryChangeToInt(size.y))
-					materialClr = DEFAULT_CLR
-					if ob.active_material:
-						materialClr = ob.active_material.diffuse_color
-					data.append(GetColor(materialClr))
+					data.append(GetColor(ob.color))
 					data.append(round(strokeWidth))
 					data.append(GetColor(ob.strokeClr))
 					data.append(prevObName)
@@ -548,8 +545,8 @@ def ExportObject (ob):
 					for matSlot in ob.material_slots:
 						mat2 = matSlot.material
 						if mat2 and mat != mat2:
-							prevMatClrs[mat2] = mat2.diffuse_color
-							mat2.diffuse_color = DEFAULT_CLR
+							prevMatClrs[mat2] = mat2.color
+							mat2.color = DEFAULT_CLR
 					RenderObject (ob, newOb, lambda : RenderMesh (ob, newOb, renderCams, newName, tints, frame, visibleClrValues, mat, prevMatClrs))
 		tempCollection.objects.unlink(newOb)
 		bpy.data.objects.remove(newOb)
@@ -594,9 +591,9 @@ def ExportObject (ob):
 			if ob2 != ob:
 				mat = ob2.active_material
 				if mat:
-					matClr = mat.diffuse_color
+					matClr = mat.color
 					prevObsClrs[ob2] = list(matClr)
-					mat.diffuse_color = DEFAULT_CLR
+					mat.color = DEFAULT_CLR
 		cam = scene.camera
 		renderSettings.filepath = os.path.join(TMP_DIR, 'Render.bmp')
 		renderSettings.resolution_percentage *= ob.resPercent
@@ -620,7 +617,7 @@ def ExportObject (ob):
 		idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
 		materialClr = DEFAULT_CLR
 		if ob.active_material:
-			materialClr = ob.active_material.diffuse_color
+			materialClr = ob.active_material.color
 		prevMatAlpha = materialClr[3]
 		fillClr = Subtract([1, 1, 1, 1], materialClr)
 		fillClr[3] = prevMatAlpha
@@ -634,7 +631,7 @@ def ExportObject (ob):
 		world.color = prevWorldClr
 		for ob2 in bpy.data.objects:
 			if ob2 in prevObsClrs:
-				ob2.active_material.diffuse_color = prevObsClrs[ob2]
+				ob2.active_material.color = prevObsClrs[ob2]
 		renderSettings.filepath = prevRenderPath
 		renderSettings.resolution_percentage = prevResPercent
 		renderSettings.film_transparent = prevTransparentFilm
@@ -1237,7 +1234,7 @@ def RenderMesh (*args):
 			fillIndctr = 'fill="'
 			idxOfFillStart = svgTxt.find(fillIndctr) + len(fillIndctr)
 			idxOfFillEnd = svgTxt.find('"', idxOfFillStart)
-			materialClr = mat.diffuse_color
+			materialClr = mat.color
 			fillClr = ClampComponents(Round(Multiply(materialClr, [255, 255, 255, 255])), [0, 0, 0, 0], [255, 255, 255, 255])
 			if ob.gradientFill:
 				svgTxt = svgTxt[: idxOfFillStart] + 'url(#' + ob.gradientFill.name + ')' + svgTxt[idxOfFillEnd :]
@@ -1252,7 +1249,7 @@ def RenderMesh (*args):
 		for matSlot in ob.material_slots:
 			mat2 = matSlot.material
 			if mat2 in prevMatClrs:
-				mat2.diffuse_color = prevMatClrs[mat2]
+				mat2.color = prevMatClrs[mat2]
 
 def AddImageDataForExe (ob, imgPath, pos, size, opacity):
 	surface = GetVarNameForObject(ob)
@@ -1860,10 +1857,6 @@ $.main ()
 '''
 JS = '''
 var svgNS = 'http://www.w3.org/2000/svg';
-function dot (from, to)
-{
-	return from[0] * to[0] + from[1] * to[1];
-}
 function ang (from, to)
 {
 	return Math.acos(dot(normalize(from), normalize(to))) * (180 / Math.PI);
@@ -2003,7 +1996,7 @@ function shuffle (arr)
 }
 '''
 PHYSICS = '''
-import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier2d-compat';
+import RAPIER from 'https://cdn.jsdelivr.net/npm/@dimforge/rapier2d-compat/+esm';
 
 // Vars
 var world;
@@ -2466,6 +2459,9 @@ def GenHtml (world, datas, background = ''):
 		'<body>',
 		''.join(imgs.values()),
 		''.join(svgsDatas.values()),
+		'<script type="importmap">',
+		world.importMap,
+		'</script>',
 		'<script type="module">',
 		js,
 		'</script>'
@@ -2620,7 +2616,7 @@ def BuildExe (world):
 		exePath = TMP_DIR + '/' + bpy.path.basename(bpy.data.filepath).replace('.blend', '')
 	if not exePath.endswith('.exe'):
 		exePath += '.exe'
-	cmd = 'python3 CodonBuild.py ' + pythonPath + ' ' + exePath + ' ' + str(world.debugMode)
+	cmd = 'python3 CodonBuild.py ' + pythonPath + ' "' + exePath + '" ' + str(world.debugMode)
 	print(cmd)
 	os.system(cmd)
 	zipPath = os.path.expanduser(world.zipPath)
@@ -2641,9 +2637,9 @@ def BuildExe (world):
 	if indexOfExeNameStart == -1:
 		indexOfExeNameStart = 0
 	exePath = zipPath.replace('.zip', '') + '/' + exePath[indexOfExeNameStart :]
-	cmd = 'chmod +x ' + exePath
+	cmd = 'chmod +x '
 	print(cmd)
-	subprocess.check_call(cmd.split())
+	subprocess.check_call(cmd.split() + ['"' + exePath + '"'])
 	cmd = exePath
 	print(cmd)
 	subprocess.check_call(cmd.split(), cwd = zipPath.replace('.zip', ''))
@@ -2975,7 +2971,7 @@ def OnDrawColliderHandles (self, ctx):
 
 def GetLastUsedPropertyIndex (ob, usePropName, propCnt, minIdx = 0) -> int:
 	for i in range(propCnt - 1, minIdx - 1, -1):
-		if getattr(ob, usePropName + str(i)):
+		if getattr(ob, usePropName + str(i), False):
 			return i
 	return -1
 
@@ -2996,11 +2992,6 @@ def OnUpdateTint (self, ctx):
 
 def Update ():
 	canUpdateProps = True
-	for ob in bpy.data.objects:
-		for matSlot in ob.material_slots:
-			mat = matSlot.material
-			if mat:
-				mat.use_nodes = False
 	for txt in bpy.data.texts:
 		idxOfPeriod = txt.name.find('.')
 		if idxOfPeriod != -1:
@@ -3037,6 +3028,7 @@ BOUNCINESS_COMBINE_RULES = ['average', 'minimum', 'multiply', 'maximum']
 
 bpy.types.World.exportScale = bpy.props.FloatProperty(name = 'Scale', default = 1)
 bpy.types.World.exportOff = bpy.props.IntVectorProperty(name = 'Offset', size = 2)
+bpy.types.World.importMap = bpy.props.StringProperty(name = 'Import map')
 bpy.types.World.htmlPath = bpy.props.StringProperty(name = 'Export .html')
 bpy.types.World.exePath = bpy.props.StringProperty(name = 'Export .exe')
 bpy.types.World.zipPath = bpy.props.StringProperty(name = 'Export .zip')
@@ -3535,9 +3527,9 @@ class WorldPanel (bpy.types.Panel):
 	bl_context = 'world'
 
 	def draw (self, ctx):
-		row = self.layout.row()
-		row.prop(ctx.world, 'exportScale')
+		self.layout.prop(ctx.world, 'exportScale')
 		self.layout.prop(ctx.world, 'exportOff')
+		self.layout.prop(ctx.world, 'importMap')
 		self.layout.prop(ctx.world, 'htmlPath')
 		self.layout.prop(ctx.world, 'exePath')
 		self.layout.prop(ctx.world, 'zipPath')
