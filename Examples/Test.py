@@ -1,0 +1,1 @@
+print(Date.now() / 1000)

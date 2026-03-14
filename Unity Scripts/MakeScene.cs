@@ -16,15 +16,15 @@ public class MakeScene : MonoBehaviour
 		Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene);
 		EditorSceneManager.SaveScene(scene, "Assets/Scenes/Test.unity");
 		EditorSceneManager.OpenScene(scene.path);
-		string[] svgsPaths = SystemExtensions.GetAllFilePathsInFolder(Application.dataPath + "/Art/Svgs", ".svg");
-		foreach (string svgPath in svgsPaths)
-		{
-			Object[] obs = AssetDatabase.LoadAllAssetsAtPath(svgPath.StartAt("Assets/"));
-			foreach (Object ob in obs)
-			{
-				print(ob);
-			}
-		}
+		// string[] svgsPaths = SystemUtil.GetAllFilePathsInFolder(Application.dataPath + "/Art/Svgs", ".svg");
+		// foreach (string svgPath in svgsPaths)
+		// {
+		// 	Object[] obs = AssetDatabase.LoadAllAssetsAtPath(svgPath.StartAt("Assets/"));
+		// 	foreach (Object ob in obs)
+		// 	{
+		// 		print(ob);
+		// 	}
+		// }
 	}
 
 	static void AddPackage (string name)

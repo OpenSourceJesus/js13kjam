@@ -2,7 +2,7 @@ using System;
 using System.Text;
 using System.Text.RegularExpressions;
 
-public static class StringExtensions
+public static class StringUtil
 {
 	public static string StartAt (this string str, string startAt)
 	{

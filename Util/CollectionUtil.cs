@@ -1,7 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 
-public static class CollectionExtensions
+public static class CollectionUtil
 {
 	public static void InsertRange (this IList collection, int insertAt, IList insert)
 	{

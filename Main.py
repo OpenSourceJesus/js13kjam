@@ -2,10 +2,10 @@ import os, sys, json, string, atexit, webbrowser, subprocess, math
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
-EXTENSIONS_SCRIPTS_PATH = os.path.join(_thisDir, 'Extensions')
-sys.path.append(EXTENSIONS_SCRIPTS_PATH)
-from MathExtensions import *
-from SystemExtensions import *
+Util_SCRIPTS_PATH = os.path.join(_thisDir, 'Util')
+sys.path.append(Util_SCRIPTS_PATH)
+from MathUtil import *
+from SystemUtil import *
 
 isLinux = False
 POTRACE_PATH = 'potrace-1.16.'
@@ -2666,8 +2666,8 @@ def BuildUnity (world):
 	MakeFolderForFile (makeSceneScriptPath)
 	MakeFolderForFile (os.path.join(scriptsPath, ''))
 	CopyFile (os.path.join(UNITY_SCRIPTS_PATH, 'MakeScene.cs'), makeSceneScriptPath)
-	for extensionsScript in GetAllFilePathsOfType(EXTENSIONS_SCRIPTS_PATH, '.cs'):
-		CopyFile (extensionsScript, os.path.join(scriptsPath, extensionsScript[extensionsScript.rfind('/') + 1:]))
+	for UtilScript in GetAllFilePathsOfType(Util_SCRIPTS_PATH, '.cs'):
+		CopyFile (UtilScript, os.path.join(scriptsPath, UtilScript[UtilScript.rfind('/') + 1:]))
 	if sys.platform == 'win32':
 		unityVersionsPath = os.path.join('/', 'Program Files', 'Unity', 'Hub', 'Editor')
 	else:
