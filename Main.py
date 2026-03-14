@@ -1375,6 +1375,15 @@ def GetPathDelta (fromPathData, toPathData):
 			output += ToByteString(i + 32) + ToByteString(toPathVal - fromPathVal + 32 + 128)
 	return output
 
+def Py2Js (pyCode):
+	pyScriptPath = os.path.join(TMP_DIR, 'Temp.py')
+	jsScriptPath = pyScriptPath.replace('.py', '.js')
+	open(pyScriptPath, 'w').write(pyCode)
+	cmd = [sys.executable, '-m', 'py2js', pyScriptPath, '-o', jsScriptPath]
+	print(' '.join(cmd))
+	subprocess.check_call(cmd)
+	return open(jsScriptPath, 'r').read()
+
 def GetBlenderData ():
 	global ui, vars, clrs, datas, joints, pivots, globals, apiCode, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems
 	vars = []
@@ -1405,13 +1414,17 @@ def GetBlenderData ():
 		for scriptInfo in GetScripts(ob, True):
 			script = scriptInfo[0]
 			_type = scriptInfo[1]
-			if _type == exportType:
+			if _type.startswith(exportType):
+				if _type == 'html-py':
+					script = Py2Js(script)
 				apiCode += script + '\n'
 		for scriptInfo in GetScripts(ob, False):
 			script = scriptInfo[0]
 			isInit = scriptInfo[1]
 			_type = scriptInfo[2]
-			if _type == exportType:
+			if _type.startswith(exportType):
+				if _type == 'html-py':
+					script = Py2Js(script)
 				if isInit:
 					if script not in initCode:
 						initCode.append(script)
@@ -3022,7 +3035,7 @@ SHAPE_TYPES = ['ball', 'halfspace', 'cuboid', 'roundCuboid', 'capsule', 'segment
 RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinematicPositionBased', 'kinematic-position-based', ''), ('kinematicVelocityBased', 'kinematic-velocity-based', '')]
 RIGID_BODY_TYPES = ['dynamic', 'fixed', 'kinematicPositionBased', 'kinematicVelocityBased']
 JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
-SCRIPT_TYPE_ITEMS = [('html', 'html', ''), ('exe', 'exe', ''), ('unity', 'unity', '')]
+SCRIPT_TYPE_ITEMS = [('html-py', 'html-py', ''), ('html-js', 'html-js', ''), ('exe', 'exe', ''), ('unity', 'unity', '')]
 BOUNCINESS_COMBINE_RULE_ITEMS = [('average', 'average', ''), ('minimum', 'min', ''), ('multiply', 'multiply', ''), ('maximum', 'max', '')]
 BOUNCINESS_COMBINE_RULES = ['average', 'minimum', 'multiply', 'maximum']
 
