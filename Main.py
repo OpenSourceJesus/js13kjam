@@ -268,6 +268,58 @@ uiMethods = []
 globals = []
 renderCode = []
 zOrders = {}
+prefabs = {}
+
+def GetObjectsInCollectionRecursive (coll):
+	obSet = set()
+	for ob in coll.all_objects:
+		obSet.add(ob)
+	return obSet
+
+def GatherPrefabDefinition (coll):
+	obSet = GetObjectsInCollectionRecursive(coll)
+	obSet = { ob for ob in obSet if ob.export and ob in exportedObs }
+	if not obSet:
+		return None
+	def worldPos (ob):
+		pos = GetObjectPosition(ob)
+		return (TryChangeToInt(pos[0]), TryChangeToInt(pos[1]))
+	def worldRot (ob):
+		prev = ob.rotation_mode
+		ob.rotation_mode = 'XYZ'
+		r = TryChangeToInt(math.degrees(ob.rotation_euler.z))
+		ob.rotation_mode = prev
+		return r
+	roots = [ ob for ob in obSet if ob.parent not in obSet or ob.parent is None ]
+	nodes = {}
+	for ob in obSet:
+		children = [ c for c in ob.children if c in obSet ]
+		if ob.parent in obSet and ob.parent is not None:
+			parent = ob.parent
+			px, py = worldPos(parent)
+			ox, oy = worldPos(ob)
+			prot = worldRot(parent)
+			orot = worldRot(ob)
+			rad = math.radians(-prot)
+			dx, dy = ox - px, oy - py
+			localX = TryChangeToInt(dx * math.cos(rad) - dy * math.sin(rad))
+			localY = TryChangeToInt(dx * math.sin(rad) + dy * math.cos(rad))
+			localPos = [ localX, localY ]
+			localRot = TryChangeToInt(orot - prot)
+		else:
+			localPos = [ 0, 0 ]
+			localRot = 0
+		nodes[ob.name] = { 'children': [ c.name for c in children ], 'localPos': localPos, 'localRot': localRot }
+	return { 'roots': [ ob.name for ob in roots ], 'nodes': nodes }
+
+def GatherPrefabs ():
+	global prefabs
+	prefabs = {}
+	for coll in bpy.data.collections:
+		if coll.exportPrefab:
+			defn = GatherPrefabDefinition(coll)
+			if defn:
+				prefabs[coll.name] = defn
 
 def ExportObject (ob):
 	global svgsDatas
@@ -1385,7 +1437,7 @@ def Py2Js (pyCode):
 	return open(jsScriptPath, 'r').read()
 
 def GetBlenderData ():
-	global ui, vars, clrs, datas, joints, pivots, globals, apiCode, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems
+	global ui, vars, clrs, datas, joints, pivots, globals, apiCode, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, prefabs
 	vars = []
 	attributes = {}
 	pivots = {}
@@ -1408,8 +1460,10 @@ def GetBlenderData ():
 	svgsDatas = {}
 	globals = []
 	renderCode = []
+	prefabs = {}
 	for ob in bpy.data.objects:
 		ExportObject (ob)
+	GatherPrefabs ()
 	for ob in bpy.data.objects:
 		for scriptInfo in GetScripts(ob, True):
 			script = scriptInfo[0]
@@ -1848,6 +1902,7 @@ JS_SUFFIX = '''
 var i = 0;
 var d = JSON.parse(D);
 var c = JSON.parse(C);
+var prefabs = typeof P !== 'undefined' ? JSON.parse(P) : {};
 var g = [];
 for (var e of d)
 {
@@ -2359,6 +2414,88 @@ class api
 			delete collidersIds[node.id];
 		node.remove();
 	}
+	spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides = {})
+	{
+		var defn = prefabs[prefabName];
+		if (!defn)
+			return null;
+		var roots = defn.roots;
+		var nodes = defn.nodes;
+		function worldFromLocal (parentWorldPos, parentWorldRot, localPos, localRot)
+		{
+			var rad = parentWorldRot * (Math.PI / 180);
+			var dx = localPos[0] * Math.cos(rad) - localPos[1] * Math.sin(rad);
+			var dy = localPos[0] * Math.sin(rad) + localPos[1] * Math.cos(rad);
+			return [[parentWorldPos[0] + dx, parentWorldPos[1] + dy], parentWorldRot + localRot];
+		}
+		function spawnNode (templateId, newId, worldPos, worldRot)
+		{
+			var attrs = attributeOverrides[templateId] || {};
+			var result = $.copy_node(templateId, newId, worldPos, worldRot, attrs);
+			var nodeDef = nodes[templateId];
+			if (nodeDef && result && result[0])
+			{
+				var childIds = nodeDef.children;
+				for (var i = 0; i < childIds.length; i ++)
+				{
+					var childTemplateId = childIds[i];
+					var childDef = nodes[childTemplateId];
+					var childNewId = instanceId + '_' + childTemplateId;
+					var childWorld = worldFromLocal(worldPos, worldRot, childDef.localPos, childDef.localRot);
+					spawnNode(childTemplateId, childNewId, childWorld[0], childWorld[1]);
+				}
+				for (var i = 0; i < childIds.length; i ++)
+				{
+					var childNode = document.getElementById(instanceId + '_' + childIds[i]);
+					if (childNode)
+						result[0].appendChild(childNode);
+				}
+			}
+			return result;
+		}
+		var rootWorld = [pos[0], pos[1]];
+		var rootRot = rot;
+		var container = null;
+		if (roots.length > 1)
+		{
+			container = add_group(instanceId, rootWorld, [], {}, '');
+			for (var r = 0; r < roots.length; r ++)
+			{
+				var rdef = nodes[roots[r]];
+				var rpos = r === 0 ? rootWorld : [rootWorld[0] + (rdef.localPos[0] || 0), rootWorld[1] + (rdef.localPos[1] || 0)];
+				var rrot = rootRot + (rdef.localRot || 0);
+				spawnNode(roots[r], instanceId + '_' + roots[r], rpos, rrot);
+			}
+			for (var r = 0; r < roots.length; r ++)
+			{
+				var childNode = document.getElementById(instanceId + '_' + roots[r]);
+				if (childNode)
+					container.appendChild(childNode);
+			}
+			return container;
+		}
+		var firstRoot = roots[0];
+		if (!firstRoot)
+			return null;
+		return spawnNode(firstRoot, instanceId, rootWorld, rootRot) && document.getElementById(instanceId) ? document.getElementById(instanceId) : null;
+	}
+	destroy_prefab (rootNodeOrId)
+	{
+		var root = typeof rootNodeOrId === 'string' ? document.getElementById(rootNodeOrId) : rootNodeOrId;
+		if (!root)
+			return;
+		function destroyRecursive (node)
+		{
+			while (node.firstChild)
+				destroyRecursive(node.firstChild);
+			$.remove(node);
+		}
+		destroyRecursive(root);
+	}
+	get_prefab_node (instanceId, templateId)
+	{
+		return document.getElementById(instanceId + '_' + templateId) || document.getElementById(instanceId);
+	}
 	// Physics Section End
 	main ()
 	{
@@ -2386,7 +2523,7 @@ var $ = new api;
 '''
 
 def GenJs (world):
-	global datas, apiCode, clrs
+	global datas, apiCode, clrs, prefabs
 	jsApi = JS_API
 	if not usePhysics:
 		while True:
@@ -2441,9 +2578,10 @@ def GenJs (world):
 	js = js.replace('// Update', '\n'.join(updateCode))
 	datas = json.dumps(datas).replace(', ', ',').replace(': ', ':')
 	clrs = json.dumps(clrs).replace(' ', '')
+	prefabsJson = json.dumps(prefabs).replace(', ', ',').replace(': ', ':')
 	if world.minifyMethod == 'terser':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
-		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\n' + JS_SUFFIX
+		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\nvar P=`' + prefabsJson + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['python3', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-no_compress', dontMangleArg]
 		print(' '.join(cmd))
@@ -2451,14 +2589,14 @@ def GenJs (world):
 		js = open(jsTmp, 'r').read()
 	elif world.minifyMethod == 'roadroller':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
-		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\n' + JS_SUFFIX
+		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\nvar P=`' + prefabsJson + '`\n' + JS_SUFFIX
 		open(jsTmp, 'w').write(js)
 		cmd = ['npx', 'roadroller', jsTmp, '-o', jsTmp]
 		print(' '.join(cmd))
 		subprocess.check_call(cmd)
 		js = open(jsTmp, 'r').read()
 	else:
-		js += '\nvar D=`' + datas + '`;\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\n' + JS_SUFFIX.replace('\t', '')
+		js += '\nvar D=`' + datas + '`;\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`;\nvar P=`' + prefabsJson + '`\n' + JS_SUFFIX.replace('\t', '')
 	return js
 
 def GenHtml (world, datas, background = ''):
@@ -3198,6 +3336,7 @@ bpy.types.Object.maxGravityScale = bpy.props.FloatProperty(name = 'Max gravity s
 bpy.types.Object.useMinMaxBounciness = bpy.props.BoolProperty(name = 'Use min and max bounciness', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxBounciness'))
 bpy.types.Object.minBounciness = bpy.props.FloatProperty(name = 'Min bounciness', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minBounciness'))
 bpy.types.Object.maxBounciness = bpy.props.FloatProperty(name = 'Max bounciness', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxBounciness'))
+bpy.types.Collection.exportPrefab = bpy.props.BoolProperty(name = 'Export prefab', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'exportPrefab'))
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -3766,6 +3905,20 @@ class AttributesPanel (bpy.types.Panel):
 					row = self.layout.row()
 					row.prop(ob, 'stringArrayVal%i,%i' %(i, i2))
 					row.prop(ob, 'useStringArray%i,%i' %(i, i2))
+
+@bpy.utils.register_class
+class PrefabPanel (bpy.types.Panel):
+	bl_idname = 'COLLECTION_PT_Prefab_Panel'
+	bl_label = 'Prefab'
+	bl_space_type = 'PROPERTIES'
+	bl_region_type = 'WINDOW'
+	bl_context = 'collection'
+
+	def draw (self, ctx):
+		ob = ctx.active_object
+		if not ob:
+			return
+		self.layout.prop(ob, 'exportPrefab')
 
 @bpy.utils.register_class
 class LightPanel (bpy.types.Panel):
