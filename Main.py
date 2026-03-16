@@ -1473,7 +1473,7 @@ def GetBlenderData ():
 			if _type.startswith(exportType):
 				if _type == 'html-py':
 					script = Py2Js(script)
-				apiCode += script + '\n'
+				apiCode += '(function(){ ' + script + ' })();\n'
 		for scriptInfo in GetScripts(ob, False):
 			script = scriptInfo[0]
 			isInit = scriptInfo[1]
@@ -1533,6 +1533,15 @@ instanceToTemplate = {}
 templateScripts = {}
 runtimeScripts = {}
 _currentInstanceName = None
+
+class _ThisObject:
+	def __init__ (self, name):
+		self.name = name
+	def get_position (self):
+		return get_object_position(self.name)
+	def get_rotation (self):
+		return get_object_rotation(self.name)
+
 mousePos = pygame.math.Vector2()
 mousePosWorld = pygame.math.Vector2()
 prevMousePos = pygame.math.Vector2()
@@ -1571,34 +1580,36 @@ def unregister_instance (name):
 
 def run_init_scripts (name):
 	global _currentInstanceName
+	this = _ThisObject(name)
 	tid = instanceToTemplate.get(name)
 	if tid and tid in templateScripts and templateScripts[tid].get('init'):
 		_currentInstanceName = name
 		for code in templateScripts[tid]['init']:
-			try: exec(code)
+			try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
 			except: pass
 		_currentInstanceName = None
 	if name in runtimeScripts and runtimeScripts[name].get('init'):
 		_currentInstanceName = name
 		for code in runtimeScripts[name]['init']:
-			try: exec(code)
+			try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
 			except: pass
 		_currentInstanceName = None
 
 def run_update_scripts ():
 	global _currentInstanceName
 	for name in list(liveObjectNames):
+		this = _ThisObject(name)
 		tid = instanceToTemplate.get(name)
 		if tid and tid in templateScripts and templateScripts[tid].get('update'):
 			_currentInstanceName = name
 			for code in templateScripts[tid]['update']:
-				try: exec(code)
+				try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
 				except: pass
 			_currentInstanceName = None
 		if name in runtimeScripts and runtimeScripts[name].get('update'):
 			_currentInstanceName = name
 			for code in runtimeScripts[name]['update']:
-				try: exec(code)
+				try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
 				except: pass
 			_currentInstanceName = None
 
@@ -1609,7 +1620,8 @@ def add_script (instanceName, code, type):
 	if type == 'init':
 		global _currentInstanceName
 		_currentInstanceName = instanceName
-		try: exec(code)
+		this = _ThisObject(instanceName)
+		try: exec(code, { **globals(), 'this': this, '_currentInstanceName': instanceName })
 		except: pass
 		_currentInstanceName = None
 
@@ -2194,56 +2206,59 @@ class api
 	}
 	run_init_scripts (instanceId)
 	{
+		var el = document.getElementById(instanceId);
 		var tid = this.instanceToTemplate[instanceId];
 		var scripts = typeof templateScripts !== 'undefined' && templateScripts && templateScripts[tid];
 		if (scripts && scripts.init)
 		{
 			this._currentInstanceId = instanceId;
 			for (var i = 0; i < scripts.init.length; i++)
-				try { eval(scripts.init[i]); } catch (err) {}
+				try { (new Function('_currentInstanceId', scripts.init[i])).call(el, instanceId); } catch (err) {}
 			this._currentInstanceId = null;
 		}
 		var rt = this.runtimeScripts[instanceId];
 		if (rt && rt.init)
 			for (var i = 0; i < rt.init.length; i++)
-				try { eval(rt.init[i]); } catch (err) {}
+				try { (new Function('_currentInstanceId', rt.init[i])).call(el, instanceId); } catch (err) {}
 	}
 	run_update_scripts ()
 	{
 		var self = this;
 		this.liveInstanceIds.forEach(function (id)
 		{
+			var el = document.getElementById(id);
 			var tid = self.instanceToTemplate[id];
 			var scripts = typeof templateScripts !== 'undefined' && templateScripts && templateScripts[tid];
 			if (scripts && scripts.update)
 			{
 				self._currentInstanceId = id;
 				for (var i = 0; i < scripts.update.length; i++)
-					try { eval(scripts.update[i]); } catch (err) {}
+					try { (new Function('_currentInstanceId', scripts.update[i])).call(el, id); } catch (err) {}
 				self._currentInstanceId = null;
 			}
 			var rt = self.runtimeScripts[id];
 			if (rt && rt.update)
 				for (var i = 0; i < rt.update.length; i++)
-					try { eval(rt.update[i]); } catch (err) {}
+					try { (new Function('_currentInstanceId', rt.update[i])).call(el, id); } catch (err) {}
 		});
 	}
 	add_script (instanceId, code, type)
 	{
-		if (!this.runtimeScripts[instanceId])
-			this.runtimeScripts[instanceId] = { init: [], update: [] };
-		this.runtimeScripts[instanceId][type].push(code);
+		if (!runtimeScripts[instanceId])
+			runtimeScripts[instanceId] = { init: [], update: [] };
+		runtimeScripts[instanceId][type].push(code);
 		if (type === 'init')
 		{
 			this._currentInstanceId = instanceId;
-			try { eval(code); } catch (err) {}
+			var el = document.getElementById(instanceId);
+			try { (new Function('_currentInstanceId', code)).call(el, instanceId); } catch (err) {}
 			this._currentInstanceId = null;
 		}
 	}
 	remove_script (instanceId, type, index)
 	{
-		if (this.runtimeScripts[instanceId] && this.runtimeScripts[instanceId][type])
-			this.runtimeScripts[instanceId][type].splice(index, 1);
+		if (runtimeScripts[instanceId] && runtimeScripts[instanceId][type])
+			runtimeScripts[instanceId][type].splice(index, 1);
 	}
 	get_svg_paths_and_strings (framesStrings, cyclic)
 	{
@@ -2738,8 +2753,8 @@ def GenJs (world):
 		physics = physics.replace('// Char Controllers', '\n'.join(charControllers.values()))
 		js += [physics]
 	js = '\n'.join(js)
-	js = js.replace('// Init', '\n'.join(initCode))
-	js = js.replace('// Update', '\n'.join(updateCode))
+	js = js.replace('// Init', '\n'.join('(function(){ ' + s + ' })();' for s in initCode))
+	js = js.replace('// Update', '\n'.join('(function(){ ' + s + ' })();' for s in updateCode))
 	datas = json.dumps(datas).replace(', ', ',').replace(': ', ':')
 	clrs = json.dumps(clrs).replace(' ', '')
 	prefabsJson = json.dumps(prefabs).replace(', ', ',').replace(': ', ':')
