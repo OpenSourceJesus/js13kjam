@@ -269,6 +269,7 @@ globals = []
 renderCode = []
 zOrders = {}
 prefabs = {}
+templateScripts = {}
 
 def GetObjectsInCollectionRecursive (coll):
 	obSet = set()
@@ -1437,7 +1438,7 @@ def Py2Js (pyCode):
 	return open(jsScriptPath, 'r').read()
 
 def GetBlenderData ():
-	global ui, vars, clrs, datas, joints, pivots, globals, apiCode, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, prefabs
+	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, apiCode, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts
 	vars = []
 	attributes = {}
 	pivots = {}
@@ -1461,6 +1462,7 @@ def GetBlenderData ():
 	globals = []
 	renderCode = []
 	prefabs = {}
+	templateScripts = {}
 	for ob in bpy.data.objects:
 		ExportObject (ob)
 	GatherPrefabs ()
@@ -1479,10 +1481,18 @@ def GetBlenderData ():
 			if _type.startswith(exportType):
 				if _type == 'html-py':
 					script = Py2Js(script)
+				obName = ob.name
+				sceneId = obName[:-1] if obName.endswith('_') else obName
+				if sceneId not in templateScripts:
+					templateScripts[sceneId] = {'init': [], 'update': []}
 				if isInit:
+					if script not in templateScripts[sceneId]['init']:
+						templateScripts[sceneId]['init'].append(script)
 					if script not in initCode:
 						initCode.append(script)
 				else:
+					if script not in templateScripts[sceneId]['update']:
+						templateScripts[sceneId]['update'].append(script)
 					if script not in updateCode:
 						updateCode.append(script)
 	return (datas, initCode, updateCode, apiCode)
@@ -1518,6 +1528,11 @@ else:
 	TMP_DIR = '/tmp'
 pivots = {}
 attributes = {}
+liveObjectNames = set()
+instanceToTemplate = {}
+templateScripts = {}
+runtimeScripts = {}
+_currentInstanceName = None
 mousePos = pygame.math.Vector2()
 mousePosWorld = pygame.math.Vector2()
 prevMousePos = pygame.math.Vector2()
@@ -1544,6 +1559,63 @@ def sqr_magnitude (v) -> float:
 
 def normalize (v):
 	return divide(v, magnitude(v))
+
+def register_instance (templateName, instanceName):
+	liveObjectNames.add(instanceName)
+	instanceToTemplate[instanceName] = templateName
+
+def unregister_instance (name):
+	liveObjectNames.discard(name)
+	instanceToTemplate.pop(name, None)
+	runtimeScripts.pop(name, None)
+
+def run_init_scripts (name):
+	global _currentInstanceName
+	tid = instanceToTemplate.get(name)
+	if tid and tid in templateScripts and templateScripts[tid].get('init'):
+		_currentInstanceName = name
+		for code in templateScripts[tid]['init']:
+			try: exec(code)
+			except: pass
+		_currentInstanceName = None
+	if name in runtimeScripts and runtimeScripts[name].get('init'):
+		_currentInstanceName = name
+		for code in runtimeScripts[name]['init']:
+			try: exec(code)
+			except: pass
+		_currentInstanceName = None
+
+def run_update_scripts ():
+	global _currentInstanceName
+	for name in list(liveObjectNames):
+		tid = instanceToTemplate.get(name)
+		if tid and tid in templateScripts and templateScripts[tid].get('update'):
+			_currentInstanceName = name
+			for code in templateScripts[tid]['update']:
+				try: exec(code)
+				except: pass
+			_currentInstanceName = None
+		if name in runtimeScripts and runtimeScripts[name].get('update'):
+			_currentInstanceName = name
+			for code in runtimeScripts[name]['update']:
+				try: exec(code)
+				except: pass
+			_currentInstanceName = None
+
+def add_script (instanceName, code, type):
+	if instanceName not in runtimeScripts:
+		runtimeScripts[instanceName] = {'init': [], 'update': []}
+	runtimeScripts[instanceName][type].append(code)
+	if type == 'init':
+		global _currentInstanceName
+		_currentInstanceName = instanceName
+		try: exec(code)
+		except: pass
+		_currentInstanceName = None
+
+def remove_script (instanceName, type, index):
+	if instanceName in runtimeScripts and type in runtimeScripts[instanceName] and 0 <= index < len(runtimeScripts[instanceName][type]):
+		runtimeScripts[instanceName][type].pop(index)
 
 def copy_object (name, newName, pos, rot = 0, wakeUp = True, attachTo : str = '', copyParticles = True):
 	global pivots, initRots, surfaces, surfacesRects, collidersIds, rigidBodiesIds
@@ -1582,8 +1654,11 @@ def copy_object (name, newName, pos, rot = 0, wakeUp = True, attachTo : str = ''
 				copy_object (particle.name, newParticleName, rotate_vector(particlePos, pos, rot), particleRot + rot)
 				newParticleSystem.particles.append(Particle(newParticleName, particle.life))
 		particleSystems[newName] = newParticleSystem
+	register_instance(name, newName)
+	run_init_scripts(newName)
 
 def remove_object (name, removeColliders = True, wakeUp = True, removeParticles = True):
+	unregister_instance(name)
 	if name in pivots:
 		del surfaces[name]
 		del surfacesRects[name]
@@ -1831,6 +1906,7 @@ class Game:
 # Init Rendering
 # Init Particle Systems
 		self.sortedObNames = [name for name, z in sorted(zOrders.items(), key = lambda item : item[1])]
+# Register Live Objects And Run Inits
 
 	def update (self):
 		global off, mousePos, uiCallbacks, mousePosWorld, prevMousePos, prevMousePosWorld
@@ -1840,7 +1916,7 @@ class Game:
 # Physics Section Start
 		sim.step ()
 # Physics Section End
-# Update
+		run_update_scripts ()
 		for particleSystem in list(particleSystems.values()):
 			if particleSystem.enable:
 				particleSystem.update (self.dt)
@@ -1903,6 +1979,7 @@ var i = 0;
 var d = JSON.parse(D);
 var c = JSON.parse(C);
 var prefabs = typeof P !== 'undefined' ? JSON.parse(P) : {};
+var templateScripts = __TEMPLATE_SCRIPTS_JSON__;
 var g = [];
 for (var e of d)
 {
@@ -1910,17 +1987,31 @@ for (var e of d)
 	if (l > 10)
 	{
 		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
+		$.register_instance(e[7], e[7]);
+		$.run_init_scripts(e[7]);
 		i ++;
 	}
 	else if (l > 6)
+	{
 		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
+		$.register_instance(e[0], e[0]);
+		$.run_init_scripts(e[0]);
+	}
 	else if (l > 5)
+	{
 		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5]);
+		$.register_instance(e[0], e[1]);
+		$.run_init_scripts(e[1]);
+	}
 	else
 		g.push(e);
 }
 for (var e of g)
+{
 	add_group (e[0], [e[1], e[2]], e[3], e[4]);
+	$.register_instance(e[0], e[0]);
+	$.run_init_scripts(e[0]);
+}
 $.main ()
 '''
 JS = '''
@@ -2084,6 +2175,76 @@ RAPIER.init().then(() => {
 JS_API = '''
 class api
 {
+	constructor ()
+	{
+		this.liveInstanceIds = new Set();
+		this.instanceToTemplate = {};
+		this.runtimeScripts = {};
+		this._currentInstanceId = null;
+	}
+	register_instance (templateId, instanceId)
+	{
+		this.liveInstanceIds.add(instanceId);
+		this.instanceToTemplate[instanceId] = templateId;
+	}
+	unregister_instance (instanceId)
+	{
+		this.liveInstanceIds.delete(instanceId);
+		delete this.instanceToTemplate[instanceId];
+	}
+	run_init_scripts (instanceId)
+	{
+		var tid = this.instanceToTemplate[instanceId];
+		var scripts = typeof templateScripts !== 'undefined' && templateScripts && templateScripts[tid];
+		if (scripts && scripts.init)
+		{
+			this._currentInstanceId = instanceId;
+			for (var i = 0; i < scripts.init.length; i++)
+				try { eval(scripts.init[i]); } catch (err) {}
+			this._currentInstanceId = null;
+		}
+		var rt = this.runtimeScripts[instanceId];
+		if (rt && rt.init)
+			for (var i = 0; i < rt.init.length; i++)
+				try { eval(rt.init[i]); } catch (err) {}
+	}
+	run_update_scripts ()
+	{
+		var self = this;
+		this.liveInstanceIds.forEach(function (id)
+		{
+			var tid = self.instanceToTemplate[id];
+			var scripts = typeof templateScripts !== 'undefined' && templateScripts && templateScripts[tid];
+			if (scripts && scripts.update)
+			{
+				self._currentInstanceId = id;
+				for (var i = 0; i < scripts.update.length; i++)
+					try { eval(scripts.update[i]); } catch (err) {}
+				self._currentInstanceId = null;
+			}
+			var rt = self.runtimeScripts[id];
+			if (rt && rt.update)
+				for (var i = 0; i < rt.update.length; i++)
+					try { eval(rt.update[i]); } catch (err) {}
+		});
+	}
+	add_script (instanceId, code, type)
+	{
+		if (!this.runtimeScripts[instanceId])
+			this.runtimeScripts[instanceId] = { init: [], update: [] };
+		this.runtimeScripts[instanceId][type].push(code);
+		if (type === 'init')
+		{
+			this._currentInstanceId = instanceId;
+			try { eval(code); } catch (err) {}
+			this._currentInstanceId = null;
+		}
+	}
+	remove_script (instanceId, type, index)
+	{
+		if (this.runtimeScripts[instanceId] && this.runtimeScripts[instanceId][type])
+			this.runtimeScripts[instanceId][type].splice(index, 1);
+	}
 	get_svg_paths_and_strings (framesStrings, cyclic)
 	{
 		var pathsVals = [];
@@ -2432,6 +2593,8 @@ class api
 		{
 			var attrs = attributeOverrides[templateId] || {};
 			var result = $.copy_node(templateId, newId, worldPos, worldRot, attrs);
+			$.register_instance(templateId, newId);
+			$.run_init_scripts(newId);
 			var nodeDef = nodes[templateId];
 			if (nodeDef && result && result[0])
 			{
@@ -2484,8 +2647,10 @@ class api
 		var root = typeof rootNodeOrId === 'string' ? document.getElementById(rootNodeOrId) : rootNodeOrId;
 		if (!root)
 			return;
+		var self = this;
 		function destroyRecursive (node)
 		{
+			self.unregister_instance(node.id);
 			while (node.firstChild)
 				destroyRecursive(node.firstChild);
 			$.remove(node);
@@ -2499,12 +2664,11 @@ class api
 	// Physics Section End
 	main ()
 	{
-		// Init
 		var f = t => {
 			$.dt = (t - $.prevTicks) / 1000;
 			$.prevTicks = t;
 			window.requestAnimationFrame(f);
-			// Update
+			$.run_update_scripts();
 		};
 		window.requestAnimationFrame(t => {
 			$.prevTicks = t;
@@ -2579,9 +2743,12 @@ def GenJs (world):
 	datas = json.dumps(datas).replace(', ', ',').replace(': ', ':')
 	clrs = json.dumps(clrs).replace(' ', '')
 	prefabsJson = json.dumps(prefabs).replace(', ', ',').replace(': ', ':')
+	templateScriptsJson = json.dumps(templateScripts)
+	templateScriptsInlined = 'JSON.parse("' + templateScriptsJson.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r') + '")'
 	if world.minifyMethod == 'terser':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
 		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\nvar P=`' + prefabsJson + '`\n' + JS_SUFFIX
+		js = js.replace('__TEMPLATE_SCRIPTS_JSON__', templateScriptsInlined)
 		open(jsTmp, 'w').write(js)
 		cmd = ['python3', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-no_compress', dontMangleArg]
 		print(' '.join(cmd))
@@ -2590,6 +2757,7 @@ def GenJs (world):
 	elif world.minifyMethod == 'roadroller':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
 		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\nvar P=`' + prefabsJson + '`\n' + JS_SUFFIX
+		js = js.replace('__TEMPLATE_SCRIPTS_JSON__', templateScriptsInlined)
 		open(jsTmp, 'w').write(js)
 		cmd = ['npx', 'roadroller', jsTmp, '-o', jsTmp]
 		print(' '.join(cmd))
@@ -2597,6 +2765,7 @@ def GenJs (world):
 		js = open(jsTmp, 'r').read()
 	else:
 		js += '\nvar D=`' + datas + '`;\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`;\nvar P=`' + prefabsJson + '`\n' + JS_SUFFIX.replace('\t', '')
+		js = js.replace('__TEMPLATE_SCRIPTS_JSON__', templateScriptsInlined)
 	return js
 
 def GenHtml (world, datas, background = ''):
