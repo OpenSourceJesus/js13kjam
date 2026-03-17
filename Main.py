@@ -270,6 +270,9 @@ renderCode = []
 zOrders = {}
 prefabs = {}
 templateScripts = {}
+prefabTemplateDatas = []
+prefabPathsDatas = []
+templateOnlyObs = set ()
 
 def GetObjectsInCollectionRecursive (coll):
 	obSet = set()
@@ -358,7 +361,7 @@ def ExportObject (ob):
 		data.append(GetColor(ob.clr3))
 		data.append(list(ob.clrPositions))
 		data.append(ob.subtractive)
-		datas.append(data)
+		(prefabTemplateDatas if ob in templateOnlyObs else datas).append(data)
 	elif ob.type == 'CURVE':
 		tempCollection = bpy.data.collections.new('Temp')
 		bpy.context.scene.collection.children.link(tempCollection)
@@ -1337,13 +1340,13 @@ def GetImagePosition (ob):
 
 def HandleCopyObject (ob, pos):
 	if IsCopiedObject(ob):
+		idxOfPeriod = ob.name.find('.')
+		if idxOfPeriod == -1:
+			obNameWithoutPeriod = ob.name
+		else:
+			obNameWithoutPeriod = ob.name[: idxOfPeriod]
 		if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE':
 			if exportType == 'exe':
-				idxOfPeriod = ob.name.find('.')
-				if idxOfPeriod == -1:
-					obNameWithoutPeriod = ob.name
-				else:
-					obNameWithoutPeriod = ob.name[: idxOfPeriod]
 				origOb = bpy.data.objects[obNameWithoutPeriod]
 				imgName = GetFileName(origOb.data.filepath)
 				imgPath = TMP_DIR + '/' + imgName
@@ -1352,7 +1355,7 @@ def HandleCopyObject (ob, pos):
 				AddImageDataForExe (ob, imgPath.replace(TMP_DIR, '.'), GetImagePosition(ob), ob.scale * ob.empty_display_size, ob.color[3])
 		prevRotMode = ob.rotation_mode
 		ob.rotation_mode = 'XYZ'
-		datas.append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1]), TryChangeToInt(math.degrees(ob.rotation_euler.z)), GetAttributes(ob)])
+		(prefabTemplateDatas if ob in templateOnlyObs else datas).append([obNameWithoutPeriod, ob.name, TryChangeToInt(pos[0]), TryChangeToInt(pos[1]), TryChangeToInt(math.degrees(ob.rotation_euler.z)), GetAttributes(ob)])
 		exportedObs.append(ob)
 		ob.rotation_mode = prevRotMode
 		return True
@@ -1434,11 +1437,14 @@ def Py2Js (pyCode):
 	open(pyScriptPath, 'w').write(pyCode)
 	cmd = [sys.executable, '-m', 'py2js', pyScriptPath, '-o', jsScriptPath]
 	print(' '.join(cmd))
-	subprocess.check_call(cmd)
+	try:
+		result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+	except subprocess.CalledProcessError as e:
+		print(f"Error: {e.stderr}")
 	return open(jsScriptPath, 'r').read()
 
 def GetBlenderData ():
-	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, apiCode, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts
+	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, apiCode, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs
 	vars = []
 	attributes = {}
 	pivots = {}
@@ -1463,6 +1469,18 @@ def GetBlenderData ():
 	renderCode = []
 	prefabs = {}
 	templateScripts = {}
+	prefabTemplateDatas = []
+	prefabPathsDatas = []
+	inPrefabColl = set ()
+	inNonPrefabColl = set ()
+	for coll in bpy.data.collections:
+		exportPrefab = getattr(coll, 'exportPrefab', False)
+		for ob in coll.all_objects:
+			if exportPrefab:
+				inPrefabColl.add(ob)
+			else:
+				inNonPrefabColl.add(ob)
+	templateOnlyObs = inPrefabColl - inNonPrefabColl
 	for ob in bpy.data.objects:
 		ExportObject (ob)
 	GatherPrefabs ()
@@ -1987,9 +2005,47 @@ game.init ()
 # Init User Code
 game.run ()'''
 JS_SUFFIX = '''
-var i = 0;
 var d = JSON.parse(D);
 var c = JSON.parse(C);
+var prefabTemplatesData = typeof PT !== 'undefined' ? JSON.parse(PT) : [];
+var prefabPathCount = typeof PPC !== 'undefined' ? PPC : 0;
+var templateIdsToHide = [];
+var templateG = [];
+var ti = 0;
+for (var e of prefabTemplatesData)
+{
+	var l = e.length;
+	if (l > 10)
+	{
+		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[ti].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
+		templateIdsToHide.push(e[7]);
+		ti ++;
+	}
+	else if (l > 6)
+	{
+		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
+		templateIdsToHide.push(e[0]);
+	}
+	else if (l > 5)
+	{
+		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5]);
+		templateIdsToHide.push(e[1]);
+	}
+	else
+		templateG.push(e);
+}
+for (var e of templateG)
+{
+	add_group (e[0], [e[1], e[2]], e[3], e[4]);
+	templateIdsToHide.push(e[0]);
+}
+for (var id of templateIdsToHide)
+{
+	var el = document.getElementById(id);
+	if (el)
+		el.style.visibility = 'hidden';
+}
+var i = prefabPathCount;
 var prefabs = typeof P !== 'undefined' ? JSON.parse(P) : {};
 var templateScripts = __TEMPLATE_SCRIPTS_JSON__;
 var g = [];
@@ -2284,11 +2340,22 @@ class api
 	get_svg_path (pathStr, cyclic)
 	{
 		var output = 'M ' + pathStr.charCodeAt(0) + ', ' + pathStr.charCodeAt(1) + ' ';
-		for (var i = 2; i < pathStr.length; i += 2)
+		var i = 2;
+		while (i < pathStr.length)
 		{
-			if ((i - 2) % 6 == 0)
+			if ((i - 2) % 6 == 0 && i + 6 <= pathStr.length)
+			{
 				output += 'C ';
-			output += '' + pathStr.charCodeAt(i) + ', ' + pathStr.charCodeAt(i + 1) + ' '
+				output += pathStr.charCodeAt(i) + ', ' + pathStr.charCodeAt(i + 1) + ' ' + pathStr.charCodeAt(i + 2) + ', ' + pathStr.charCodeAt(i + 3) + ' ' + pathStr.charCodeAt(i + 4) + ', ' + pathStr.charCodeAt(i + 5) + ' ';
+				i += 6;
+			}
+			else if (i + 2 <= pathStr.length)
+			{
+				output += 'L ' + pathStr.charCodeAt(i) + ', ' + pathStr.charCodeAt(i + 1) + ' ';
+				i += 2;
+			}
+			else
+				break;
 		}
 		if (cyclic)
 			output += 'Z';
@@ -2702,7 +2769,7 @@ var $ = new api;
 '''
 
 def GenJs (world):
-	global datas, apiCode, clrs, prefabs
+	global datas, apiCode, clrs, prefabs, prefabTemplateDatas, prefabPathsDatas
 	jsApi = JS_API
 	if not usePhysics:
 		while True:
@@ -2758,11 +2825,17 @@ def GenJs (world):
 	datas = json.dumps(datas).replace(', ', ',').replace(': ', ':')
 	clrs = json.dumps(clrs).replace(' ', '')
 	prefabsJson = json.dumps(prefabs).replace(', ', ',').replace(': ', ':')
+	prefabTemplateDatasJson = json.dumps(prefabTemplateDatas).replace(', ', ',').replace(': ', ':')
+	prefabPathCount = len(prefabPathsDatas)
+	pathsCombined = ('\n'.join(prefabPathsDatas) + '\n' + '\n'.join(pathsDatas)) if prefabPathsDatas else '\n'.join(pathsDatas)
+	pathsCombinedEsc = pathsCombined.replace('\\', '\\\\').replace('`', '\\`')
+	ptEsc = prefabTemplateDatasJson.replace('\\', '\\\\').replace('`', '\\`')
+	jsDataVars = 'var D=`' + datas + '`\nvar p=`' + pathsCombinedEsc + '`;\nvar C=`' + clrs + '`\nvar P=`' + prefabsJson + '`\nvar PT=`' + ptEsc + '`\nvar PPC=' + str(prefabPathCount) + '\n'
 	templateScriptsJson = json.dumps(templateScripts)
 	templateScriptsInlined = 'JSON.parse("' + templateScriptsJson.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r') + '")'
 	if world.minifyMethod == 'terser':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
-		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\nvar P=`' + prefabsJson + '`\n' + JS_SUFFIX
+		js += jsDataVars + JS_SUFFIX
 		js = js.replace('__TEMPLATE_SCRIPTS_JSON__', templateScriptsInlined)
 		open(jsTmp, 'w').write(js)
 		cmd = ['python3', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-no_compress', dontMangleArg]
@@ -2771,7 +2844,7 @@ def GenJs (world):
 		js = open(jsTmp, 'r').read()
 	elif world.minifyMethod == 'roadroller':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
-		js += 'var D=`' + datas + '`\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`\nvar P=`' + prefabsJson + '`\n' + JS_SUFFIX
+		js += jsDataVars + JS_SUFFIX
 		js = js.replace('__TEMPLATE_SCRIPTS_JSON__', templateScriptsInlined)
 		open(jsTmp, 'w').write(js)
 		cmd = ['npx', 'roadroller', jsTmp, '-o', jsTmp]
@@ -2779,7 +2852,7 @@ def GenJs (world):
 		subprocess.check_call(cmd)
 		js = open(jsTmp, 'r').read()
 	else:
-		js += '\nvar D=`' + datas + '`;\nvar p=`' + '\n'.join(pathsDatas) + '`;\nvar C=`' + clrs + '`;\nvar P=`' + prefabsJson + '`\n' + JS_SUFFIX.replace('\t', '')
+		js += '\n' + jsDataVars + JS_SUFFIX.replace('\t', '')
 		js = js.replace('__TEMPLATE_SCRIPTS_JSON__', templateScriptsInlined)
 	return js
 
@@ -3520,7 +3593,7 @@ bpy.types.Object.maxGravityScale = bpy.props.FloatProperty(name = 'Max gravity s
 bpy.types.Object.useMinMaxBounciness = bpy.props.BoolProperty(name = 'Use min and max bounciness', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxBounciness'))
 bpy.types.Object.minBounciness = bpy.props.FloatProperty(name = 'Min bounciness', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minBounciness'))
 bpy.types.Object.maxBounciness = bpy.props.FloatProperty(name = 'Max bounciness', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxBounciness'))
-bpy.types.Collection.exportPrefab = bpy.props.BoolProperty(name = 'Export prefab', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'exportPrefab'))
+bpy.types.Collection.exportPrefab = bpy.props.BoolProperty(name = 'Export prefab', default = False, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'exportPrefab'))
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
@@ -4098,11 +4171,21 @@ class PrefabPanel (bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = 'collection'
 
-	def draw (self, ctx):
+	@classmethod
+	def poll (cls, ctx):
+		collection = ctx.collection
+		if not collection:
+			return False
 		ob = ctx.active_object
-		if not ob:
+		if ob and getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None) == collection:
+			return False
+		return True
+
+	def draw (self, ctx):
+		collection = ctx.collection
+		if not collection:
 			return
-		self.layout.prop(ob, 'exportPrefab')
+		self.layout.prop(collection, 'exportPrefab')
 
 @bpy.utils.register_class
 class LightPanel (bpy.types.Panel):
