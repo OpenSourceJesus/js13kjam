@@ -1471,8 +1471,8 @@ def GetBlenderData ():
 	templateScripts = {}
 	prefabTemplateDatas = []
 	prefabPathsDatas = []
-	inPrefabColl = set ()
-	inNonPrefabColl = set ()
+	inPrefabColl = set()
+	inNonPrefabColl = set()
 	for coll in bpy.data.collections:
 		exportPrefab = getattr(coll, 'exportPrefab', False)
 		for ob in coll.all_objects:
@@ -2268,13 +2268,13 @@ class api
 		if (scripts && scripts.init)
 		{
 			this._currentInstanceId = instanceId;
-			for (var i = 0; i < scripts.init.length; i++)
+			for (var i = 0; i < scripts.init.length; i ++)
 				try { (new Function('_currentInstanceId', scripts.init[i])).call(el, instanceId); } catch (err) {}
 			this._currentInstanceId = null;
 		}
 		var rt = this.runtimeScripts[instanceId];
 		if (rt && rt.init)
-			for (var i = 0; i < rt.init.length; i++)
+			for (var i = 0; i < rt.init.length; i ++)
 				try { (new Function('_currentInstanceId', rt.init[i])).call(el, instanceId); } catch (err) {}
 	}
 	run_update_scripts ()
@@ -2288,13 +2288,13 @@ class api
 			if (scripts && scripts.update)
 			{
 				self._currentInstanceId = id;
-				for (var i = 0; i < scripts.update.length; i++)
+				for (var i = 0; i < scripts.update.length; i ++)
 					try { (new Function('_currentInstanceId', scripts.update[i])).call(el, id); } catch (err) {}
 				self._currentInstanceId = null;
 			}
 			var rt = self.runtimeScripts[id];
 			if (rt && rt.update)
-				for (var i = 0; i < rt.update.length; i++)
+				for (var i = 0; i < rt.update.length; i ++)
 					try { (new Function('_currentInstanceId', rt.update[i])).call(el, id); } catch (err) {}
 		});
 	}
@@ -2687,7 +2687,7 @@ class api
 					var childDef = nodes[childTemplateId];
 					var childNewId = instanceId + '_' + childTemplateId;
 					var childWorld = worldFromLocal(worldPos, worldRot, childDef.localPos, childDef.localRot);
-					spawnNode(childTemplateId, childNewId, childWorld[0], childWorld[1]);
+					spawnNode (childTemplateId, childNewId, childWorld[0], childWorld[1]);
 				}
 				for (var i = 0; i < childIds.length; i ++)
 				{
@@ -2709,7 +2709,7 @@ class api
 				var rdef = nodes[roots[r]];
 				var rpos = r === 0 ? rootWorld : [rootWorld[0] + (rdef.localPos[0] || 0), rootWorld[1] + (rdef.localPos[1] || 0)];
 				var rrot = rootRot + (rdef.localRot || 0);
-				spawnNode(roots[r], instanceId + '_' + roots[r], rpos, rrot);
+				spawnNode (roots[r], instanceId + '_' + roots[r], rpos, rrot);
 			}
 			for (var r = 0; r < roots.length; r ++)
 			{
@@ -2732,12 +2732,12 @@ class api
 		var self = this;
 		function destroyRecursive (node)
 		{
-			self.unregister_instance(node.id);
+			self.unregister_instance (node.id);
 			while (node.firstChild)
-				destroyRecursive(node.firstChild);
+				destroyRecursive (node.firstChild);
 			$.remove(node);
 		}
-		destroyRecursive(root);
+		destroyRecursive (root);
 	}
 	get_prefab_node (instanceId, templateId)
 	{
@@ -2766,6 +2766,7 @@ class api
 	}
 }
 var $ = new api;
+globalThis.api = $;
 '''
 
 def GenJs (world):
