@@ -325,6 +325,25 @@ def GatherPrefabs ():
 			if defn:
 				prefabs[coll.name] = defn
 
+def GetInstancedObjects (scene):
+	sceneObs = set(scene.collection.objects)
+	pendingCollections = []
+	for ob in sceneObs:
+		if getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
+			pendingCollections.append(ob.instance_collection)
+	visitedCollections = set()
+	while pendingCollections:
+		coll = pendingCollections.pop()
+		if coll in visitedCollections:
+			continue
+		visitedCollections.add(coll)
+		for ob in coll.all_objects:
+			if ob not in sceneObs:
+				sceneObs.add(ob)
+			if getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
+				pendingCollections.append(ob.instance_collection)
+	return sceneObs
+
 def ExportObject (ob):
 	global svgsDatas
 	if not ob.export or ob in exportedObs:
@@ -1471,6 +1490,7 @@ def GetBlenderData ():
 	templateScripts = {}
 	prefabTemplateDatas = []
 	prefabPathsDatas = []
+	instancedObjects = GetInstancedObjects(bpy.context.scene)
 	inPrefabColl = set()
 	inNonPrefabColl = set()
 	for coll in bpy.data.collections:
@@ -1482,7 +1502,8 @@ def GetBlenderData ():
 				inNonPrefabColl.add(ob)
 	templateOnlyObs = inPrefabColl - inNonPrefabColl
 	for ob in bpy.data.objects:
-		ExportObject (ob)
+		if ob in instancedObjects:
+			ExportObject (ob)
 	GatherPrefabs ()
 	for ob in bpy.data.objects:
 		for scriptInfo in GetScripts(ob, True):
