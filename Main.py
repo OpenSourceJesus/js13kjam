@@ -196,6 +196,30 @@ def ToByteString (n, delimeters = '\\`', escapeQuotes : bool = True):
 		byteStr = '\\' + byteStr
 	return byteStr
 
+def ToSvgNumberString (n):
+	return str(TryChangeToInt(n))
+
+def GetSvgPathFromValues (pathVals, cyclic):
+	if len(pathVals) < 2:
+		return ''
+	output = 'M ' + ToSvgNumberString(pathVals[0]) + ',' + ToSvgNumberString(pathVals[1]) + ' '
+	i = 2
+	while i < len(pathVals):
+		if (i - 2) % 6 == 0 and i + 6 <= len(pathVals):
+			output += 'C '
+			output += ToSvgNumberString(pathVals[i]) + ',' + ToSvgNumberString(pathVals[i + 1]) + ' '
+			output += ToSvgNumberString(pathVals[i + 2]) + ',' + ToSvgNumberString(pathVals[i + 3]) + ' '
+			output += ToSvgNumberString(pathVals[i + 4]) + ',' + ToSvgNumberString(pathVals[i + 5]) + ' '
+			i += 6
+		elif i + 2 <= len(pathVals):
+			output += 'L ' + ToSvgNumberString(pathVals[i]) + ',' + ToSvgNumberString(pathVals[i + 1]) + ' '
+			i += 2
+		else:
+			break
+	if cyclic:
+		output += 'Z'
+	return output
+
 def ToVector2String (prop : bpy.props.FloatVectorProperty):
 	return '{x : ' + str(prop[0]) + ', y : ' + str(-prop[1]) + '}'
 
@@ -238,6 +262,7 @@ def GetObjectPosition (ob):
 
 DEFAULT_CLR = [0, 0, 0, 0]
 VISUALIZER_CLR = (0.2, 1.0, 0.2, 0.8)
+RAW_PATH_DATA_MODE_PREFIX = chr(2)
 exportedObs = []
 datas = []
 clrs = {}
@@ -444,28 +469,31 @@ def ExportObject (ob):
 				pathData = svgTxt[idxOfPathDataStart : idxOfPathDataEnd]
 				pathData = pathData.replace('.0', '')
 				vectors = pathData.split(' ')
-				pathData = []
+				pathDataVals = []
 				minPathVector = Vector((float('inf'), float('inf')))
 				maxPathVector = Vector((-float('inf'), -float('inf')))
 				for vector in vectors:
 					if len(vector) == 1:
 						continue
 					components = vector.split(',')
-					x = int(round(float(components[0])))
-					y = int(round(float(components[1])))
+					x = float(components[0])
+					y = float(components[1])
+					if ob.roundAndCompressPathData:
+						x = int(round(x))
+						y = int(round(y))
 					vector = newOb.matrix_world @ Vector((x, y, 0))
 					x = vector.x
 					y = vector.y
 					minPathVector = GetMinComponents(minPathVector, vector, True)
 					maxPathVector = GetMaxComponents(maxPathVector, vector, True)
-					pathData.append(x)
-					pathData.append(y)
+					pathDataVals.append(x)
+					pathDataVals.append(y)
 				_off = -minPathVector + Vector((32, 32))
-				for i, pathValue in enumerate(pathData):
+				for i, pathValue in enumerate(pathDataVals):
 					if i % 2 == 1:
-						pathData[i] = ToByteString(maxPathVector[1] - pathValue + 32)
+						pathDataVals[i] = maxPathVector[1] - pathValue + 32
 					else:
-						pathData[i] = ToByteString(pathValue + _off[0])
+						pathDataVals[i] = pathValue + _off[0]
 				strokeWidth = 0
 				if ob.useStroke:
 					strokeWidth = ob.strokeWidth
@@ -478,7 +506,12 @@ def ExportObject (ob):
 					x = int(round(x))
 					y = int(round(y))
 					size = Vector(Round(size))
-				pathDataStr = ''.join(pathData)
+				if not ob.roundAndCompressPathData:
+					pathDataStr = RAW_PATH_DATA_MODE_PREFIX + GetSvgPathFromValues(pathDataVals, spline.use_cyclic_u)
+				else:
+					for i, pathValue in enumerate(pathDataVals):
+						pathDataVals[i] = ToByteString(pathValue)
+					pathDataStr = ''.join(pathDataVals)
 				if frame == 0:
 					if HandleCopyObject(newOb, [x, y]):
 						break
@@ -540,7 +573,10 @@ def ExportObject (ob):
 					data.append(TryChangeToInt(ob.cycleDur))
 					pathDataFrames.append(pathDataStr)
 				else:
-					pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
+					if not ob.roundAndCompressPathData:
+						pathDataFrames.append(pathDataStr)
+					else:
+						pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
 				prevPathData = pathDataStr
 			datas.append(data)
 			pathsDatas.append(chr(1).join(pathDataFrames))
@@ -2389,21 +2425,32 @@ class api
 		var pathsVals = [];
 		var pathsStrings = [];
 		var i = 0;
+		var pathMode = 'compressed';
 		for (var frameStr of framesStrings)
 		{
+			if (frameStr.length > 0 && frameStr.charCodeAt(0) == 2)
+			{
+				pathMode = 'raw';
+				frameStr = frameStr.slice(1);
+			}
 			if (i == 0)
 				var prevPathStr = frameStr;
-			else
+			else if (pathMode == 'compressed')
 				for (var i2 = 0; i2 < frameStr.length; i2 += 2)
 				{
 					var idx = frameStr.charCodeAt(i2) - 32;
 					prevPathStr = prevPathStr.slice(0, idx) + String.fromCharCode(prevPathStr.charCodeAt(idx) + frameStr.charCodeAt(i2 + 1) - 160) + prevPathStr.slice(idx + 1);
 				}
-			pathsVals.push($.get_svg_path(prevPathStr, cyclic));
+			else
+				prevPathStr = frameStr;
+			if (pathMode == 'compressed')
+				pathsVals.push($.get_svg_path(prevPathStr, cyclic));
+			else
+				pathsVals.push(prevPathStr);
 			pathsStrings.push(prevPathStr);
 			i ++;
 		}
-		return [pathsVals, pathsStrings];
+		return [pathsVals, pathsStrings, pathMode];
 	}
 	get_svg_path (pathStr, cyclic)
 	{
@@ -2494,6 +2541,7 @@ class api
 		svg.setAttribute('transform', trs);
 		var i = 0;
 		var pathsValsAndStrings = $.get_svg_paths_and_strings(pathFramesStrings, cyclic);
+		var pathMode = pathsValsAndStrings[2];
 		var anim;
 		var frames;
 		var firstFrame = '';
@@ -2515,13 +2563,33 @@ class api
 				for (var i2 = 0; i2 < jiggleFrames; i2 ++)
 				{
 					pathVals = pathsValsAndStrings[1][i];
-					for (var i3 = 0; i3 < pathVals.length; i3 += 2)
+					if (pathMode == 'compressed')
 					{
-						off = normalize(random_vector(1));
-						off = [off[0] * jiggleDist, off[1] * jiggleDist];
-						pathVals = pathVals.slice(0, i3) + String.fromCharCode(pathVals.charCodeAt(i3) + off[0]) + String.fromCharCode(pathVals.charCodeAt(i3 + 1) + off[1]) + pathVals.slice(i3 + 2);
+						for (var i3 = 0; i3 < pathVals.length; i3 += 2)
+						{
+							off = normalize(random_vector(1));
+							off = [off[0] * jiggleDist, off[1] * jiggleDist];
+							pathVals = pathVals.slice(0, i3) + String.fromCharCode(pathVals.charCodeAt(i3) + off[0]) + String.fromCharCode(pathVals.charCodeAt(i3 + 1) + off[1]) + pathVals.slice(i3 + 2);
+						}
+						pathVals = $.get_svg_path(pathVals, cyclic);
 					}
-					pathVals = $.get_svg_path(pathVals, cyclic);
+					else
+					{
+						var coordIdx = 0;
+						var jiggleOff = [0, 0];
+						var numPattern = /-?\\d*\\.?\\d+(?:e[-+]?\\d+)?/ig;
+						pathVals = pathVals.replace(numPattern, function (match)
+						{
+							if (coordIdx % 2 == 0)
+							{
+								jiggleOff = normalize(random_vector(1));
+								jiggleOff = [jiggleOff[0] * jiggleDist, jiggleOff[1] * jiggleDist];
+							}
+							var output = parseFloat(match) + jiggleOff[coordIdx % 2];
+							coordIdx ++;
+							return output;
+						});
+					}
 					if (i2 == 0)
 					{
 						firstFrame = pathVals;
@@ -3519,6 +3587,7 @@ bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Unit length', min = 0,
 bpy.types.World.debugMode = bpy.props.BoolProperty(name = 'Debug mode', default = True)
 bpy.types.Object.exportOb = bpy.props.BoolProperty(name = 'Export object', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'export'))
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundPosAndSize'))
+bpy.types.Object.roundAndCompressPathData = bpy.props.BoolProperty(name = 'Round and compress path data', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundAndCompressPathData'))
 bpy.types.Object.pivot = bpy.props.FloatVectorProperty(name = 'Pivot point', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'pivot'))
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStroke'))
 bpy.types.Object.strokeWidth = bpy.props.FloatProperty(name = 'Stroke width', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'strokeWidth'))
@@ -4079,6 +4148,8 @@ class ObjectPanel (bpy.types.Panel):
 		self.layout.label(text = 'Graphics')
 		if ob.type == 'CURVE' or ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
 			self.layout.prop(ob, 'roundPosAndSize')
+			if ob.type == 'CURVE':
+				self.layout.prop(ob, 'roundAndCompressPathData')
 			self.layout.prop(ob, 'pivot')
 			self.layout.prop(ob, 'useStroke')
 			if ob.useStroke:
