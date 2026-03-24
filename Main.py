@@ -2680,22 +2680,27 @@ class api
 		for (var [key, val] of Object.entries(dict))
 		{
 			var node = document.getElementById(key);
+			if (!node)
+				continue;
 			var trs = node.style.transform;
 			var idxOfPosStart = trs.indexOf('translate(');
 			var idxOfPosEnd = trs.indexOf(')', idxOfPosStart) + 1;
 			var idxOfRotStart = trs.indexOf('rotate(');
 			var idxOfRotEnd = trs.indexOf(')', idxOfRotStart) + 1;
 			var pos = val.translation();
-			var posStr = 'translate(' + (pos.x - node.getAttribute('width') / 2) + 'px,' + (pos.y - node.getAttribute('height') / 2) + 'px)';
-			var rotStr = 'rotate(' + val.rotation() + 'rad)';
+			var posStr = 'translate(' + (pos.x - node.style.width / 2) + 'px,' + (pos.y - node.style.height / 2) + 'px)';
+			var rotStr = 'rotate(' + val.rotation() + 'rad),';
 			if (idxOfRotStart > -1)
 				trs = trs.slice(0, idxOfRotStart) + rotStr + trs.slice(idxOfRotEnd);
 			else
+			{
 				trs = rotStr + trs;
+				idxOfPosEnd += rotStr.length;
+			}
 			if (idxOfPosStart > -1)
 				trs = posStr + trs.slice(idxOfPosEnd);
 			else
-				trs = posStr + trs;
+				trs += posStr;
 			node.style.transform = trs;
 		}
 	}
