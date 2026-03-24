@@ -751,9 +751,16 @@ def ExportObject (ob):
 				imgsPaths.append(imgPath)
 		else:
 			childrenNames = []
-			for child in ob.children:
-				ExportObject (child)
-				childrenNames.append(child.name)
+			if getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
+				instancedSet = { c for c in GetObjectsInCollectionRecursive(ob.instance_collection) if c.export }
+				rootChildren = [ c for c in instancedSet if c.parent not in instancedSet or c.parent is None ]
+				for child in rootChildren:
+					ExportObject (child)
+					childrenNames.append(child.name)
+			else:
+				for child in ob.children:
+					ExportObject (child)
+					childrenNames.append(child.name)
 			datas.append([ob.name, TryChangeToInt(ob.location.x), TryChangeToInt(-ob.location.y), childrenNames, GetAttributes(ob)])
 	exportedObs.append(ob)
 
@@ -2692,29 +2699,28 @@ class api
 			var dy = localPos[0] * Math.sin(rad) + localPos[1] * Math.cos(rad);
 			return [[parentWorldPos[0] + dx, parentWorldPos[1] + dy], parentWorldRot + localRot];
 		}
-		function spawnNode (templateId, newId, worldPos, worldRot)
+		function spawnNode (templateId, newId, worldPos, worldRot, parentNode = null)
 		{
 			var attrs = attributeOverrides[templateId] || {};
 			var result = $.copy_node(templateId, newId, worldPos, worldRot, attrs);
 			$.register_instance(templateId, newId);
 			$.run_init_scripts(newId);
+			var spawnedNode = result && result[0] ? result[0] : null;
+			if (parentNode && spawnedNode)
+				parentNode.appendChild(spawnedNode);
 			var nodeDef = nodes[templateId];
-			if (nodeDef && result && result[0])
+			if (nodeDef && spawnedNode)
 			{
 				var childIds = nodeDef.children;
 				for (var i = 0; i < childIds.length; i ++)
 				{
 					var childTemplateId = childIds[i];
 					var childDef = nodes[childTemplateId];
+					if (!childDef)
+						continue;
 					var childNewId = instanceId + '_' + childTemplateId;
 					var childWorld = worldFromLocal(worldPos, worldRot, childDef.localPos, childDef.localRot);
-					spawnNode (childTemplateId, childNewId, childWorld[0], childWorld[1]);
-				}
-				for (var i = 0; i < childIds.length; i ++)
-				{
-					var childNode = document.getElementById(instanceId + '_' + childIds[i]);
-					if (childNode)
-						result[0].appendChild(childNode);
+					spawnNode (childTemplateId, childNewId, childWorld[0], childWorld[1], spawnedNode);
 				}
 			}
 			return result;
@@ -2730,13 +2736,7 @@ class api
 				var rdef = nodes[roots[r]];
 				var rpos = r === 0 ? rootWorld : [rootWorld[0] + (rdef.localPos[0] || 0), rootWorld[1] + (rdef.localPos[1] || 0)];
 				var rrot = rootRot + (rdef.localRot || 0);
-				spawnNode (roots[r], instanceId + '_' + roots[r], rpos, rrot);
-			}
-			for (var r = 0; r < roots.length; r ++)
-			{
-				var childNode = document.getElementById(instanceId + '_' + roots[r]);
-				if (childNode)
-					container.appendChild(childNode);
+				spawnNode (roots[r], instanceId + '_' + roots[r], rpos, rrot, container);
 			}
 			return container;
 		}
