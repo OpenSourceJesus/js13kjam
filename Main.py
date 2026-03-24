@@ -1582,6 +1582,7 @@ liveObjectNames = set()
 instanceToTemplate = {}
 templateScripts = {}
 scripts = {}
+scriptLocals = {}
 _currentInstanceName = None
 
 class _ThisObject:
@@ -1627,6 +1628,20 @@ def unregister_instance (name):
 	liveObjectNames.discard(name)
 	instanceToTemplate.pop(name, None)
 	scripts.pop(name, None)
+	scriptLocals.pop(name, None)
+
+def _get_script_locals (instanceName, this):
+	if instanceName not in scriptLocals:
+		scriptLocals[instanceName] = {}
+	scriptLocals[instanceName]['this'] = this
+	scriptLocals[instanceName]['_currentInstanceName'] = instanceName
+	return scriptLocals[instanceName]
+
+def _exec_script (code, instanceName, this, phase):
+	try:
+		exec(code, globals(), _get_script_locals(instanceName, this))
+	except Exception as err:
+		print(f"[script:{phase}] {instanceName}: {err}")
 
 def run_init_scripts (name):
 	global _currentInstanceName
@@ -1641,8 +1656,7 @@ def run_init_scripts (name):
 	if name in scripts and scripts[name].get('init'):
 		_currentInstanceName = name
 		for code in scripts[name]['init']:
-			try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
-			except: pass
+			_exec_script(code, name, this, 'init')
 		_currentInstanceName = None
 
 def run_update_scripts ():
@@ -1653,14 +1667,12 @@ def run_update_scripts ():
 		if tid and tid in templateScripts and templateScripts[tid].get('update'):
 			_currentInstanceName = name
 			for code in templateScripts[tid]['update']:
-				try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
-				except: pass
+				_exec_script(code, name, this, 'update')
 			_currentInstanceName = None
 		if name in scripts and scripts[name].get('update'):
 			_currentInstanceName = name
 			for code in scripts[name]['update']:
-				try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
-				except: pass
+				_exec_script(code, name, this, 'update')
 			_currentInstanceName = None
 
 def add_script (instanceName, code, type):
@@ -1671,8 +1683,7 @@ def add_script (instanceName, code, type):
 		global _currentInstanceName
 		_currentInstanceName = instanceName
 		this = _ThisObject(instanceName)
-		try: exec(code, { **globals(), 'this': this, '_currentInstanceName': instanceName })
-		except: pass
+		_exec_script(code, instanceName, this, 'init')
 		_currentInstanceName = None
 
 def remove_script (instanceName, type, index):
@@ -2280,6 +2291,7 @@ class api
 		this.liveInstanceIds = new Set();
 		this.instanceToTemplate = {};
 		this.scripts = {};
+		this.scriptScopes = {};
 		this._currentInstanceId = null;
 	}
 	register_instance (templateId, instanceId)
@@ -2291,43 +2303,68 @@ class api
 	{
 		this.liveInstanceIds.delete(instanceId);
 		delete this.instanceToTemplate[instanceId];
+		delete this.scriptScopes[instanceId];
+	}
+	_prepare_script (code)
+	{
+		return code
+			.replace(/^async function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = async ($2) => {')
+			.replace(/^function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = ($2) => {');
+	}
+	_exec_script (instanceId, code, phase)
+	{
+		var el = document.getElementById(instanceId);
+		if (!el)
+			return;
+		if (!this.scriptScopes[instanceId])
+			this.scriptScopes[instanceId] = {};
+		var scope = this.scriptScopes[instanceId];
+		scope.this = el;
+		scope._currentInstanceId = instanceId;
+		var prepared = this._prepare_script(code);
+		try
+		{
+			(new Function('_scope', '_currentInstanceId', 'with (_scope) {\\n' + prepared + '\\n}')).call(el, scope, instanceId);
+		}
+		catch (err)
+		{
+			console.error('[script:' + phase + '] ' + instanceId, err);
+		}
 	}
 	run_init_scripts (instanceId)
 	{
-		var el = document.getElementById(instanceId);
 		var tid = this.instanceToTemplate[instanceId];
 		var scripts = typeof templateScripts !== 'undefined' && templateScripts && templateScripts[tid];
 		if (scripts && scripts.init)
 		{
 			this._currentInstanceId = instanceId;
 			for (var i = 0; i < scripts.init.length; i ++)
-				try { (new Function('_currentInstanceId', scripts.init[i])).call(el, instanceId); } catch (err) {}
+				this._exec_script(instanceId, scripts.init[i], 'init');
 			this._currentInstanceId = null;
 		}
 		var rt = this.scripts[instanceId];
 		if (rt && rt.init)
 			for (var i = 0; i < rt.init.length; i ++)
-				try { (new Function('_currentInstanceId', rt.init[i])).call(el, instanceId); } catch (err) {}
+				this._exec_script(instanceId, rt.init[i], 'init');
 	}
 	run_update_scripts ()
 	{
 		var self = this;
 		this.liveInstanceIds.forEach(function (id)
 		{
-			var el = document.getElementById(id);
 			var tid = self.instanceToTemplate[id];
 			var scripts = typeof templateScripts !== 'undefined' && templateScripts && templateScripts[tid];
 			if (scripts && scripts.update)
 			{
 				self._currentInstanceId = id;
 				for (var i = 0; i < scripts.update.length; i ++)
-					try { (new Function('_currentInstanceId', scripts.update[i])).call(el, id); } catch (err) {}
+					self._exec_script(id, scripts.update[i], 'update');
 				self._currentInstanceId = null;
 			}
 			var rt = self.scripts[id];
 			if (rt && rt.update)
 				for (var i = 0; i < rt.update.length; i ++)
-					try { (new Function('_currentInstanceId', rt.update[i])).call(el, id); } catch (err) {}
+					self._exec_script(id, rt.update[i], 'update');
 		});
 	}
 	add_script (instanceId, code, type)
@@ -2338,8 +2375,7 @@ class api
 		if (type === 'init')
 		{
 			this._currentInstanceId = instanceId;
-			var el = document.getElementById(instanceId);
-			try { (new Function('_currentInstanceId', code)).call(el, instanceId); } catch (err) {}
+			this._exec_script(instanceId, code, 'init');
 			this._currentInstanceId = null;
 		}
 	}
@@ -2712,8 +2748,7 @@ class api
 		{
 			var attrs = attributeOverrides[templateId] || {};
 			var result = $.copy_node(templateId, newId, worldPos, worldRot, attrs);
-			$.register_instance(templateId, newId);
-			$.run_init_scripts(newId);
+			$.register_instance (templateId, newId);
 			var spawnedNode = result && result[0] ? result[0] : null;
 			if (parentNode && spawnedNode)
 				parentNode.appendChild(spawnedNode);
@@ -2732,6 +2767,7 @@ class api
 					spawnNode (childTemplateId, childNewId, childWorld[0], childWorld[1], spawnedNode);
 				}
 			}
+			$.run_init_scripts (newId);
 			return result;
 		}
 		var rootWorld = [pos[0], pos[1]];
@@ -2754,20 +2790,20 @@ class api
 			return null;
 		return spawnNode(firstRoot, instanceId, rootWorld, rootRot) && document.getElementById(instanceId) ? document.getElementById(instanceId) : null;
 	}
-	destroy_prefab (rootNodeOrId)
+	remove_prefab (rootNodeOrId)
 	{
 		var root = typeof rootNodeOrId === 'string' ? document.getElementById(rootNodeOrId) : rootNodeOrId;
 		if (!root)
 			return;
 		var self = this;
-		function destroyRecursive (node)
+		function removeRecursive (node)
 		{
 			self.unregister_instance (node.id);
 			while (node.firstChild)
-				destroyRecursive (node.firstChild);
-			$.remove(node);
+				removeRecursive (node.firstChild);
+			$.remove (node);
 		}
-		destroyRecursive (root);
+		removeRecursive (root);
 	}
 	get_prefab_node (instanceId, templateId)
 	{
