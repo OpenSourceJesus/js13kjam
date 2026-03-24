@@ -322,7 +322,7 @@ def GetInstancedObjects (scene):
 	sceneObs = set(scene.collection.objects)
 	pendingCollections = []
 	for ob in sceneObs:
-		if getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
+		if ob.exportOb and getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
 			pendingCollections.append(ob.instance_collection)
 	visitedCollections = set()
 	while pendingCollections:
@@ -333,7 +333,7 @@ def GetInstancedObjects (scene):
 		for ob in coll.all_objects:
 			if ob not in sceneObs:
 				sceneObs.add(ob)
-			if getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
+			if ob.exportOb and getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
 				pendingCollections.append(ob.instance_collection)
 	return sceneObs
 
