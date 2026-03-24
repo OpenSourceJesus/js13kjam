@@ -282,7 +282,7 @@ def GetObjectsInCollectionRecursive (coll):
 
 def GatherPrefabDefinition (coll):
 	obSet = GetObjectsInCollectionRecursive(coll)
-	obSet = { ob for ob in obSet if ob.export and ob in exportedObs }
+	obSet = { ob for ob in obSet if ob.exportOb and ob in exportedObs }
 	if not obSet:
 		return None
 	def worldPos (ob):
@@ -346,7 +346,7 @@ def GetInstancedObjects (scene):
 
 def ExportObject (ob):
 	global svgsDatas
-	if not ob.export or ob in exportedObs:
+	if not ob.exportOb or ob in exportedObs:
 		return
 	obVarName = GetVarNameForObject(ob)
 	_attributes = GetAttributes(ob)
@@ -752,7 +752,7 @@ def ExportObject (ob):
 		else:
 			childrenNames = []
 			if getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
-				instancedSet = { c for c in GetObjectsInCollectionRecursive(ob.instance_collection) if c.export }
+				instancedSet = { c for c in GetObjectsInCollectionRecursive(ob.instance_collection) if c.exportOb }
 				rootChildren = [ c for c in instancedSet if c.parent not in instancedSet or c.parent is None ]
 				for child in rootChildren:
 					ExportObject (child)
@@ -1539,6 +1539,28 @@ def GetBlenderData ():
 				else:
 					if script not in templateScripts[sceneId]['update']:
 						templateScripts[sceneId]['update'].append(script)
+					if script not in updateCode:
+						updateCode.append(script)
+	world = bpy.context.world
+	if world:
+		for scriptInfo in GetScripts(world, True):
+			script = scriptInfo[0]
+			_type = scriptInfo[1]
+			if _type.startswith(exportType):
+				if _type == 'html-py':
+					script = Py2Js(script)
+				apiCode += '(function(){ ' + script + ' })();\n'
+		for scriptInfo in GetScripts(world, False):
+			script = scriptInfo[0]
+			isInit = scriptInfo[1]
+			_type = scriptInfo[2]
+			if _type.startswith(exportType):
+				if _type == 'html-py':
+					script = Py2Js(script)
+				if isInit:
+					if script not in initCode:
+						initCode.append(script)
+				else:
 					if script not in updateCode:
 						updateCode.append(script)
 	return (datas, initCode, updateCode, apiCode)
@@ -3422,6 +3444,7 @@ def OnUpdateTint (self, ctx):
 
 def Update ():
 	canUpdateProps = True
+	world = bpy.context.world
 	for txt in bpy.data.texts:
 		idxOfPeriod = txt.name.find('.')
 		if idxOfPeriod != -1:
@@ -3438,6 +3461,20 @@ def Update ():
 						for origTxt in bpy.data.texts:
 							if origTxt.name == txt.name[: idxOfPeriod]:
 								setattr(ob, 'runtimeScript%i' %i, origTxt)
+								break
+			if world:
+				for i in range(MAX_SCRIPTS_PER_OBJECT):
+					attachedTxt = getattr(world, 'apiScript%i' %i)
+					if attachedTxt == txt:
+						for origTxt in bpy.data.texts:
+							if origTxt.name == txt.name[: idxOfPeriod]:
+								setattr(world, 'apiScript%i' %i, origTxt)
+								break
+					attachedTxt = getattr(world, 'runtimeScript%i' %i)
+					if attachedTxt == txt:
+						for origTxt in bpy.data.texts:
+							if origTxt.name == txt.name[: idxOfPeriod]:
+								setattr(world, 'runtimeScript%i' %i, origTxt)
 								break
 			bpy.data.texts.remove(txt)
 	return 0.1
@@ -3468,7 +3505,7 @@ bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if ou
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Unit length', min = 0, default = 1)
 bpy.types.World.debugMode = bpy.props.BoolProperty(name = 'Debug mode', default = True)
-bpy.types.Object.export = bpy.props.BoolProperty(name = 'Export', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'export'))
+bpy.types.Object.exportOb = bpy.props.BoolProperty(name = 'Export object', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'export'))
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundPosAndSize'))
 bpy.types.Object.pivot = bpy.props.FloatVectorProperty(name = 'Pivot point', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'pivot'))
 bpy.types.Object.useStroke = bpy.props.BoolProperty(name = 'Use stroke', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useStroke'))
@@ -3618,6 +3655,41 @@ bpy.types.Object.maxBounciness = bpy.props.FloatProperty(name = 'Max bounciness'
 bpy.types.Collection.exportPrefab = bpy.props.BoolProperty(name = 'Export prefab', default = False, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'exportPrefab'))
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
+	setattr(
+		bpy.types.World,
+		'apiScript%i' %i,
+		bpy.props.PointerProperty(name = 'API script%i' %i, type = bpy.types.Text)
+	)
+	setattr(
+		bpy.types.World,
+		'apiScriptDisable%i' %i,
+		bpy.props.BoolProperty(name = 'Disable')
+	)
+	setattr(
+		bpy.types.World,
+		'runtimeScript%i' %i,
+		bpy.props.PointerProperty(name = 'Runtime script%i' %i, type = bpy.types.Text)
+	)
+	setattr(
+		bpy.types.World,
+		'apiScriptType%i' %i,
+		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS)
+	)
+	setattr(
+		bpy.types.World,
+		'runtimeScriptDisable%i' %i,
+		bpy.props.BoolProperty(name = 'Disable')
+	)
+	setattr(
+		bpy.types.World,
+		'initScript%i' %i,
+		bpy.props.BoolProperty(name = 'Is init')
+	)
+	setattr(
+		bpy.types.World,
+		'runtimeScriptType%i' %i,
+		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS)
+	)
 	setattr(
 		bpy.types.Object,
 		'apiScript%i' %i,
@@ -3968,6 +4040,18 @@ class WorldPanel (bpy.types.Panel):
 		if usePhysics:
 			self.layout.prop(ctx.world, 'unitLen')
 		self.layout.prop(ctx.world, 'debugMode')
+		self.layout.label(text = 'Scripts')
+		for i in range(GetLastUsedPropertyIndex(ctx.world, 'apiScript', MAX_SCRIPTS_PER_OBJECT) + 2):
+			row = self.layout.row()
+			row.prop(ctx.world, 'apiScript%i' %i)
+			row.prop(ctx.world, 'apiScriptType%i' %i)
+			row.prop(ctx.world, 'apiScriptDisable%i' %i)
+		for i in range(GetLastUsedPropertyIndex(ctx.world, 'runtimeScript', MAX_SCRIPTS_PER_OBJECT) + 2):
+			row = self.layout.row()
+			row.prop(ctx.world, 'runtimeScript%i' %i)
+			row.prop(ctx.world, 'initScript%i' %i)
+			row.prop(ctx.world, 'runtimeScriptType%i' %i)
+			row.prop(ctx.world, 'runtimeScriptDisable%i' %i)
 		self.layout.operator('world.html_export', icon = 'CONSOLE')
 		self.layout.operator('world.exe_export', icon = 'CONSOLE')
 		self.layout.operator('world.unity_export', icon = 'CONSOLE')
