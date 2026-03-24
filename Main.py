@@ -92,19 +92,13 @@ MAX_ELTS_IN_ATTRIBUTES_ARR = 16
 MAX_RENDER_CAMS_PER_OBJECT = 128
 MAX_PARTICLE_SYSTEM_BURSTS = 64
 
-def GetScripts (ob, isAPI : bool):
+def GetScripts (ob):
 	scripts = []
-	type = 'runtime'
-	if isAPI:
-		type = 'api'
 	for i in range(MAX_SCRIPTS_PER_OBJECT):
-		if not getattr(ob, type + 'ScriptDisable%i' %i):
-			txt = getattr(ob, type + 'Script%i' %i)
+		if not getattr(ob, 'scriptDisable%i' %i):
+			txt = getattr(ob, 'script%i' %i)
 			if txt:
-				if isAPI:
-					scripts.append((txt.as_string(), getattr(ob, 'apiScriptType%i' %i)))
-				else:
-					scripts.append((txt.as_string(), getattr(ob, 'initScript%i' %i), getattr(ob, 'runtimeScriptType%i' %i)))
+				scripts.append((txt.as_string(), getattr(ob, 'initScript%i' %i), getattr(ob, 'scriptType%i' %i)))
 	return scripts
 
 def TryChangeToInt (f : float):
@@ -257,7 +251,6 @@ imgsPaths = []
 particleSystems = []
 initCode = []
 updateCode = []
-apiCode = ''
 svgsDatas = {}
 exportType = None
 vars = []
@@ -1474,12 +1467,11 @@ def Py2Js (pyCode):
 	return open(jsScriptPath, 'r').read()
 
 def GetBlenderData ():
-	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, apiCode, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs
+	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs
 	vars = []
 	attributes = {}
 	pivots = {}
 	exportedObs = []
-	apiCode = ''
 	datas = []
 	clrs = {}
 	pathsDatas = []
@@ -1517,14 +1509,7 @@ def GetBlenderData ():
 			ExportObject (ob)
 	GatherPrefabs ()
 	for ob in bpy.data.objects:
-		for scriptInfo in GetScripts(ob, True):
-			script = scriptInfo[0]
-			_type = scriptInfo[1]
-			if _type.startswith(exportType):
-				if _type == 'html-py':
-					script = Py2Js(script)
-				apiCode += '(function(){ ' + script + ' })();\n'
-		for scriptInfo in GetScripts(ob, False):
+		for scriptInfo in GetScripts(ob):
 			script = scriptInfo[0]
 			isInit = scriptInfo[1]
 			_type = scriptInfo[2]
@@ -1547,14 +1532,7 @@ def GetBlenderData ():
 						updateCode.append(script)
 	world = bpy.context.world
 	if world:
-		for scriptInfo in GetScripts(world, True):
-			script = scriptInfo[0]
-			_type = scriptInfo[1]
-			if _type.startswith(exportType):
-				if _type == 'html-py':
-					script = Py2Js(script)
-				apiCode += '(function(){ ' + script + ' })();\n'
-		for scriptInfo in GetScripts(world, False):
+		for scriptInfo in GetScripts(world):
 			script = scriptInfo[0]
 			isInit = scriptInfo[1]
 			_type = scriptInfo[2]
@@ -1567,7 +1545,7 @@ def GetBlenderData ():
 				else:
 					if script not in updateCode:
 						updateCode.append(script)
-	return (datas, initCode, updateCode, apiCode)
+	return (datas, initCode, updateCode)
 
 buildInfo = {
 	'html' : None,
@@ -1603,7 +1581,7 @@ attributes = {}
 liveObjectNames = set()
 instanceToTemplate = {}
 templateScripts = {}
-runtimeScripts = {}
+scripts = {}
 _currentInstanceName = None
 
 class _ThisObject:
@@ -1648,7 +1626,7 @@ def register_instance (templateName, instanceName):
 def unregister_instance (name):
 	liveObjectNames.discard(name)
 	instanceToTemplate.pop(name, None)
-	runtimeScripts.pop(name, None)
+	scripts.pop(name, None)
 
 def run_init_scripts (name):
 	global _currentInstanceName
@@ -1660,9 +1638,9 @@ def run_init_scripts (name):
 			try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
 			except: pass
 		_currentInstanceName = None
-	if name in runtimeScripts and runtimeScripts[name].get('init'):
+	if name in scripts and scripts[name].get('init'):
 		_currentInstanceName = name
-		for code in runtimeScripts[name]['init']:
+		for code in scripts[name]['init']:
 			try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
 			except: pass
 		_currentInstanceName = None
@@ -1678,17 +1656,17 @@ def run_update_scripts ():
 				try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
 				except: pass
 			_currentInstanceName = None
-		if name in runtimeScripts and runtimeScripts[name].get('update'):
+		if name in scripts and scripts[name].get('update'):
 			_currentInstanceName = name
-			for code in runtimeScripts[name]['update']:
+			for code in scripts[name]['update']:
 				try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
 				except: pass
 			_currentInstanceName = None
 
 def add_script (instanceName, code, type):
-	if instanceName not in runtimeScripts:
-		runtimeScripts[instanceName] = {'init': [], 'update': []}
-	runtimeScripts[instanceName][type].append(code)
+	if instanceName not in scripts:
+		scripts[instanceName] = {'init': [], 'update': []}
+	scripts[instanceName][type].append(code)
 	if type == 'init':
 		global _currentInstanceName
 		_currentInstanceName = instanceName
@@ -1698,8 +1676,8 @@ def add_script (instanceName, code, type):
 		_currentInstanceName = None
 
 def remove_script (instanceName, type, index):
-	if instanceName in runtimeScripts and type in runtimeScripts[instanceName] and 0 <= index < len(runtimeScripts[instanceName][type]):
-		runtimeScripts[instanceName][type].pop(index)
+	if instanceName in scripts and type in scripts[instanceName] and 0 <= index < len(scripts[instanceName][type]):
+		scripts[instanceName][type].pop(index)
 
 def copy_object (name, newName, pos, rot = 0, wakeUp = True, attachTo : str = '', copyParticles = True):
 	global pivots, initRots, surfaces, surfacesRects, collidersIds, rigidBodiesIds
@@ -2301,7 +2279,7 @@ class api
 	{
 		this.liveInstanceIds = new Set();
 		this.instanceToTemplate = {};
-		this.runtimeScripts = {};
+		this.scripts = {};
 		this._currentInstanceId = null;
 	}
 	register_instance (templateId, instanceId)
@@ -2326,7 +2304,7 @@ class api
 				try { (new Function('_currentInstanceId', scripts.init[i])).call(el, instanceId); } catch (err) {}
 			this._currentInstanceId = null;
 		}
-		var rt = this.runtimeScripts[instanceId];
+		var rt = this.scripts[instanceId];
 		if (rt && rt.init)
 			for (var i = 0; i < rt.init.length; i ++)
 				try { (new Function('_currentInstanceId', rt.init[i])).call(el, instanceId); } catch (err) {}
@@ -2346,7 +2324,7 @@ class api
 					try { (new Function('_currentInstanceId', scripts.update[i])).call(el, id); } catch (err) {}
 				self._currentInstanceId = null;
 			}
-			var rt = self.runtimeScripts[id];
+			var rt = self.scripts[id];
 			if (rt && rt.update)
 				for (var i = 0; i < rt.update.length; i ++)
 					try { (new Function('_currentInstanceId', rt.update[i])).call(el, id); } catch (err) {}
@@ -2354,9 +2332,9 @@ class api
 	}
 	add_script (instanceId, code, type)
 	{
-		if (!runtimeScripts[instanceId])
-			runtimeScripts[instanceId] = { init: [], update: [] };
-		runtimeScripts[instanceId][type].push(code);
+		if (!scripts[instanceId])
+			scripts[instanceId] = { init: [], update: [] };
+		scripts[instanceId][type].push(code);
 		if (type === 'init')
 		{
 			this._currentInstanceId = instanceId;
@@ -2367,8 +2345,8 @@ class api
 	}
 	remove_script (instanceId, type, index)
 	{
-		if (runtimeScripts[instanceId] && runtimeScripts[instanceId][type])
-			runtimeScripts[instanceId][type].splice(index, 1);
+		if (scripts[instanceId] && scripts[instanceId][type])
+			scripts[instanceId][type].splice(index, 1);
 	}
 	get_svg_paths_and_strings (framesStrings, cyclic)
 	{
@@ -2822,7 +2800,7 @@ globalThis.api = $;
 '''
 
 def GenJs (world):
-	global datas, apiCode, clrs, prefabs, prefabTemplateDatas, prefabPathsDatas
+	global datas, clrs, prefabs, prefabTemplateDatas, prefabPathsDatas
 	jsApi = JS_API
 	if not usePhysics:
 		while True:
@@ -2833,7 +2811,7 @@ def GenJs (world):
 			physicsSectionEndIndctr = '// Physics Section End'
 			idxOfPhysicsSectionEnd = jsApi.find(physicsSectionEndIndctr) + len(physicsSectionEndIndctr)
 			jsApi = jsApi[: idxOfPhysicsSectionStart] + jsApi[idxOfPhysicsSectionEnd :]
-	js = [JS, jsApi, apiCode]
+	js = [JS, jsApi]
 	if usePhysics:
 		physics = PHYSICS
 		vars = ''
@@ -2910,7 +2888,7 @@ def GenJs (world):
 	return js
 
 def GenHtml (world, datas, background = ''):
-	global apiCode, clrs, initCode, updateCode, pathsDatas
+	global clrs, initCode, updateCode, pathsDatas
 	js = GenJs(world)
 	if background:
 		background = 'background-color:%s;' %background
@@ -2939,7 +2917,7 @@ def GenHtml (world, datas, background = ''):
 	return '\n'.join(o)
 
 def GenPython (world, datas, background = ''):
-	global ui, vars, clrs, apiCode, initCode, updateCode, pathsDatas, uiMethods
+	global ui, vars, clrs, initCode, updateCode, pathsDatas, uiMethods
 	python = PYTHON
 	if not usePhysics:
 		while True:
@@ -2950,7 +2928,7 @@ def GenPython (world, datas, background = ''):
 			physicsSectionEndIndctr = '# Physics Section End'
 			idxOfPhysicsSectionEnd = python.find(physicsSectionEndIndctr) + len(physicsSectionEndIndctr)
 			python = python[: idxOfPhysicsSectionStart] + python[idxOfPhysicsSectionEnd :]
-	python = python.replace('# API', apiCode)
+	python = python.replace('# API', '')
 	python = python.replace('# Vars', '\n'.join(vars))
 	python = python.replace('# UI Methods', '\n'.join((uiMethods)))
 	gravity = [0, 0]
@@ -3460,31 +3438,19 @@ def Update ():
 		if idxOfPeriod != -1:
 			for ob in bpy.data.objects:
 				for i in range(MAX_SCRIPTS_PER_OBJECT):
-					attachedTxt = getattr(ob, 'apiScript%i' %i)
+					attachedTxt = getattr(ob, 'script%i' %i)
 					if attachedTxt == txt:
 						for origTxt in bpy.data.texts:
 							if origTxt.name == txt.name[: idxOfPeriod]:
-								setattr(ob, 'apiScript%i' %i, origTxt)
-								break
-					attachedTxt = getattr(ob, 'runtimeScript%i' %i)
-					if attachedTxt == txt:
-						for origTxt in bpy.data.texts:
-							if origTxt.name == txt.name[: idxOfPeriod]:
-								setattr(ob, 'runtimeScript%i' %i, origTxt)
+								setattr(ob, 'script%i' %i, origTxt)
 								break
 			if world:
 				for i in range(MAX_SCRIPTS_PER_OBJECT):
-					attachedTxt = getattr(world, 'apiScript%i' %i)
+					attachedTxt = getattr(world, 'script%i' %i)
 					if attachedTxt == txt:
 						for origTxt in bpy.data.texts:
 							if origTxt.name == txt.name[: idxOfPeriod]:
-								setattr(world, 'apiScript%i' %i, origTxt)
-								break
-					attachedTxt = getattr(world, 'runtimeScript%i' %i)
-					if attachedTxt == txt:
-						for origTxt in bpy.data.texts:
-							if origTxt.name == txt.name[: idxOfPeriod]:
-								setattr(world, 'runtimeScript%i' %i, origTxt)
+								setattr(world, 'script%i' %i, origTxt)
 								break
 			bpy.data.texts.remove(txt)
 	return 0.1
@@ -3668,27 +3634,12 @@ bpy.types.Collection.exportPrefab = bpy.props.BoolProperty(name = 'Export prefab
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
 		bpy.types.World,
-		'apiScript%i' %i,
-		bpy.props.PointerProperty(name = 'API script%i' %i, type = bpy.types.Text)
+		'script%i' %i,
+		bpy.props.PointerProperty(name = 'Script%i' %i, type = bpy.types.Text)
 	)
 	setattr(
 		bpy.types.World,
-		'apiScriptDisable%i' %i,
-		bpy.props.BoolProperty(name = 'Disable')
-	)
-	setattr(
-		bpy.types.World,
-		'runtimeScript%i' %i,
-		bpy.props.PointerProperty(name = 'Runtime script%i' %i, type = bpy.types.Text)
-	)
-	setattr(
-		bpy.types.World,
-		'apiScriptType%i' %i,
-		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS)
-	)
-	setattr(
-		bpy.types.World,
-		'runtimeScriptDisable%i' %i,
+		'scriptDisable%i' %i,
 		bpy.props.BoolProperty(name = 'Disable')
 	)
 	setattr(
@@ -3698,33 +3649,18 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 	)
 	setattr(
 		bpy.types.World,
-		'runtimeScriptType%i' %i,
+		'scriptType%i' %i,
 		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS)
 	)
 	setattr(
 		bpy.types.Object,
-		'apiScript%i' %i,
-		bpy.props.PointerProperty(name = 'API script%i' %i, type = bpy.types.Text, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'API script%i' %i))
+		'script%i' %i,
+		bpy.props.PointerProperty(name = 'Script%i' %i, type = bpy.types.Text, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'script%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
-		'apiScriptDisable%i' %i,
-		bpy.props.BoolProperty(name = 'Disable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'apiScriptDisable%i' %i))
-	)
-	setattr(
-		bpy.types.Object,
-		'runtimeScript%i' %i,
-		bpy.props.PointerProperty(name = 'Runtime script%i' %i, type = bpy.types.Text, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScript%i' %i))
-	)
-	setattr(
-		bpy.types.Object,
-		'apiScriptType%i' %i,
-		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'apiScriptType%i' %i))
-	)
-	setattr(
-		bpy.types.Object,
-		'runtimeScriptDisable%i' %i,
-		bpy.props.BoolProperty(name = 'Disable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScriptDisable%i' %i))
+		'scriptDisable%i' %i,
+		bpy.props.BoolProperty(name = 'Disable', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scriptDisable%i' %i))
 	)
 	setattr(
 		bpy.types.Object,
@@ -3733,8 +3669,8 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 	)
 	setattr(
 		bpy.types.Object,
-		'runtimeScriptType%i' %i,
-		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'runtimeScriptType%i' %i))
+		'scriptType%i' %i,
+		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'scriptType%i' %i))
 	)
 for i in range(MAX_SHAPE_PNTS):
 	setattr(
@@ -4052,17 +3988,12 @@ class WorldPanel (bpy.types.Panel):
 			self.layout.prop(ctx.world, 'unitLen')
 		self.layout.prop(ctx.world, 'debugMode')
 		self.layout.label(text = 'Scripts')
-		for i in range(GetLastUsedPropertyIndex(ctx.world, 'apiScript', MAX_SCRIPTS_PER_OBJECT) + 2):
+		for i in range(GetLastUsedPropertyIndex(ctx.world, 'script', MAX_SCRIPTS_PER_OBJECT) + 2):
 			row = self.layout.row()
-			row.prop(ctx.world, 'apiScript%i' %i)
-			row.prop(ctx.world, 'apiScriptType%i' %i)
-			row.prop(ctx.world, 'apiScriptDisable%i' %i)
-		for i in range(GetLastUsedPropertyIndex(ctx.world, 'runtimeScript', MAX_SCRIPTS_PER_OBJECT) + 2):
-			row = self.layout.row()
-			row.prop(ctx.world, 'runtimeScript%i' %i)
+			row.prop(ctx.world, 'script%i' %i)
 			row.prop(ctx.world, 'initScript%i' %i)
-			row.prop(ctx.world, 'runtimeScriptType%i' %i)
-			row.prop(ctx.world, 'runtimeScriptDisable%i' %i)
+			row.prop(ctx.world, 'scriptType%i' %i)
+			row.prop(ctx.world, 'scriptDisable%i' %i)
 		self.layout.operator('world.html_export', icon = 'CONSOLE')
 		self.layout.operator('world.exe_export', icon = 'CONSOLE')
 		self.layout.operator('world.unity_export', icon = 'CONSOLE')
@@ -4177,17 +4108,12 @@ class ObjectPanel (bpy.types.Panel):
 			for i in range(GetLastUsedPropertyIndex(ob, 'renderCam', MAX_RENDER_CAMS_PER_OBJECT) + 2):
 				self.layout.prop(ob, 'renderCam%i' %i)
 		self.layout.label(text = 'Scripts')
-		for i in range(GetLastUsedPropertyIndex(ob, 'apiScript', MAX_SCRIPTS_PER_OBJECT) + 2):
+		for i in range(GetLastUsedPropertyIndex(ob, 'script', MAX_SCRIPTS_PER_OBJECT) + 2):
 			row = self.layout.row()
-			row.prop(ob, 'apiScript%i' %i)
-			row.prop(ob, 'apiScriptType%i' %i)
-			row.prop(ob, 'apiScriptDisable%i' %i)
-		for i in range(GetLastUsedPropertyIndex(ob, 'runtimeScript', MAX_SCRIPTS_PER_OBJECT) + 2):
-			row = self.layout.row()
-			row.prop(ob, 'runtimeScript%i' %i)
+			row.prop(ob, 'script%i' %i)
 			row.prop(ob, 'initScript%i' %i)
-			row.prop(ob, 'runtimeScriptType%i' %i)
-			row.prop(ob, 'runtimeScriptDisable%i' %i)
+			row.prop(ob, 'scriptType%i' %i)
+			row.prop(ob, 'scriptDisable%i' %i)
 
 @bpy.utils.register_class
 class UIPanel (bpy.types.Panel):
