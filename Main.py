@@ -2057,7 +2057,7 @@ for (var e of prefabTemplatesData)
 }
 for (var e of templateG)
 {
-	add_group (e[0], [e[1], e[2]], e[3], e[4]);
+	add_div (e[0], [e[1], e[2]], e[3], e[4]);
 	templateIdsToHide.push(e[0]);
 }
 for (var id of templateIdsToHide)
@@ -2097,7 +2097,7 @@ for (var e of d)
 }
 for (var e of g)
 {
-	add_group (e[0], [e[1], e[2]], e[3], e[4]);
+	add_div (e[0], [e[1], e[2]], e[3], e[4]);
 	$.register_instance(e[0], e[0]);
 	$.run_init_scripts(e[0]);
 }
@@ -2214,22 +2214,22 @@ function random (min, max)
 {
 	return Math.random() * (max - min) + min;
 }
-function add_group (id, pos, childIds = [], attributes = {}, txt = '')
+function add_div (id, pos, childIds = [], attributes = {}, txt = '')
 {
-	var group = document.createElementNS(svgNS, 'g');
+	var group = document.createElement('div');
 	group.id = id;
-	group.setAttribute('x', pos[0]);
-	group.setAttribute('y', pos[1]);
+	group.style.position = 'fixed';
+	group.style.transform = 'translate(' + pos[0] + 'px, ' + pos[1] + 'px)';
 	group.innerHTML = txt;
 	for (var [key, val] of Object.entries(attributes))
 		group.setAttribute(key, val);
+	document.body.appendChild(group);
 	for (var childId of childIds)
 	{
 		var node = document.getElementById(childId);
 		node.style.position = 'fixed';
 		group.appendChild(node);
 	}
-	document.body.appendChild(group);
 	return group;
 }
 function shuffle (arr)
@@ -2386,8 +2386,8 @@ class api
 	{
 		var copy = document.getElementById(id).cloneNode(true);
 		copy.id = newId;
-		copy.setAttribute('x', pos[0]);
-		copy.setAttribute('y', pos[1]);
+		copy.style.x = pos[0];
+		copy.style.y = pos[1];
 		copy.style.transform = 'translate(' + pos[0] + ', ' + pos[1] + ')rotate(' + rot + 'deg)';
 		for (var [key, val] of Object.entries(attributes))
 			copy.setAttribute(key, val);
@@ -2421,8 +2421,8 @@ class api
 	{
 		var group = document.createElementNS(svgNS, 'g');
 		group.id = id;
-		group.setAttribute('x', pos[0]);
-		group.setAttribute('y', pos[1]);
+		group.style.x = pos[0];
+		group.style.y = pos[1];
 		var mixMode = 'lighter';
 		if (subtractive)
 			mixMode = 'darker';
@@ -2439,8 +2439,8 @@ class api
 		svg.id = id;
 		svg.style = 'z-index:' + zIdx + ';position:absolute';
 		svg.setAttribute('transform-pivot', pivot[0] + '% ' + pivot[1] + '%');
-		svg.setAttribute('x', pos[0]);
-		svg.setAttribute('y', pos[1]);
+		svg.style.x = pos[0];
+		svg.style.y = pos[1];
 		svg.setAttribute('width', size[0]);
 		svg.setAttribute('height', size[1]);
 		var trs = 'translate(' + pos[0] + ', ' + pos[1] + ')';
@@ -2519,7 +2519,7 @@ class api
 				anim.setAttribute('to', rotAngRange[1]);
 			anim.setAttribute('values', frames);
 			anim.setAttribute('additive', 'sum');
-			svg.innerHTML += anim.outerHTML;
+			svg.appendChild(anim);
 		}
 		var totalScaleDur = scaleDur + scaleHaltDurAtMin + scaleHaltDurAtMax;
 		if (totalScaleDur > 0)
@@ -2552,7 +2552,7 @@ class api
 			anim.setAttribute('values', frames);
 			anim.setAttribute('keytimes', times);
 			anim.setAttribute('additive', 'sum');
-			svg.innerHTML += anim.outerHTML;
+			svg.appendChild(anim);
 		}
 		if (cycleDur != 0)
 		{
@@ -2643,7 +2643,7 @@ class api
 			path.style.fill = 'url(#' + id + ')';
 		else
 			path.style.stroke = 'url(#' + id + ')';
-		svg.innerHTML += path.outerHTML;
+		svg.appendChild(path);
 	}
 	// Physics Section Start
 	set_transforms (dict)
@@ -2724,7 +2724,7 @@ class api
 		var container = null;
 		if (roots.length > 1)
 		{
-			container = add_group(instanceId, rootWorld, [], {}, '');
+			container = add_div(instanceId, rootWorld, [], {}, '');
 			for (var r = 0; r < roots.length; r ++)
 			{
 				var rdef = nodes[roots[r]];
