@@ -291,12 +291,19 @@ templateScripts = {}
 prefabTemplateDatas = []
 prefabPathsDatas = []
 templateOnlyObs = set ()
+instancedCollectionObs = set ()
+collectionInstanceOffsetStack = []
 
 def GetObjectsInCollectionRecursive (coll):
 	obSet = set()
 	for ob in coll.all_objects:
 		obSet.add(ob)
 	return obSet
+
+def GetCollectionInstanceOffset ():
+	if collectionInstanceOffsetStack == []:
+		return Vector((0, 0, 0))
+	return collectionInstanceOffsetStack[-1]
 
 def GatherPrefabDefinition (coll):
 	obSet = GetObjectsInCollectionRecursive(coll)
@@ -500,6 +507,10 @@ def ExportObject (ob):
 				jiggleDist = ob.jiggleDist * int(ob.useJiggle)
 				x = _min.x - strokeWidth / 2 - jiggleDist
 				y = -_max.y + strokeWidth / 2 + jiggleDist
+				if ob.parent and ob.parent.type == 'EMPTY' and ob.parent.empty_display_type != 'IMAGE':
+					parentPos = Vector(GetObjectPosition(ob.parent))
+					x -= parentPos.x
+					y -= parentPos.y
 				size = _max - _min
 				size += Vector((1, 1)) * (strokeWidth + jiggleDist * 2)
 				if ob.roundPosAndSize:
@@ -783,9 +794,11 @@ def ExportObject (ob):
 			if getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
 				instancedSet = { c for c in GetObjectsInCollectionRecursive(ob.instance_collection) if c.exportOb }
 				rootChildren = [ c for c in instancedSet if c.parent not in instancedSet or c.parent is None ]
+				collectionInstanceOffsetStack.append(GetCollectionInstanceOffset() + ob.location.copy())
 				for child in rootChildren:
 					ExportObject (child)
 					childrenNames.append(child.name)
+				collectionInstanceOffsetStack.pop()
 			else:
 				for child in ob.children:
 					ExportObject (child)
@@ -811,11 +824,14 @@ def RegisterPhysics (ob):
 			collisionGroupFilter |= (1 << i)
 	prevRotMode = ob.rotation_mode
 	ob.rotation_mode = 'XYZ'
+	instanceOffset = GetCollectionInstanceOffset()
+	physicsX = ob.location.x + instanceOffset.x
+	physicsY = ob.location.y + instanceOffset.y
 	if exportType == 'html':
 		if ob.rigidBodyExists:
 			rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '()'
-			if ob.location.x != 0 or ob.location.y != 0:
-				rigidBody += '.setTranslation(' + str(ob.location.x) + ', ' + str(-ob.location.y) + ')'
+			if physicsX != 0 or physicsY != 0:
+				rigidBody += '.setTranslation(' + str(physicsX) + ', ' + str(-physicsY) + ')'
 			if ob.rotation_euler.z != 0:
 				rigidBody += '.setRotation(' + str(ob.rotation_euler.z) + ')'
 			if not ob.canRot:
@@ -904,8 +920,8 @@ def RegisterPhysics (ob):
 						collider += str(getattr(ob, 'colliderHeight%i' %i))
 				collider += '], ' + ToVector2String(ob.colliderHeightfieldScale)
 			collider += ')'
-			colliderPosX = ob.location.x + ob.colliderOff[0]
-			colliderPosY = -ob.location.y - ob.colliderOff[1]
+			colliderPosX = physicsX + ob.colliderOff[0]
+			colliderPosY = -physicsY - ob.colliderOff[1]
 			if colliderPosX != 0 or colliderPosY != 0:
 				collider += '.setTranslation(' + str(colliderPosX) + ', ' + str(colliderPosY) + ')'
 			if ob.rotation_euler.z != 0:
@@ -972,6 +988,7 @@ def RegisterPhysics (ob):
 		pivotOffY = pivot[1] * size.y
 		localPivot = localCenter + Vector((pivotOffX, pivotOffY, 0))
 		worldPivot = ob.matrix_world @ localPivot
+		worldPivot += instanceOffset
 		posStr = str([worldPivot.x, -worldPivot.y])
 		if ob.rigidBodyExists:
 			rigidBodyName = obVarName + 'RigidBody'
@@ -2096,7 +2113,7 @@ for (var e of prefabTemplatesData)
 	var l = e.length;
 	if (l > 10)
 	{
-		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[ti].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
+		$.add_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[ti].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
 		templateIdsToHide.push(e[7]);
 		ti ++;
 	}
@@ -2133,22 +2150,22 @@ for (var e of d)
 	var l = e.length;
 	if (l > 10)
 	{
-		$.draw_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
-		$.register_instance(e[7], e[7]);
-		$.run_init_scripts(e[7]);
+		$.add_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
+		$.register_instance (e[7], e[7]);
+		$.run_init_scripts (e[7]);
 		i ++;
 	}
 	else if (l > 6)
 	{
 		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
-		$.register_instance(e[0], e[0]);
-		$.run_init_scripts(e[0]);
+		$.register_instance (e[0], e[0]);
+		$.run_init_scripts (e[0]);
 	}
 	else if (l > 5)
 	{
 		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5]);
-		$.register_instance(e[0], e[1]);
-		$.run_init_scripts(e[1]);
+		$.register_instance (e[0], e[1]);
+		$.run_init_scripts (e[1]);
 	}
 	else
 		g.push(e);
@@ -2156,8 +2173,8 @@ for (var e of d)
 for (var e of g)
 {
 	add_div (e[0], [e[1], e[2]], e[3], e[4]);
-	$.register_instance(e[0], e[0]);
-	$.run_init_scripts(e[0]);
+	$.register_instance (e[0], e[0]);
+	$.run_init_scripts (e[0]);
 }
 $.main ()
 '''
@@ -2523,7 +2540,7 @@ class api
 		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ', ' + clr[1] + ', ' + clr[2] + ', ' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ', ' + clr2[1] + ', ' + clr2[2] + ', ' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ', ' + clr3[1] + ', ' + clr3[2] + ', ' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 		document.body.appendChild(group);
 	}
-	draw_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, attributes, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, pivot, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
+	add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, attributes, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, pivot, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
 	{
 		var fillClrTxt = 'rgb(' + fillClr[0] + ' ' + fillClr[1] + ' ' + fillClr[2] + ')';
 		var lineClrTxt = 'rgb(' + lineClr[0] + ' ' + lineClr[1] + ' ' + lineClr[2] + ')';
@@ -2774,8 +2791,22 @@ class api
 			var idxOfRotStart = trs.indexOf('rotate(');
 			var idxOfRotEnd = trs.indexOf(')', idxOfRotStart) + 1;
 			var pos = val.translation();
-			var posStr = 'translate(' + (pos.x - node.style.width / 2) + 'px,' + (pos.y - node.style.height / 2) + 'px)';
-			var rotStr = 'rotate(' + val.rotation() + 'rad),';
+			var rect = node.getBoundingClientRect();
+			var posX = pos.x - rect.width / 2;
+			var posY = pos.y - rect.height / 2;
+			var parent = node.parentElement;
+			if (parent && parent !== document.body)
+			{
+				var parentTrs = parent.style ? parent.style.transform || '' : '';
+				var m = parentTrs.match(/translate\\(\\s*([\\-\\d.]+)(?:px)?\\s*,\\s*([\\-\\d.]+)(?:px)?\\s*\\)/);
+				if (m)
+				{
+					posX -= parseFloat(m[1]);
+					posY -= parseFloat(m[2]);
+				}
+			}
+			var posStr = 'translate(' + posX + 'px,' + posY + 'px)';
+			var rotStr = 'rotate(' + val.rotation() + 'rad)';
 			if (idxOfRotStart > -1)
 				trs = trs.slice(0, idxOfRotStart) + rotStr + trs.slice(idxOfRotEnd);
 			else
@@ -3717,7 +3748,7 @@ bpy.types.Object.minEmitSize = bpy.props.FloatProperty(name = 'Min initial parti
 bpy.types.Object.maxEmitSize = bpy.props.FloatProperty(name = 'Max initial particle size', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitSize'))
 bpy.types.Object.emitTint = bpy.props.FloatVectorProperty(name = 'Initial particle tint', subtype = 'COLOR', size = 4, min = 0, max = 1, default = [1, 1, 1, 1], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitTint'))
 bpy.types.Object.emitShapeType = bpy.props.EnumProperty(name = 'Shape type', items = SHAPE_TYPE_ITEMS, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitShapeType'))
-bpy.types.Object.emitRadius = bpy.props.FloatProperty(name = 'Shape type', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitRadius'))
+bpy.types.Object.emitRadius = bpy.props.FloatProperty(name = 'Shape radius', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'emitRadius'))
 bpy.types.Object.useMinMaxEmitRadiusNormalized = bpy.props.BoolProperty(name = 'Use min and max shape radius normalized', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxEmitRadiusNormalized'))
 bpy.types.Object.minEmitRadiusNormalized = bpy.props.FloatProperty(name = 'Min shape radius normalized', min = 0, max = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minEmitRadiusNormalized'))
 bpy.types.Object.maxEmitRadiusNormalized = bpy.props.FloatProperty(name = 'Max shape radius normalized', min = 0, max = 1, default = 1, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxEmitRadiusNormalized'))
