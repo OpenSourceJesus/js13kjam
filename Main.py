@@ -922,10 +922,15 @@ def RegisterPhysics (ob):
 			collider += ')'
 			colliderPosX = physicsX + ob.colliderOff[0]
 			colliderPosY = -physicsY - ob.colliderOff[1]
+			colliderRot = ob.rotation_euler.z
+			if attachColliderTo != []:
+				colliderPosX = ob.colliderOff[0]
+				colliderPosY = -ob.colliderOff[1]
+				colliderRot = 0
 			if colliderPosX != 0 or colliderPosY != 0:
 				collider += '.setTranslation(' + str(colliderPosX) + ', ' + str(colliderPosY) + ')'
-			if ob.rotation_euler.z != 0:
-				collider += '.setRotation(' + str(ob.rotation_euler.z) + ')'
+			if colliderRot != 0:
+				collider += '.setRotation(' + str(colliderRot) + ')'
 			collider += '.setActiveEvents(3);\n'
 			if ob.density != 0:
 				collider += colliderDescName + '.density = ' + str(ob.density) + ';\n'
@@ -938,6 +943,7 @@ def RegisterPhysics (ob):
 				if ob.isSensor:
 					collider += colliderName + '.setSensor(true);\n'
 				collider += 'collidersIds["' + ob.name + '"] = ' + colliderName + ';'
+				collider += 'colliderOffsetsIds["' + ob.name + '"] = [' + str(ob.colliderOff[0]) + ', ' + str(-ob.colliderOff[1]) + '];'
 			else:
 				for attachTo in attachColliderTo:
 					attachToVarName = GetVarNameForObject(attachTo)
@@ -945,6 +951,7 @@ def RegisterPhysics (ob):
 					if ob.isSensor:
 						collider += colliderName + attachToVarName + '.setSensor(true);\n'
 					collider += 'collidersIds["' + colliderName + attachToVarName + '"] = ' + colliderName + attachToVarName + ';\n'
+					collider += 'colliderOffsetsIds["' + colliderName + attachToVarName + '"] = [' + str(ob.colliderOff[0]) + ', ' + str(-ob.colliderOff[1]) + '];\n'
 			colliders[ob] = collider
 		if ob.jointExists:
 			jointName = obVarName + 'Joint'
@@ -2326,6 +2333,7 @@ var world;
 var rigidBodiesIds = {};
 var rigidBodyDescsIds = {};
 var collidersIds = {};
+var colliderOffsetsIds = {};
 RAPIER.init().then(() => {
 	// Gravity
 	world = new RAPIER.World(gravity);
@@ -2522,6 +2530,7 @@ class api
 			{
 				collider = world.createCollider(newColliderDesc);
 				collidersIds[newId] = collider;
+				colliderOffsetsIds[newId] = colliderOffsetsIds[id] || [0, 0];
 			}
 			colliders.push(collider);
 		}
@@ -2791,6 +2800,15 @@ class api
 			var idxOfRotStart = trs.indexOf('rotate(');
 			var idxOfRotEnd = trs.indexOf(')', idxOfRotStart) + 1;
 			var pos = val.translation();
+			if (dict === collidersIds)
+			{
+				var colliderOff = colliderOffsetsIds[key];
+				if (colliderOff)
+				{
+					pos.x -= colliderOff[0];
+					pos.y -= colliderOff[1];
+				}
+			}
 			var rect = node.getBoundingClientRect();
 			var posX = pos.x - rect.width / 2;
 			var posY = pos.y - rect.height / 2;
@@ -2826,7 +2844,10 @@ class api
 		if (rigidBodiesIds[node.id])
 			delete rigidBodiesIds[node.id];
 		else if (collidersIds[node.id])
+		{
 			delete collidersIds[node.id];
+			delete colliderOffsetsIds[node.id];
+		}
 		node.remove();
 	}
 	spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides = {})
