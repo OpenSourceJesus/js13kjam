@@ -952,6 +952,8 @@ def RegisterPhysics (ob):
 						collider += colliderName + attachToVarName + '.setSensor(true);\n'
 					collider += 'collidersIds["' + colliderName + attachToVarName + '"] = ' + colliderName + attachToVarName + ';\n'
 					collider += 'colliderOffsetsIds["' + colliderName + attachToVarName + '"] = [' + str(ob.colliderPosOff[0]) + ', ' + str(-ob.colliderPosOff[1]) + '];\n'
+					collider += 'if (!collidersIds["' + ob.name + '"]) collidersIds["' + ob.name + '"] = ' + colliderName + attachToVarName + ';\n'
+					collider += 'if (!colliderOffsetsIds["' + ob.name + '"]) colliderOffsetsIds["' + ob.name + '"] = [' + str(ob.colliderPosOff[0]) + ', ' + str(-ob.colliderPosOff[1]) + '];\n'
 			colliders[ob] = collider
 		if ob.jointExists:
 			jointName = obVarName + 'Joint'
@@ -1467,7 +1469,10 @@ def GetAttributes (ob):
 	output = {}
 	for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 		if getattr(ob, 'useBool%i' %i):
-			output[getattr(ob, 'boolName%i' %i)] = getattr(ob, 'boolVal%i' %i)
+			if getattr(ob, 'boolVal%i' %i):
+				output[getattr(ob, 'boolName%i' %i)] = 1
+			else:
+				output[getattr(ob, 'boolName%i' %i)] = 0
 	for i in range(MAX_ATTRIBUTES_PER_OBJECT):
 		if getattr(ob, 'useInt%i' %i):
 			output[getattr(ob, 'intName%i' %i)] = getattr(ob, 'intVal%i' %i)
@@ -2328,7 +2333,6 @@ PHYSICS = '''
 import RAPIER from 'https://cdn.jsdelivr.net/npm/@dimforge/rapier2d-compat/+esm';
 
 // Vars
-var world = globalThis.world;
 var rigidBodiesIds = globalThis.rigidBodiesIds || {};
 var rigidBodyDescsIds = globalThis.rigidBodyDescsIds || {};
 var collidersIds = globalThis.collidersIds || {};
@@ -2340,8 +2344,8 @@ globalThis.colliderOffsetsIds = colliderOffsetsIds;
 globalThis.RAPIER = RAPIER;
 RAPIER.init().then(() => {
 	// Gravity
-	world = new RAPIER.World(gravity);
-	globalThis.world = world;
+	globalThis.world = new RAPIER.World(gravity);
+	globalThis.eventQueue = new RAPIER.EventQueue(true);
 	// Settings
 	// Rigid Bodies
 	// Colliders
@@ -2540,11 +2544,9 @@ class api
 			if (rigidBody)
 				collider = world.createCollider(newColliderDesc, rigidBodiesIds[newId]);
 			else
-			{
 				collider = world.createCollider(newColliderDesc);
-				collidersIds[newId] = collider;
-				colliderOffsetsIds[newId] = colliderOffsetsIds[id] || [0, 0];
-			}
+			collidersIds[newId] = collider;
+			colliderOffsetsIds[newId] = colliderOffsetsIds[id] || [0, 0];
 			colliders.push(collider);
 		}
 		// Physics Section End
@@ -2958,7 +2960,7 @@ class api
 		});
 		// Physics Section Start
 		setInterval(() => {
-			world.step();
+			world.step(eventQueue);
 			$.set_transforms (rigidBodiesIds);
 			$.set_transforms (collidersIds);
 		}, 16);
