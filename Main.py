@@ -2331,14 +2331,20 @@ PHYSICS = '''
 import RAPIER from 'https://cdn.jsdelivr.net/npm/@dimforge/rapier2d-compat/+esm';
 
 // Vars
-var world;
-var rigidBodiesIds = {};
-var rigidBodyDescsIds = {};
-var collidersIds = {};
-var colliderOffsetsIds = {};
+var world = globalThis.world;
+var rigidBodiesIds = globalThis.rigidBodiesIds || {};
+var rigidBodyDescsIds = globalThis.rigidBodyDescsIds || {};
+var collidersIds = globalThis.collidersIds || {};
+var colliderOffsetsIds = globalThis.colliderOffsetsIds || {};
+globalThis.rigidBodiesIds = rigidBodiesIds;
+globalThis.rigidBodyDescsIds = rigidBodyDescsIds;
+globalThis.collidersIds = collidersIds;
+globalThis.colliderOffsetsIds = colliderOffsetsIds;
+globalThis.RAPIER = RAPIER;
 RAPIER.init().then(() => {
 	// Gravity
 	world = new RAPIER.World(gravity);
+	globalThis.world = world;
 	// Settings
 	// Rigid Bodies
 	// Colliders
@@ -4201,8 +4207,8 @@ class ObjectPanel (bpy.types.Panel):
 		if not ob:
 			return
 		self.layout.prop(ob, 'exportOb')
-		self.layout.label(text = 'Graphics')
 		if ob.type == 'CURVE' or ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
+			self.layout.label(text = 'Graphics')
 			self.layout.prop(ob, 'roundPosAndSize')
 			if ob.type == 'CURVE':
 				self.layout.prop(ob, 'roundAndCompressPathData')
@@ -4261,15 +4267,15 @@ class ObjectPanel (bpy.types.Panel):
 			self.layout.prop(ob, 'maxPosFrame')
 			self.layout.prop(ob, 'posPingPong')
 			self.layout.prop(ob, 'resPercent')
-		if ob.type == 'MESH' or ob.type == 'GREASEPENCIL':
-			for i in range(GetLastUsedPropertyIndex(ob, 'useMinVisibleClrValue', MAX_POTRACE_PASSES_PER_OBJECT_MAT) + 2, 1):
-				row = self.layout.row()
-				row.prop(ob, 'minVisibleClrValue%i' %i)
-				row.prop(ob, 'tintOutput%i' %i)
-				if i > 0:
-					row.prop(ob, 'useMinVisibleClrValue%i' %i)
-			for i in range(GetLastUsedPropertyIndex(ob, 'renderCam', MAX_RENDER_CAMS_PER_OBJECT) + 2):
-				self.layout.prop(ob, 'renderCam%i' %i)
+			if ob.type != 'CURVE':
+				for i in range(GetLastUsedPropertyIndex(ob, 'useMinVisibleClrValue', MAX_POTRACE_PASSES_PER_OBJECT_MAT) + 2, 1):
+					row = self.layout.row()
+					row.prop(ob, 'minVisibleClrValue%i' %i)
+					row.prop(ob, 'tintOutput%i' %i)
+					if i > 0:
+						row.prop(ob, 'useMinVisibleClrValue%i' %i)
+				for i in range(GetLastUsedPropertyIndex(ob, 'renderCam', MAX_RENDER_CAMS_PER_OBJECT) + 2):
+					self.layout.prop(ob, 'renderCam%i' %i)
 
 @bpy.utils.register_class
 class LocalScriptsPanel (bpy.types.Panel):
