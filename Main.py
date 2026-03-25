@@ -1585,13 +1585,9 @@ def GetBlenderData ():
 				if isInit:
 					if script not in templateScripts[sceneId]['init']:
 						templateScripts[sceneId]['init'].append(script)
-					if script not in initCode:
-						initCode.append(script)
 				else:
 					if script not in templateScripts[sceneId]['update']:
 						templateScripts[sceneId]['update'].append(script)
-					if script not in updateCode:
-						updateCode.append(script)
 	world = bpy.context.world
 	if world:
 		for scriptInfo in GetScripts(world):
@@ -2185,6 +2181,7 @@ for (var e of g)
 	$.register_instance (e[0], e[0]);
 	$.run_init_scripts (e[0]);
 }
+// Init
 $.main ()
 '''
 JS = '''
@@ -2377,6 +2374,14 @@ class api
 	_prepare_script (code)
 	{
 		return code
+			.replace(/(^|[^\\w$.])(new\\s+)?globalThis\\.RAPIER\\.Vector2\\s*\\(/g, function (_, prefix, hasNew)
+			{
+				return prefix + (hasNew ? '' : 'new ') + 'globalThis.RAPIER.Vector2(';
+			})
+			.replace(/(^|[^\\w$.])(new\\s+)?RAPIER\\.Vector2\\s*\\(/g, function (_, prefix, hasNew)
+			{
+				return prefix + (hasNew ? '' : 'new ') + 'RAPIER.Vector2(';
+			})
 			.replace(/^async function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = async ($2) => {')
 			.replace(/^function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = ($2) => {');
 	}
@@ -2438,9 +2443,9 @@ class api
 	}
 	add_script (instanceId, code, type)
 	{
-		if (!scripts[instanceId])
-			scripts[instanceId] = { init: [], update: [] };
-		scripts[instanceId][type].push(code);
+		if (!this.scripts[instanceId])
+			this.scripts[instanceId] = { init: [], update: [] };
+		this.scripts[instanceId][type].push(code);
 		if (type === 'init')
 		{
 			this._currentInstanceId = instanceId;
@@ -2450,8 +2455,8 @@ class api
 	}
 	remove_script (instanceId, type, index)
 	{
-		if (scripts[instanceId] && scripts[instanceId][type])
-			scripts[instanceId][type].splice(index, 1);
+		if (this.scripts[instanceId] && this.scripts[instanceId][type])
+			this.scripts[instanceId][type].splice(index, 1);
 	}
 	get_svg_paths_and_strings (framesStrings, cyclic)
 	{
@@ -2945,6 +2950,7 @@ class api
 			$.prevTicks = t;
 			window.requestAnimationFrame(f);
 			$.run_update_scripts();
+			// Update
 		};
 		window.requestAnimationFrame(t => {
 			$.prevTicks = t;
@@ -3015,8 +3021,6 @@ def GenJs (world):
 		physics = physics.replace('// Char Controllers', '\n'.join(charControllers.values()))
 		js += [physics]
 	js = '\n'.join(js)
-	js = js.replace('// Init', '\n'.join('(function(){ ' + s + ' })();' for s in initCode))
-	js = js.replace('// Update', '\n'.join('(function(){ ' + s + ' })();' for s in updateCode))
 	datas = json.dumps(datas).replace(', ', ',').replace(': ', ':')
 	clrs = json.dumps(clrs).replace(' ', '')
 	prefabsJson = json.dumps(prefabs).replace(', ', ',').replace(': ', ':')
@@ -3028,9 +3032,13 @@ def GenJs (world):
 	jsDataVars = 'var D=`' + datas + '`\nvar p=`' + pathsCombinedEsc + '`;\nvar C=`' + clrs + '`\nvar P=`' + prefabsJson + '`\nvar PT=`' + ptEsc + '`\nvar PPC=' + str(prefabPathCount) + '\n'
 	templateScriptsJson = json.dumps(templateScripts)
 	templateScriptsInlined = 'JSON.parse("' + templateScriptsJson.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r') + '")'
+	initInjected = '\n'.join('(function(){ ' + s + ' })();' for s in initCode)
+	updateInjected = '\n'.join('(function(){ ' + s + ' })();' for s in updateCode)
 	if world.minifyMethod == 'terser':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
 		js += jsDataVars + JS_SUFFIX
+		js = js.replace('// Init', initInjected)
+		js = js.replace('// Update', updateInjected)
 		js = js.replace('__TEMPLATE_SCRIPTS_JSON__', templateScriptsInlined)
 		open(jsTmp, 'w').write(js)
 		cmd = ['python3', 'tinifyjs/Main.py', '-i=' + jsTmp, '-o=' + jsTmp, '-no_compress', dontMangleArg]
@@ -3040,6 +3048,8 @@ def GenJs (world):
 	elif world.minifyMethod == 'roadroller':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
 		js += jsDataVars + JS_SUFFIX
+		js = js.replace('// Init', initInjected)
+		js = js.replace('// Update', updateInjected)
 		js = js.replace('__TEMPLATE_SCRIPTS_JSON__', templateScriptsInlined)
 		open(jsTmp, 'w').write(js)
 		cmd = ['npx', 'roadroller', jsTmp, '-o', jsTmp]
@@ -3048,6 +3058,8 @@ def GenJs (world):
 		js = open(jsTmp, 'r').read()
 	else:
 		js += '\n' + jsDataVars + JS_SUFFIX.replace('\t', '')
+		js = js.replace('// Init', initInjected)
+		js = js.replace('// Update', updateInjected)
 		js = js.replace('__TEMPLATE_SCRIPTS_JSON__', templateScriptsInlined)
 	return js
 
