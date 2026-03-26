@@ -293,6 +293,7 @@ prefabPathsDatas = []
 templateOnlyObs = set ()
 instancedCollectionObs = set ()
 collectionInstanceOffsetStack = []
+collectionInstanceCopyCounts = {}
 
 def GetObjectsInCollectionRecursive (coll):
 	obSet = set()
@@ -304,6 +305,31 @@ def GetCollectionInstanceOffset ():
 	if collectionInstanceOffsetStack == []:
 		return Vector((0, 0, 0))
 	return collectionInstanceOffsetStack[-1]
+
+def GetCollectionInstanceCopyName (templateOb, instanceOb):
+	global collectionInstanceCopyCounts
+	key = instanceOb.name + '|' + templateOb.name
+	count = collectionInstanceCopyCounts.get(key, 0)
+	collectionInstanceCopyCounts[key] = count + 1
+	copySuffix = '' if count == 0 else '_' + str(count)
+	return templateOb.name + '@' + instanceOb.name + copySuffix
+
+def AddCollectionInstanceCopy (templateOb, instanceOb):
+	pos = GetObjectPosition(templateOb)
+	instanceName = GetCollectionInstanceCopyName(templateOb, instanceOb)
+	prevRotMode = templateOb.rotation_mode
+	templateOb.rotation_mode = 'XYZ'
+	rot = TryChangeToInt(math.degrees(templateOb.rotation_euler.z))
+	templateOb.rotation_mode = prevRotMode
+	datas.append([
+		templateOb.name,
+		instanceName,
+		TryChangeToInt(pos[0]),
+		TryChangeToInt(pos[1]),
+		rot,
+		GetAttributes(templateOb)
+	])
+	return instanceName
 
 def GatherPrefabDefinition (coll):
 	obSet = GetObjectsInCollectionRecursive(coll)
@@ -796,8 +822,11 @@ def ExportObject (ob):
 				rootChildren = [ c for c in instancedSet if c.parent not in instancedSet or c.parent is None ]
 				collectionInstanceOffsetStack.append(GetCollectionInstanceOffset() + ob.location.copy())
 				for child in rootChildren:
-					ExportObject (child)
-					childrenNames.append(child.name)
+					if child in exportedObs:
+						childrenNames.append(AddCollectionInstanceCopy(child, ob))
+					else:
+						ExportObject (child)
+						childrenNames.append(child.name)
 				collectionInstanceOffsetStack.pop()
 			else:
 				for child in ob.children:
@@ -1534,7 +1563,7 @@ def Py2Js (pyCode):
 	return open(jsScriptPath, 'r').read()
 
 def GetBlenderData ():
-	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs
+	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs, collectionInstanceCopyCounts
 	vars = []
 	attributes = {}
 	pivots = {}
@@ -1560,6 +1589,7 @@ def GetBlenderData ():
 	templateScripts = {}
 	prefabTemplateDatas = []
 	prefabPathsDatas = []
+	collectionInstanceCopyCounts = {}
 	instancedObjects = GetInstancedObjects(bpy.context.scene)
 	inPrefabColl = set()
 	inNonPrefabColl = set()
@@ -2117,6 +2147,7 @@ var prefabTemplatesData = typeof PT !== 'undefined' ? JSON.parse(PT) : [];
 var prefabPathCount = typeof PPC !== 'undefined' ? PPC : 0;
 var templateIdsToHide = [];
 var templateG = [];
+var templateCopies = [];
 var ti = 0;
 for (var e of prefabTemplatesData)
 {
@@ -2134,16 +2165,74 @@ for (var e of prefabTemplatesData)
 	}
 	else if (l > 5)
 	{
-		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5]);
-		templateIdsToHide.push(e[1]);
+		templateCopies.push(e);
 	}
 	else
 		templateG.push(e);
 }
-for (var e of templateG)
+function children_ready (childIds)
+{
+	for (var childId of childIds)
+	{
+		if (!document.getElementById(childId))
+			return false;
+	}
+	return true;
+}
+function build_child_parent_map (groups)
+{
+	var output = {};
+	for (var g of groups)
+	{
+		var parentId = g[0];
+		var childIds = g[3];
+		for (var childId of childIds)
+			output[childId] = parentId;
+	}
+	return output;
+}
+var templateChildParent = build_child_parent_map(templateG);
+var pendingTemplateGroups = templateG.slice();
+var pendingTemplateCopies = templateCopies.slice();
+var templateSafety = pendingTemplateGroups.length + pendingTemplateCopies.length + 1;
+while ((pendingTemplateGroups.length > 0 || pendingTemplateCopies.length > 0) && templateSafety > 0)
+{
+	templateSafety --;
+	var progressed = false;
+	for (var idx = pendingTemplateCopies.length - 1; idx >= 0; idx --)
+	{
+		var e = pendingTemplateCopies[idx];
+		var parentId = templateChildParent[e[1]] || null;
+		if (!document.getElementById(e[0]))
+			continue;
+		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
+		templateIdsToHide.push(e[1]);
+		pendingTemplateCopies.splice(idx, 1);
+		progressed = true;
+	}
+	for (var idx = pendingTemplateGroups.length - 1; idx >= 0; idx --)
+	{
+		var e = pendingTemplateGroups[idx];
+		if (!children_ready(e[3]))
+			continue;
+		add_div (e[0], [e[1], e[2]], e[3], e[4]);
+		templateIdsToHide.push(e[0]);
+		pendingTemplateGroups.splice(idx, 1);
+		progressed = true;
+	}
+	if (!progressed)
+		break;
+}
+for (var e of pendingTemplateGroups)
 {
 	add_div (e[0], [e[1], e[2]], e[3], e[4]);
 	templateIdsToHide.push(e[0]);
+}
+for (var e of pendingTemplateCopies)
+{
+	var parentId = templateChildParent[e[1]] || null;
+	$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
+	templateIdsToHide.push(e[1]);
 }
 for (var id of templateIdsToHide)
 {
@@ -2155,6 +2244,7 @@ var i = prefabPathCount;
 var prefabs = typeof P !== 'undefined' ? JSON.parse(P) : {};
 var templateScripts = __TEMPLATE_SCRIPTS_JSON__;
 var g = [];
+var copies = [];
 for (var e of d)
 {
 	var l = e.length;
@@ -2173,18 +2263,57 @@ for (var e of d)
 	}
 	else if (l > 5)
 	{
-		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5]);
-		$.register_instance (e[0], e[1]);
-		$.run_init_scripts (e[1]);
+		copies.push(e);
 	}
 	else
 		g.push(e);
 }
-for (var e of g)
+var childParent = build_child_parent_map(g);
+var pendingGroups = g.slice();
+var pendingCopies = copies.slice();
+var runtimeSafety = pendingGroups.length + pendingCopies.length + 1;
+while ((pendingGroups.length > 0 || pendingCopies.length > 0) && runtimeSafety > 0)
+{
+	runtimeSafety --;
+	var progressed = false;
+	for (var idx = pendingCopies.length - 1; idx >= 0; idx --)
+	{
+		var e = pendingCopies[idx];
+		var parentId = childParent[e[1]] || null;
+		if (!document.getElementById(e[0]))
+			continue;
+		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
+		$.register_instance (e[0], e[1]);
+		$.run_init_scripts (e[1]);
+		pendingCopies.splice(idx, 1);
+		progressed = true;
+	}
+	for (var idx = pendingGroups.length - 1; idx >= 0; idx --)
+	{
+		var e = pendingGroups[idx];
+		if (!children_ready(e[3]))
+			continue;
+		add_div (e[0], [e[1], e[2]], e[3], e[4]);
+		$.register_instance (e[0], e[0]);
+		$.run_init_scripts (e[0]);
+		pendingGroups.splice(idx, 1);
+		progressed = true;
+	}
+	if (!progressed)
+		break;
+}
+for (var e of pendingGroups)
 {
 	add_div (e[0], [e[1], e[2]], e[3], e[4]);
 	$.register_instance (e[0], e[0]);
 	$.run_init_scripts (e[0]);
+}
+for (var e of pendingCopies)
+{
+	var parentId = childParent[e[1]] || null;
+	$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
+	$.register_instance (e[0], e[1]);
+	$.run_init_scripts (e[1]);
 }
 // Init
 $.main ()
@@ -2304,7 +2433,7 @@ function add_div (id, pos, childIds = [], attributes = {}, txt = '')
 {
 	var group = document.createElement('div');
 	group.id = id;
-	group.style.position = 'fixed';
+	group.style.position = 'absolute';
 	group.style.transform = 'translate(' + pos[0] + 'px, ' + pos[1] + 'px)';
 	group.innerHTML = txt;
 	for (var [key, val] of Object.entries(attributes))
@@ -2313,7 +2442,7 @@ function add_div (id, pos, childIds = [], attributes = {}, txt = '')
 	for (var childId of childIds)
 	{
 		var node = document.getElementById(childId);
-		node.style.position = 'fixed';
+		node.style.position = 'absolute';
 		group.appendChild(node);
 	}
 	return group;
@@ -2363,6 +2492,7 @@ class api
 		this.scripts = {};
 		this.scriptScopes = {};
 		this._currentInstanceId = null;
+		this.pendingPhysicsCopies = [];
 	}
 	register_instance (templateId, instanceId)
 	{
@@ -2518,7 +2648,135 @@ class api
 			output += 'Z';
 		return output;
 	}
-	copy_node (id, newId, pos, rot = 0, attributes = {})
+	get_local_transform (node)
+	{
+		var trs = '';
+		if (node && node.style && node.style.transform)
+			trs = node.style.transform;
+		else if (node && node.getAttribute)
+			trs = node.getAttribute('transform') || '';
+		var tx = 0;
+		var ty = 0;
+		var rz = 0;
+		var tm = trs.match(/translate\\(\\s*([\\-\\d.]+)(?:px)?\\s*,\\s*([\\-\\d.]+)(?:px)?\\s*\\)/);
+		if (tm)
+		{
+			tx = parseFloat(tm[1]);
+			ty = parseFloat(tm[2]);
+		}
+		var rm = trs.match(/rotate\\(\\s*([\\-\\d.]+)\\s*(deg|rad)?\\s*\\)/);
+		if (rm)
+		{
+			rz = parseFloat(rm[1]);
+			if (!rm[2] || rm[2] == 'deg')
+				rz *= Math.PI / 180;
+		}
+		return {x : tx, y : ty, rot : rz};
+	}
+	get_world_transform (node)
+	{
+		var chain = [];
+		var curr = node;
+		while (curr && curr !== document.body)
+		{
+			chain.push(curr);
+			curr = curr.parentElement;
+		}
+		chain.reverse();
+		var world = {x : 0, y : 0, rot : 0};
+		for (var n of chain)
+		{
+			var local = this.get_local_transform(n);
+			var dx = local.x * Math.cos(world.rot) - local.y * Math.sin(world.rot);
+			var dy = local.x * Math.sin(world.rot) + local.y * Math.cos(world.rot);
+			world.x += dx;
+			world.y += dy;
+			world.rot += local.rot;
+		}
+		return world;
+	}
+	clone_node_physics (id, newId, worldTrs)
+	{
+		var world = globalThis.world;
+		if (!world)
+			return false;
+		if (rigidBodiesIds[newId] || collidersIds[newId])
+			return true;
+		var rigidBody = rigidBodiesIds[id];
+		var collider = collidersIds[id];
+		if (!rigidBody && !collider)
+			return false;
+		var srcNode = document.getElementById(id);
+		var srcWorld = srcNode ? this.get_world_transform(srcNode) : {x : 0, y : 0, rot : 0};
+		var baseOff = colliderOffsetsIds[id] || [0, 0];
+		var colliders = [];
+		if (rigidBody)
+		{
+			rigidBodiesIds[newId] = world.createRigidBody(new RAPIER.RigidBodyDesc(rigidBody.bodyType()).setAngularDamping(rigidBody.angularDamping()).setCanSleep(rigidBodyDescsIds[id].canSleep).setCcdEnabled(rigidBody.isCcdEnabled()).setDominanceGroup(rigidBody.dominanceGroup()).setEnabled(rigidBody.isEnabled()).setGravityScale(rigidBody.gravityScale()).setLinearDamping(rigidBody.linearDamping()).lockRotations(rigidBody.lockRotations()).setRotation(worldTrs.rot).setTranslation(worldTrs.x, worldTrs.y));
+			for (var i = 0; i < rigidBody.numColliders(); i ++)
+				colliders.push(rigidBody.collider(i));
+		}
+		if (collider)
+		{
+			var activeEvents = typeof collider.activeEvents == 'function' ? collider.activeEvents() : collider.activeEvents;
+			var collisionGroups = typeof collider.collisionGroups == 'function' ? collider.collisionGroups() : collider.collisionGroups;
+			var density = typeof collider.density == 'function' ? collider.density() : collider.density;
+			var enabled = typeof collider.isEnabled == 'function' ? collider.isEnabled() : collider.enabled;
+			var sensor = typeof collider.isSensor == 'function' ? collider.isSensor() : false;
+			var newColliderDesc;
+			if (rigidBody)
+			{
+				// For attached colliders, translation/rotation are body-local.
+				var localRot = collider.rotation();
+				if (typeof rigidBody.rotation == 'function')
+					localRot -= rigidBody.rotation();
+				newColliderDesc = new RAPIER.ColliderDesc(collider.shape).setRotation(localRot).setTranslation(baseOff[0], baseOff[1]);
+				collider = world.createCollider(newColliderDesc, rigidBodiesIds[newId]);
+			}
+			else
+			{
+				var worldRot = collider.rotation();
+				var rotDelta = worldRot - srcWorld.rot;
+				var tx = worldTrs.x + baseOff[0];
+				var ty = worldTrs.y + baseOff[1];
+				newColliderDesc = new RAPIER.ColliderDesc(collider.shape).setRotation(worldTrs.rot + rotDelta).setTranslation(tx, ty);
+				collider = world.createCollider(newColliderDesc);
+			}
+			if (activeEvents !== undefined && activeEvents !== null)
+				collider.setActiveEvents(activeEvents);
+			if (collisionGroups !== undefined && collisionGroups !== null && !Number.isNaN(Number(collisionGroups)))
+				collider.setCollisionGroups(Number(collisionGroups));
+			if (density !== undefined && density !== null && !Number.isNaN(Number(density)))
+				collider.setDensity(Number(density));
+			if (enabled !== undefined && enabled !== null)
+				collider.setEnabled(!!enabled);
+			if (sensor)
+				collider.setSensor(true);
+			collidersIds[newId] = collider;
+			colliderOffsetsIds[newId] = colliderOffsetsIds[id] || [0, 0];
+			colliders.push(collider);
+		}
+		return true;
+	}
+	resolve_pending_physics_copies ()
+	{
+		if (!globalThis.world || this.pendingPhysicsCopies.length == 0)
+			return;
+		for (var i = this.pendingPhysicsCopies.length - 1; i >= 0; i --)
+		{
+			var p = this.pendingPhysicsCopies[i];
+			var node = document.getElementById(p.newId);
+			if (!node)
+			{
+				this.pendingPhysicsCopies.splice(i, 1);
+				continue;
+			}
+			var worldTrs = this.get_world_transform(node);
+			if (this.clone_node_physics(p.id, p.newId, worldTrs))
+				this.pendingPhysicsCopies.splice(i, 1);
+		}
+	}
+	copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null)
 	{
 		var copy = document.getElementById(id).cloneNode(true);
 		copy.id = newId;
@@ -2527,29 +2785,21 @@ class api
 		copy.style.transform = 'translate(' + pos[0] + ', ' + pos[1] + ')rotate(' + rot + 'deg)';
 		for (var [key, val] of Object.entries(attributes))
 			copy.setAttribute(key, val);
-		document.body.appendChild(copy);
+		var parent = null;
+		if (parentId)
+			parent = document.getElementById(parentId);
+		var deferPhysics = parentId && !parent;
+		if (parent)
+			parent.appendChild(copy);
+		else
+			document.body.appendChild(copy);
+		var worldTrs = this.get_world_transform(copy);
 		var colliders = [];
-		// Physics Section Start
-		var rigidBody = rigidBodiesIds[id];
-		if (rigidBody)
-		{
-			rigidBodiesIds[newId] = world.createRigidBody(new RAPIER.RigidBodyDesc(rigidBody.bodyType()).setAngularDamping(rigidBody.angularDamping()).setCanSleep(rigidBodyDescsIds[id].canSleep).setCcdEnabled(rigidBody.isCcdEnabled()).setDominanceGroup(rigidBody.dominanceGroup()).setEnabled(rigidBody.isEnabled()).setGravityScale(rigidBody.gravityScale()).setLinearDamping(rigidBody.linearDamping()).lockRotations(rigidBody.lockRotations()).setRotation(rot).setTranslation(pos[0], pos[1]));
-			for (var i = 0; i < rigidBody.numColliders(); i ++)
-				colliders.push(rigidBody.collider(i));
-		}
-		var collider = collidersIds[id];
-		if (collider)
-		{
-			var newColliderDesc = new RAPIER.ColliderDesc(collider.shape).setActiveEvents(collider.activeEvents).setCollisionGroups(collider.collisionGroups).setDensity(collider.density).setEnabled(collider.enabled).setRotation(collider.rotation).setTranslation(pos[0], pos[1]);
-			if (rigidBody)
-				collider = world.createCollider(newColliderDesc, rigidBodiesIds[newId]);
-			else
-				collider = world.createCollider(newColliderDesc);
-			collidersIds[newId] = collider;
-			colliderOffsetsIds[newId] = colliderOffsetsIds[id] || [0, 0];
-			colliders.push(collider);
-		}
-		// Physics Section End
+		var hadPhysics = false;
+		if (!deferPhysics)
+			hadPhysics = this.clone_node_physics(id, newId, worldTrs);
+		if (!hadPhysics)
+			this.pendingPhysicsCopies.push({id : id, newId : newId});
 		return [copy, colliders];
 	}
 	add_radial_gradient (id, pos, zIdx, diameter, clr, clr2, clr3, clrPositions, subtractive)
@@ -2960,7 +3210,10 @@ class api
 		});
 		// Physics Section Start
 		setInterval(() => {
-			world.step(eventQueue);
+			if (!globalThis.world || !globalThis.eventQueue)
+				return;
+			globalThis.world.step(globalThis.eventQueue);
+			$.resolve_pending_physics_copies();
 			$.set_transforms (rigidBodiesIds);
 			$.set_transforms (collidersIds);
 		}, 16);
