@@ -817,7 +817,12 @@ def ExportObject (ob):
 				imgsPaths.append(imgPath)
 		else:
 			childrenNames = []
+			collectionInstanceRot = None
 			if getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
+				prevRotMode = ob.rotation_mode
+				ob.rotation_mode = 'XYZ'
+				collectionInstanceRot = TryChangeToInt(math.degrees(-ob.rotation_euler.z))
+				ob.rotation_mode = prevRotMode
 				instancedSet = { c for c in GetObjectsInCollectionRecursive(ob.instance_collection) if c.exportOb }
 				rootChildren = [ c for c in instancedSet if c.parent not in instancedSet or c.parent is None ]
 				collectionInstanceOffsetStack.append(GetCollectionInstanceOffset() + ob.location.copy())
@@ -832,7 +837,10 @@ def ExportObject (ob):
 				for child in ob.children:
 					ExportObject (child)
 					childrenNames.append(child.name)
-			datas.append([ob.name, TryChangeToInt(ob.location.x), TryChangeToInt(-ob.location.y), childrenNames, GetAttributes(ob)])
+			if collectionInstanceRot is None:
+				datas.append([ob.name, TryChangeToInt(ob.location.x), TryChangeToInt(-ob.location.y), childrenNames, GetAttributes(ob)])
+			else:
+				datas.append([ob.name, TryChangeToInt(ob.location.x), TryChangeToInt(-ob.location.y), childrenNames, GetAttributes(ob), collectionInstanceRot])
 	exportedObs.append(ob)
 
 def RegisterPhysics (ob):
@@ -2163,6 +2171,8 @@ for (var e of prefabTemplatesData)
 		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
 		templateIdsToHide.push(e[0]);
 	}
+	else if (Array.isArray(e[3]))
+		templateG.push(e);
 	else if (l > 5)
 	{
 		templateCopies.push(e);
@@ -2215,7 +2225,7 @@ while ((pendingTemplateGroups.length > 0 || pendingTemplateCopies.length > 0) &&
 		var e = pendingTemplateGroups[idx];
 		if (!children_ready(e[3]))
 			continue;
-		add_div (e[0], [e[1], e[2]], e[3], e[4]);
+		add_div (e[0], [e[1], e[2]], e[3], e[4], '', e[5] || 0);
 		templateIdsToHide.push(e[0]);
 		pendingTemplateGroups.splice(idx, 1);
 		progressed = true;
@@ -2225,7 +2235,7 @@ while ((pendingTemplateGroups.length > 0 || pendingTemplateCopies.length > 0) &&
 }
 for (var e of pendingTemplateGroups)
 {
-	add_div (e[0], [e[1], e[2]], e[3], e[4]);
+	add_div (e[0], [e[1], e[2]], e[3], e[4], '', e[5] || 0);
 	templateIdsToHide.push(e[0]);
 }
 for (var e of pendingTemplateCopies)
@@ -2261,6 +2271,8 @@ for (var e of d)
 		$.register_instance (e[0], e[0]);
 		$.run_init_scripts (e[0]);
 	}
+	else if (Array.isArray(e[3]))
+		g.push(e);
 	else if (l > 5)
 	{
 		copies.push(e);
@@ -2293,7 +2305,7 @@ while ((pendingGroups.length > 0 || pendingCopies.length > 0) && runtimeSafety >
 		var e = pendingGroups[idx];
 		if (!children_ready(e[3]))
 			continue;
-		add_div (e[0], [e[1], e[2]], e[3], e[4]);
+		add_div (e[0], [e[1], e[2]], e[3], e[4], '', e[5] || 0);
 		$.register_instance (e[0], e[0]);
 		$.run_init_scripts (e[0]);
 		pendingGroups.splice(idx, 1);
@@ -2304,7 +2316,7 @@ while ((pendingGroups.length > 0 || pendingCopies.length > 0) && runtimeSafety >
 }
 for (var e of pendingGroups)
 {
-	add_div (e[0], [e[1], e[2]], e[3], e[4]);
+	add_div (e[0], [e[1], e[2]], e[3], e[4], '', e[5] || 0);
 	$.register_instance (e[0], e[0]);
 	$.run_init_scripts (e[0]);
 }
@@ -2429,12 +2441,14 @@ function random (min, max)
 {
 	return Math.random() * (max - min) + min;
 }
-function add_div (id, pos, childIds = [], attributes = {}, txt = '')
+function add_div (id, pos, childIds = [], attributes = {}, txt = '', rot = 0)
 {
 	var group = document.createElement('div');
 	group.id = id;
 	group.style.position = 'absolute';
 	group.style.transform = 'translate(' + pos[0] + 'px, ' + pos[1] + 'px)';
+	if (rot != 0)
+		group.style.transform += ' rotate(' + rot + 'deg)';
 	group.innerHTML = txt;
 	for (var [key, val] of Object.entries(attributes))
 		group.setAttribute(key, val);
@@ -3078,6 +3092,7 @@ class api
 			var posX = pos.x - rect.width / 2;
 			var posY = pos.y - rect.height / 2;
 			var parent = node.parentElement;
+			var parentRot = 0;
 			if (parent && parent !== document.body)
 			{
 				var parentTrs = parent.style ? parent.style.transform || '' : '';
@@ -3087,9 +3102,22 @@ class api
 					posX -= parseFloat(m[1]);
 					posY -= parseFloat(m[2]);
 				}
+				var rm = parentTrs.match(/rotate\\(\\s*([\\-\\d.]+)(deg|rad)\\s*\\)/);
+				if (rm)
+				{
+					parentRot = parseFloat(rm[1]);
+					if (rm[2] === 'deg')
+						parentRot *= Math.PI / 180;
+					var cos = Math.cos(-parentRot);
+					var sin = Math.sin(-parentRot);
+					var lx = posX * cos - posY * sin;
+					var ly = posX * sin + posY * cos;
+					posX = lx;
+					posY = ly;
+				}
 			}
 			var posStr = 'translate(' + posX + 'px,' + posY + 'px)';
-			var rotStr = 'rotate(' + val.rotation() + 'rad)';
+			var rotStr = 'rotate(' + (val.rotation() - parentRot) + 'rad)';
 			if (idxOfRotStart > -1)
 				trs = trs.slice(0, idxOfRotStart) + rotStr + trs.slice(idxOfRotEnd);
 			else
