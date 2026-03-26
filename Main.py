@@ -2174,19 +2174,15 @@ for (var e of prefabTemplatesData)
 	else if (Array.isArray(e[3]))
 		templateG.push(e);
 	else if (l > 5)
-	{
 		templateCopies.push(e);
-	}
 	else
 		templateG.push(e);
 }
 function children_ready (childIds)
 {
 	for (var childId of childIds)
-	{
 		if (!document.getElementById(childId))
 			return false;
-	}
 	return true;
 }
 function build_child_parent_map (groups)
@@ -3070,14 +3066,11 @@ class api
 	{
 		for (var [key, val] of Object.entries(dict))
 		{
+			if (dict === collidersIds && rigidBodiesIds[key])
+				continue;
 			var node = document.getElementById(key);
 			if (!node)
 				continue;
-			var trs = node.style.transform;
-			var idxOfPosStart = trs.indexOf('translate(');
-			var idxOfPosEnd = trs.indexOf(')', idxOfPosStart) + 1;
-			var idxOfRotStart = trs.indexOf('rotate(');
-			var idxOfRotEnd = trs.indexOf(')', idxOfRotStart) + 1;
 			var pos = val.translation();
 			if (dict === collidersIds)
 			{
@@ -3092,44 +3085,23 @@ class api
 			var posX = pos.x - rect.width / 2;
 			var posY = pos.y - rect.height / 2;
 			var parent = node.parentElement;
-			var parentRot = 0;
+			var parentWorld = {x : 0, y : 0, rot : 0};
 			if (parent && parent !== document.body)
 			{
-				var parentTrs = parent.style ? parent.style.transform || '' : '';
-				var m = parentTrs.match(/translate\\(\\s*([\\-\\d.]+)(?:px)?\\s*,\\s*([\\-\\d.]+)(?:px)?\\s*\\)/);
-				if (m)
-				{
-					posX -= parseFloat(m[1]);
-					posY -= parseFloat(m[2]);
-				}
-				var rm = parentTrs.match(/rotate\\(\\s*([\\-\\d.]+)(deg|rad)\\s*\\)/);
-				if (rm)
-				{
-					parentRot = parseFloat(rm[1]);
-					if (rm[2] === 'deg')
-						parentRot *= Math.PI / 180;
-					var cos = Math.cos(-parentRot);
-					var sin = Math.sin(-parentRot);
-					var lx = posX * cos - posY * sin;
-					var ly = posX * sin + posY * cos;
-					posX = lx;
-					posY = ly;
-				}
+				parentWorld = this.get_world_transform(parent);
+				posX -= parentWorld.x;
+				posY -= parentWorld.y;
+				var cos = Math.cos(-parentWorld.rot);
+				var sin = Math.sin(-parentWorld.rot);
+				var lx = posX * cos - posY * sin;
+				var ly = posX * sin + posY * cos;
+				posX = lx;
+				posY = ly;
 			}
-			var posStr = 'translate(' + posX + 'px,' + posY + 'px)';
-			var rotStr = 'rotate(' + (val.rotation() - parentRot) + 'rad)';
-			if (idxOfRotStart > -1)
-				trs = trs.slice(0, idxOfRotStart) + rotStr + trs.slice(idxOfRotEnd);
-			else
-			{
-				trs = rotStr + trs;
-				idxOfPosEnd += rotStr.length;
-			}
-			if (idxOfPosStart > -1)
-				trs = posStr + trs.slice(idxOfPosEnd);
-			else
-				trs += posStr;
-			node.style.transform = trs;
+			var localRot = val.rotation();
+			if (parent && parent !== document.body)
+				localRot -= parentWorld.rot;
+			node.style.transform = 'translate(' + posX + 'px,' + posY + 'px) rotate(' + localRot + 'rad)';
 		}
 	}
 	remove (node)
