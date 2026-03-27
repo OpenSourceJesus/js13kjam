@@ -293,6 +293,7 @@ prefabPathsDatas = []
 templateOnlyObs = set ()
 instancedCollectionObs = set ()
 collectionInstanceOffsetStack = []
+collectionInstanceTransformStack = []
 collectionInstanceCopyCounts = {}
 
 def GetObjectsInCollectionRecursive (coll):
@@ -302,9 +303,20 @@ def GetObjectsInCollectionRecursive (coll):
 	return obSet
 
 def GetCollectionInstanceOffset ():
-	if collectionInstanceOffsetStack == []:
-		return Vector((0, 0, 0))
-	return collectionInstanceOffsetStack[-1]
+	instancePos, _ = GetCollectionInstanceTransform()
+	return instancePos
+
+def Rotate2DByAngle (v, angle):
+	return Vector((
+		v.x * math.cos(angle) - v.y * math.sin(angle),
+		v.x * math.sin(angle) + v.y * math.cos(angle),
+		0
+	))
+
+def GetCollectionInstanceTransform ():
+	if collectionInstanceTransformStack == []:
+		return (Vector((0, 0, 0)), 0)
+	return collectionInstanceTransformStack[-1]
 
 def GetCollectionInstanceCopyName (templateOb, instanceOb):
 	global collectionInstanceCopyCounts
@@ -822,10 +834,15 @@ def ExportObject (ob):
 				prevRotMode = ob.rotation_mode
 				ob.rotation_mode = 'XYZ'
 				collectionInstanceRot = TryChangeToInt(math.degrees(-ob.rotation_euler.z))
+				collectionInstanceRotRad = ob.rotation_euler.z
 				ob.rotation_mode = prevRotMode
 				instancedSet = { c for c in GetObjectsInCollectionRecursive(ob.instance_collection) if c.exportOb }
 				rootChildren = [ c for c in instancedSet if c.parent not in instancedSet or c.parent is None ]
-				collectionInstanceOffsetStack.append(GetCollectionInstanceOffset() + ob.location.copy())
+				prevInstancePos, prevInstanceRot = GetCollectionInstanceTransform()
+				localInstancePos = Vector((ob.location.x, ob.location.y, 0))
+				instancePos = prevInstancePos + Rotate2DByAngle(localInstancePos, prevInstanceRot)
+				collectionInstanceOffsetStack.append(instancePos)
+				collectionInstanceTransformStack.append((instancePos, prevInstanceRot + collectionInstanceRotRad))
 				for child in rootChildren:
 					if child in exportedObs:
 						childrenNames.append(AddCollectionInstanceCopy(child, ob))
@@ -833,6 +850,7 @@ def ExportObject (ob):
 						ExportObject (child)
 						childrenNames.append(child.name)
 				collectionInstanceOffsetStack.pop()
+				collectionInstanceTransformStack.pop()
 			else:
 				for child in ob.children:
 					ExportObject (child)
@@ -861,16 +879,19 @@ def RegisterPhysics (ob):
 			collisionGroupFilter |= (1 << i)
 	prevRotMode = ob.rotation_mode
 	ob.rotation_mode = 'XYZ'
-	instanceOffset = GetCollectionInstanceOffset()
-	physicsX = ob.location.x + instanceOffset.x
-	physicsY = ob.location.y + instanceOffset.y
+	instanceOffset, instanceRot = GetCollectionInstanceTransform()
+	localPhysicsPos = Vector((ob.location.x, ob.location.y, 0))
+	worldPhysicsPos = instanceOffset + Rotate2DByAngle(localPhysicsPos, instanceRot)
+	physicsX = worldPhysicsPos.x
+	physicsY = worldPhysicsPos.y
+	objectRotZ = ob.rotation_euler.z - instanceRot
 	if exportType == 'html':
 		if ob.rigidBodyExists:
 			rigidBody = 'var ' + rigidBodyDescName + ' = RAPIER.RigidBodyDesc.' + ob.rigidBodyType + '()'
 			if physicsX != 0 or physicsY != 0:
 				rigidBody += '.setTranslation(' + str(physicsX) + ', ' + str(-physicsY) + ')'
-			if ob.rotation_euler.z != 0:
-				rigidBody += '.setRotation(' + str(ob.rotation_euler.z) + ')'
+			if objectRotZ != 0:
+				rigidBody += '.setRotation(' + str(objectRotZ) + ')'
 			if not ob.canRot:
 				rigidBody += '.lockRotations();\n'
 			rigidBody += ';\n'
@@ -959,7 +980,7 @@ def RegisterPhysics (ob):
 			collider += ')'
 			colliderPosX = physicsX + ob.colliderPosOff[0]
 			colliderPosY = -physicsY - ob.colliderPosOff[1]
-			colliderRot = ob.rotation_euler.z + ob.colliderRotOff
+			colliderRot = objectRotZ + ob.colliderRotOff
 			if attachColliderTo != []:
 				colliderPosX = ob.colliderPosOff[0]
 				colliderPosY = -ob.colliderPosOff[1]
@@ -1038,7 +1059,7 @@ def RegisterPhysics (ob):
 		posStr = str([worldPivot.x, -worldPivot.y])
 		if ob.rigidBodyExists:
 			rigidBodyName = obVarName + 'RigidBody'
-			rigidBody = rigidBodyName + ' = sim.add_rigid_body(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ', ' + posStr + ', ' + str(math.degrees(ob.rotation_euler.z)) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ', ' + str(ob.canSleep) + ', ' + str(ob.continuousCollideDetect) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
+			rigidBody = rigidBodyName + ' = sim.add_rigid_body(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ', ' + posStr + ', ' + str(math.degrees(objectRotZ)) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ', ' + str(ob.canSleep) + ', ' + str(ob.continuousCollideDetect) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
 			rigidBodies[ob] = rigidBody
 			vars.append(rigidBodyName + ' = (-1, -1)')
 			globals.append(rigidBodyName)
@@ -1106,7 +1127,7 @@ def RegisterPhysics (ob):
 			heightfieldScale = (rotAndSizeMatrix @ Vector(list(ob.colliderHeightfieldScale) + [0])).to_2d()
 			colliderPosStr = str([worldPivot.x + ob.colliderPosOff[0], -worldPivot.y - ob.colliderPosOff[1]])
 			colliderAttachPosStr = str([ob.colliderPosOff[0], -ob.colliderPosOff[1]])
-			colliderRotStr = str(math.degrees(ob.rotation_euler.z + ob.colliderRotOff))
+			colliderRotStr = str(math.degrees(objectRotZ + ob.colliderRotOff))
 			colliderAttachRotStr = str(math.degrees(ob.colliderRotOff))
 			colliderName = obVarName + 'Collider'
 			if attachColliderTo == []:
@@ -3104,7 +3125,12 @@ class api
 			var localRot = val.rotation();
 			if (parent && parent !== document.body)
 				localRot -= parentWorld.rot;
-			node.style.transform = 'translate(' + posX + 'px,' + posY + 'px) rotate(' + localRot + 'rad)';
+			var existingTransform = node.style.transform || '';
+			var extraTransforms = existingTransform
+				.replace(/translate\\(\\s*[\\-\\d.]+(?:px)?\\s*,\\s*[\\-\\d.]+(?:px)?\\s*\\)/g, '')
+				.replace(/rotate\\(\\s*[\\-\\d.]+\\s*(?:deg|rad)?\\s*\\)/g, '')
+				.trim();
+			node.style.transform = 'translate(' + posX + 'px,' + posY + 'px) rotate(' + localRot + 'rad)' + (extraTransforms ? ' ' + extraTransforms : '');
 		}
 	}
 	remove (node)
