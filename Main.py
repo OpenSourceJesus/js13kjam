@@ -1,4 +1,4 @@
-import os, sys, json, string, atexit, webbrowser, subprocess, math
+import os, re, sys, json, string, atexit, webbrowser, subprocess, math
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
@@ -1568,7 +1568,9 @@ def Py2Js (pyCode):
 		result = subprocess.run(cmd, check=True, capture_output=True, text=True)
 	except subprocess.CalledProcessError as e:
 		print(f"Error: {e.stderr}", pyCode)
-	return open(jsScriptPath, 'r').read()
+	jsCode = open(jsScriptPath, 'r').read()
+	jsCode = re.sub(r'([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\.items\s*\(\)', r'Object.entries(\1)', jsCode)
+	return jsCode
 
 def GetBlenderData ():
 	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs, collectionInstanceCopyCounts
@@ -2481,7 +2483,7 @@ globalThis.rigidBodyDescsIds = rigidBodyDescsIds;
 globalThis.collidersIds = collidersIds;
 globalThis.colliderOffsetsIds = colliderOffsetsIds;
 globalThis.RAPIER = RAPIER;
-RAPIER.init().then(() => {
+await RAPIER.init().then(() => {
 	// Gravity
 	globalThis.world = new RAPIER.World(gravity);
 	globalThis.eventQueue = new RAPIER.EventQueue(true);
@@ -2526,6 +2528,7 @@ class api
 			{
 				return prefix + (hasNew ? '' : 'new ') + 'RAPIER.Vector2(';
 			})
+			.replace(/([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*|\\[[^\\]]+\\])*)\\.items\\s*\\(\\)/g, 'Object.entries($1)')
 			.replace(/^async function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = async ($2) => {')
 			.replace(/^function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = ($2) => {');
 	}
@@ -3287,8 +3290,13 @@ def GenJs (world):
 	jsDataVars = 'var D=`' + datas + '`\nvar p=`' + pathsCombinedEsc + '`;\nvar C=`' + clrs + '`\nvar P=`' + prefabsJson + '`\nvar PT=`' + ptEsc + '`\nvar PPC=' + str(prefabPathCount) + '\n'
 	templateScriptsJson = json.dumps(templateScripts)
 	templateScriptsInlined = 'JSON.parse("' + templateScriptsJson.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r') + '")'
-	initInjected = '\n'.join('(function(){ ' + s + ' })();' for s in initCode)
-	updateInjected = '\n'.join('(function(){ ' + s + ' })();' for s in updateCode)
+	def _prepare_injected_script (code):
+		code = re.sub(r'(^|[^\w$.])(new\s+)?globalThis\.RAPIER\.Vector2\s*\(', lambda m: m.group(1) + ('' if m.group(2) else 'new ') + 'globalThis.RAPIER.Vector2(', code, flags = re.M)
+		code = re.sub(r'(^|[^\w$.])(new\s+)?RAPIER\.Vector2\s*\(', lambda m: m.group(1) + ('' if m.group(2) else 'new ') + 'RAPIER.Vector2(', code, flags = re.M)
+		code = re.sub(r'([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\.items\s*\(\)', r'Object.entries(\1)', code)
+		return code
+	initInjected = '\n'.join('(function(){ ' + _prepare_injected_script(s) + ' })();' for s in initCode)
+	updateInjected = '\n'.join('(function(){ ' + _prepare_injected_script(s) + ' })();' for s in updateCode)
 	if world.minifyMethod == 'terser':
 		jsTmp = os.path.join(TMP_DIR, 'js13kjam API.js')
 		js += jsDataVars + JS_SUFFIX
