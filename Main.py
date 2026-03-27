@@ -2355,10 +2355,12 @@ function ang (from, to)
 {
 	return Math.acos(dot(normalize(from), normalize(to))) * (180 / Math.PI);
 }
+globalThis.ang = ang;
 function signed_ang (from, to)
 {
 	return ang(from, to) * Math.sign(from[0] * to[1] - from[1] * to[0]);
 }
+globalThis.signed_ang = signed_ang;
 function rotate (v, ang)
 {
 	ang /= 180 / Math.PI;
@@ -2366,100 +2368,95 @@ function rotate (v, ang)
 	var mag = magnitude(v);
 	return [Math.cos(ang) * mag, Math.sin(ang) * mag];
 }
+globalThis.rotate = rotate;
 function rotate_to (from, to, maxAng)
 {
 	return rotate(from, clamp(signed_ang(from, to), -maxAng, maxAng));
 }
-function get_pos_and_size (elmt)
-{
-	return [[parseInt(elmt.getAttribute('x')), parseInt(elmt.getAttribute('y'))], [parseInt(elmt.getAttribute('width')), parseInt(elmt.getAttribute('height'))]];
-}
+globalThis.rotate_to = rotate_to;
 function lerp (min, max, t)
 {
 	return min + t * (max - min);
 }
+globalThis.lerp = lerp;
 function clamp (n, min, max)
 {
 	return Math.min(Math.max(n, min), max);
 }
+globalThis.clamp = clamp;
 function inv_lerp (from, to, n)
 {
 	return (n - from) / (to - from);
 }
+globalThis.inv_lerp = inv_lerp;
 function remap (inFrom, inTo, outFrom, outTo, n)
 {
 	return lerp(outFrom, outTo, inv_lerp(inFrom, inTo, n));
 }
-function overlaps (min, max, min2, max2)
-{
-	return !(max[0] < min2[0]
-		|| min[0] > max2[0]
-		|| max[1] < min2[1]
-		|| min[1] > max2[1]);
-}
+globalThis.remap = remap;
 function ang_to_dir (ang)
 {
-	return [Math.cos(ang), Math.sin(ang)];
+	return RAPIER.Vector2(Math.cos(ang), Math.sin(ang));
 }
+globalThis.ang_to_dir = ang_to_dir;
 function random_vector (maxDist)
 {
 	var dist = random(0, maxDist);
 	var ang = random(0, 2 * Math.PI);
 	var dir = ang_to_dir(ang);
-	return [dir[0] * dist, dir[1] * dist];
+	return new RAPIER.Vector2(dir.x * dist, dir.y * dist);
 }
+globalThis.random_vector = random_vector;
 function magnitude (v)
-{
-	return Math.sqrt(v[0] * v[0] + v[1] * v[1]);
-}
-function magnitude_vec (v)
 {
 	return Math.sqrt(v.x * v.x + v.y * v.y);
 }
+globalThis.magnitude = magnitude;
 function normalize (v)
 {
-	return divide(v, magnitude(v));
+	return divide_scaler(v, magnitude(v));
 }
-function normalize_vec (v)
+globalThis.normalize = normalize;
+function multiply (v, v2)
 {
-	return divide_vec(v, magnitude_vec(v));
+	return new RAPIER.Vector2(v.x * v2.x, v.y * v2.y);
 }
-function multiply (v, f)
+globalThis.multiply = multiply;
+function multiply_scaler (v, f)
 {
-	return [v[0] * f, v[1] * f];
+	return new RAPIER.Vector2(v.x * f, v.y * f);
 }
-function multiply_vec (v, f)
+globalThis.multiply_scaler = multiply_scaler;
+function divide_scaler (v, f)
 {
-	return {x : v.x * f, y : v.y * f};
+	return new RAPIER.Vector2(v.x / f, v.y / f);
 }
-function divide (v, f)
+globalThis.divide_scaler = divide_scaler;
+function divide (v, v2)
 {
-	return [v[0] / f, v[1] / f];
+	return new RAPIER.Vector2(v.x / v2.x, v.y / v2.y);
 }
-function divide_vec (v, f)
-{
-	return {x : v.x / f, y : v.y / f};
-}
+globalThis.divide = divide;
 function add (v, v2)
 {
-	return [v[0] - v2[0], v[1] - v2[1]];
+	return new RAPIER.Vector2(v.x + v2.x, v.y + v2.y);
 }
-function add_vec (v, v2)
-{
-	return {x : v.x + v2.x, y : v.y + v2.y};
-}
+globalThis.add = add;
 function subtract (v, v2)
 {
-	return [v[0] - v2[0], v[1] - v2[1]];
+	return new RAPIER.Vector2(v.x - v2.x, v.y - v2.y);
 }
-function subtract_vec (v, v2)
+globalThis.subtract = subtract;
+function distance (v, v2)
 {
-	return {x : v.x - v2.x, y : v.y - v2.y};
+	return magnitude(subtract(v, v2));
 }
+globalThis.distance = distance;
 function random (min, max)
 {
 	return Math.random() * (max - min) + min;
 }
+globalThis.random = random;
 function add_div (id, pos, childIds = [], attributes = {}, txt = '', rot = 0)
 {
 	var group = document.createElement('div');
@@ -2480,6 +2477,7 @@ function add_div (id, pos, childIds = [], attributes = {}, txt = '', rot = 0)
 	}
 	return group;
 }
+globalThis.add_div = add_div;
 function shuffle (arr)
 {
 	var currIdx = arr.length;
@@ -2490,6 +2488,7 @@ function shuffle (arr)
 		[arr[currIdx], arr[randIdx]] = [arr[randIdx], arr[currIdx]];
 	}
 }
+globalThis.shuffle = shuffle;
 '''
 PHYSICS = '''
 import RAPIER from 'https://cdn.jsdelivr.net/npm/@dimforge/rapier2d-compat/+esm';
@@ -2692,13 +2691,13 @@ class api
 		var tx = 0;
 		var ty = 0;
 		var rz = 0;
-		var tm = trs.match(/translate\\(\\s*([\\-\\d.]+)(?:px)?\\s*,\\s*([\\-\\d.]+)(?:px)?\\s*\\)/);
+		var tm = trs.match(/translate\\(\\s*([\\-\\d.]+(?:e[-+]?\\d+)?)(?:px)?\\s*,\\s*([\\-\\d.]+(?:e[-+]?\\d+)?)(?:px)?\\s*\\)/i);
 		if (tm)
 		{
 			tx = parseFloat(tm[1]);
 			ty = parseFloat(tm[2]);
 		}
-		var rm = trs.match(/rotate\\(\\s*([\\-\\d.]+)\\s*(deg|rad)?\\s*\\)/);
+		var rm = trs.match(/rotate\\(\\s*([\\-\\d.]+(?:e[-+]?\\d+)?)\\s*(deg|rad)?\\s*\\)/i);
 		if (rm)
 		{
 			rz = parseFloat(rm[1]);
@@ -3127,8 +3126,8 @@ class api
 				localRot -= parentWorld.rot;
 			var existingTransform = node.style.transform || '';
 			var extraTransforms = existingTransform
-				.replace(/translate\\(\\s*[\\-\\d.]+(?:px)?\\s*,\\s*[\\-\\d.]+(?:px)?\\s*\\)/g, '')
-				.replace(/rotate\\(\\s*[\\-\\d.]+\\s*(?:deg|rad)?\\s*\\)/g, '')
+				.replace(/translate\\(\\s*[\\-\\d.]+(?:e[-+]?\\d+)?(?:px)?\\s*,\\s*[\\-\\d.]+(?:e[-+]?\\d+)?(?:px)?\\s*\\)/gi, '')
+				.replace(/rotate\\(\\s*[\\-\\d.]+(?:e[-+]?\\d+)?\\s*(?:deg|rad)?\\s*\\)/gi, '')
 				.trim();
 			node.style.transform = 'translate(' + posX + 'px,' + posY + 'px) rotate(' + localRot + 'rad)' + (extraTransforms ? ' ' + extraTransforms : '');
 		}
