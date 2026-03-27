@@ -896,9 +896,9 @@ def RegisterPhysics (ob):
 				rigidBody += '.lockRotations();\n'
 			rigidBody += ';\n'
 			if not ob.rigidBodyEnable:
-				rigidBodyDescName + '.enabled = false;\n'
+				rigidBody += rigidBodyDescName + '.enabled = false;\n'
 			if ob.dominance != 0:
-				rigidBodyDescName + '.setDominanceGroup(' + str(ob.dominance) + ');\n'
+				rigidBody += rigidBodyDescName + '.setDominanceGroup(' + str(ob.dominance) + ');\n'
 			if ob.gravityScale != 1:
 				rigidBody += rigidBodyDescName + '.setGravityScale(' + str(ob.gravityScale) + ');\n'
 			if not ob.canSleep:
@@ -1257,14 +1257,14 @@ var PS_{obVarName} = [];
 (function() {{
 	var e = EM_{obVarName};
 	if (!e.enable) return;
-	e.acc += $.dt * e.rate;
+	e.acc += dt * e.rate;
 	while (e.acc >= 1)
 	{{
 		var ang = random(0, 2 * Math.PI);
 		var sp = random(e.speed[0], e.speed[1]);
 		var dir = ang_to_dir(ang);
 		var id = e.id + '__' + Date.now() + '__' + Math.random().toString(36).slice(2);
-		$.copy_node (e.id, id, [e.origin[0], e.origin[1]]);
+		copy_node (e.id, id, [e.origin[0], e.origin[1]]);
 		PS_{obVarName}.push({{
 			id : id,
 			pos : [e.origin[0], e.origin[1]],
@@ -1276,17 +1276,17 @@ var PS_{obVarName} = [];
 	for (var i = PS_{obVarName}.length - 1; i >= 0; --i)
 	{{
 		var p = PS_{obVarName}[i];
-		p.life -= $.dt;
+		p.life -= dt;
 		if (p.life <= 0)
 		{{
 			var node = document.getElementById(p.id);
 			if (node)
-				$.remove (node);
+				remove (node);
 			PS_{obVarName}.splice(i, 1);
 			continue;
 		}}
-		p.pos[0] += p.vel[0] * $.dt;
-		p.pos[1] += p.vel[1] * $.dt;
+		p.pos[0] += p.vel[0] * dt;
+		p.pos[1] += p.vel[1] * dt;
 		var node = document.getElementById(p.id);
 		if (node)
 			node.style.transform = 'translate(' + p.pos[0] + 'px,' + p.pos[1] + 'px)';
@@ -2185,13 +2185,13 @@ for (var e of prefabTemplatesData)
 	var l = e.length;
 	if (l > 10)
 	{
-		$.add_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[ti].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
+		add_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[ti].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
 		templateIdsToHide.push(e[7]);
 		ti ++;
 	}
 	else if (l > 6)
 	{
-		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
+		add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
 		templateIdsToHide.push(e[0]);
 	}
 	else if (Array.isArray(e[3]))
@@ -2234,7 +2234,7 @@ while ((pendingTemplateGroups.length > 0 || pendingTemplateCopies.length > 0) &&
 		var parentId = templateChildParent[e[1]] || null;
 		if (!document.getElementById(e[0]))
 			continue;
-		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
+		copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
 		templateIdsToHide.push(e[1]);
 		pendingTemplateCopies.splice(idx, 1);
 		progressed = true;
@@ -2260,7 +2260,7 @@ for (var e of pendingTemplateGroups)
 for (var e of pendingTemplateCopies)
 {
 	var parentId = templateChildParent[e[1]] || null;
-	$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
+	copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
 	templateIdsToHide.push(e[1]);
 }
 for (var id of templateIdsToHide)
@@ -2279,16 +2279,16 @@ for (var e of d)
 	var l = e.length;
 	if (l > 10)
 	{
-		$.add_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
-		$.register_instance (e[7], e[7]);
-		$.run_init_scripts (e[7]);
+		add_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
+		register_instance (e[7], e[7]);
+		run_init_scripts (e[7]);
 		i ++;
 	}
 	else if (l > 6)
 	{
-		$.add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
-		$.register_instance (e[0], e[0]);
-		$.run_init_scripts (e[0]);
+		add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
+		register_instance (e[0], e[0]);
+		run_init_scripts (e[0]);
 	}
 	else if (Array.isArray(e[3]))
 		g.push(e);
@@ -2313,9 +2313,9 @@ while ((pendingGroups.length > 0 || pendingCopies.length > 0) && runtimeSafety >
 		var parentId = childParent[e[1]] || null;
 		if (!document.getElementById(e[0]))
 			continue;
-		$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
-		$.register_instance (e[0], e[1]);
-		$.run_init_scripts (e[1]);
+		copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
+		register_instance (e[0], e[1]);
+		run_init_scripts (e[1]);
 		pendingCopies.splice(idx, 1);
 		progressed = true;
 	}
@@ -2325,8 +2325,8 @@ while ((pendingGroups.length > 0 || pendingCopies.length > 0) && runtimeSafety >
 		if (!children_ready(e[3]))
 			continue;
 		add_div (e[0], [e[1], e[2]], e[3], e[4], '', e[5] || 0);
-		$.register_instance (e[0], e[0]);
-		$.run_init_scripts (e[0]);
+		register_instance (e[0], e[0]);
+		run_init_scripts (e[0]);
 		pendingGroups.splice(idx, 1);
 		progressed = true;
 	}
@@ -2336,18 +2336,18 @@ while ((pendingGroups.length > 0 || pendingCopies.length > 0) && runtimeSafety >
 for (var e of pendingGroups)
 {
 	add_div (e[0], [e[1], e[2]], e[3], e[4], '', e[5] || 0);
-	$.register_instance (e[0], e[0]);
-	$.run_init_scripts (e[0]);
+	register_instance (e[0], e[0]);
+	run_init_scripts (e[0]);
 }
 for (var e of pendingCopies)
 {
 	var parentId = childParent[e[1]] || null;
-	$.copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
-	$.register_instance (e[0], e[1]);
-	$.run_init_scripts (e[1]);
+	copy_node (e[0], e[1], [e[2], e[3]], e[4], e[5], parentId);
+	register_instance (e[0], e[1]);
+	run_init_scripts (e[1]);
 }
 // Init
-$.main ()
+main ()
 '''
 JS = '''
 var svgNS = 'http://www.w3.org/2000/svg';
@@ -2515,741 +2515,783 @@ await RAPIER.init().then(() => {
 });
 '''
 JS_API = '''
-class api
+var liveInstanceIds = new Set();
+var instanceToTemplate = {};
+var scripts = {};
+var scriptScopes = {};
+var _currentInstanceId = null;
+var pendingPhysicsCopies = [];
+[
+    "Player",
+    "Saw.001",
+    "Wall.030"
+]
+function register_instance (templateId, instanceId)
 {
-	constructor ()
+	liveInstanceIds.add(instanceId);
+	instanceToTemplate[instanceId] = templateId;
+}
+function unregister_instance (instanceId)
+{
+	liveInstanceIds.delete(instanceId);
+	delete instanceToTemplate[instanceId];
+	delete scriptScopes[instanceId];
+}
+function _prepare_script (code)
+{
+	return code
+		.replace(/(^|[^\\w])(new\\s+)?globalThis\\.RAPIER\\.Vector2\\s*\\(/g, function (_, prefix, hasNew)
+		{
+			return prefix + (hasNew ? '' : 'new ') + 'globalThis.RAPIER.Vector2(';
+		})
+		.replace(/(^|[^\\w])(new\\s+)?RAPIER\\.Vector2\\s*\\(/g, function (_, prefix, hasNew)
+		{
+			return prefix + (hasNew ? '' : 'new ') + 'RAPIER.Vector2(';
+		})
+		.replace(/([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*|\\[[^\\]]+\\])*)\\.items\\s*\\(\\)/g, 'Object.entries($1)')
+		.replace(/^async function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = async ($2) => {')
+		.replace(/^function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = ($2) => {');
+}
+function _exec_script (instanceId, code, phase)
+{
+	var el = document.getElementById(instanceId);
+	if (!el)
+		return;
+	if (!scriptScopes[instanceId])
+		scriptScopes[instanceId] = {};
+	var scope = scriptScopes[instanceId];
+	scope.this = el;
+	scope._currentInstanceId = instanceId;
+	var prepared = _prepare_script(code);
+	try
 	{
-		this.liveInstanceIds = new Set();
-		this.instanceToTemplate = {};
-		this.scripts = {};
-		this.scriptScopes = {};
-		this._currentInstanceId = null;
-		this.pendingPhysicsCopies = [];
+		(new Function('_scope', '_currentInstanceId', 'with (_scope) {\\n' + prepared + '\\n}')).call(el, scope, instanceId);
 	}
-	register_instance (templateId, instanceId)
+	catch (err)
 	{
-		this.liveInstanceIds.add(instanceId);
-		this.instanceToTemplate[instanceId] = templateId;
-	}
-	unregister_instance (instanceId)
-	{
-		this.liveInstanceIds.delete(instanceId);
-		delete this.instanceToTemplate[instanceId];
-		delete this.scriptScopes[instanceId];
-	}
-	_prepare_script (code)
-	{
-		return code
-			.replace(/(^|[^\\w$.])(new\\s+)?globalThis\\.RAPIER\\.Vector2\\s*\\(/g, function (_, prefix, hasNew)
-			{
-				return prefix + (hasNew ? '' : 'new ') + 'globalThis.RAPIER.Vector2(';
-			})
-			.replace(/(^|[^\\w$.])(new\\s+)?RAPIER\\.Vector2\\s*\\(/g, function (_, prefix, hasNew)
-			{
-				return prefix + (hasNew ? '' : 'new ') + 'RAPIER.Vector2(';
-			})
-			.replace(/([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*|\\[[^\\]]+\\])*)\\.items\\s*\\(\\)/g, 'Object.entries($1)')
-			.replace(/^async function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = async ($2) => {')
-			.replace(/^function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = ($2) => {');
-	}
-	_exec_script (instanceId, code, phase)
-	{
-		var el = document.getElementById(instanceId);
-		if (!el)
-			return;
-		if (!this.scriptScopes[instanceId])
-			this.scriptScopes[instanceId] = {};
-		var scope = this.scriptScopes[instanceId];
-		scope.this = el;
-		scope._currentInstanceId = instanceId;
-		var prepared = this._prepare_script(code);
-		try
-		{
-			(new Function('_scope', '_currentInstanceId', 'with (_scope) {\\n' + prepared + '\\n}')).call(el, scope, instanceId);
-		}
-		catch (err)
-		{
-			console.error('[script:' + phase + '] ' + instanceId, err);
-		}
-	}
-	run_init_scripts (instanceId)
-	{
-		var tid = this.instanceToTemplate[instanceId];
-		var scripts = typeof templateScripts !== 'undefined' && templateScripts && templateScripts[tid];
-		if (scripts && scripts.init)
-		{
-			this._currentInstanceId = instanceId;
-			for (var i = 0; i < scripts.init.length; i ++)
-				this._exec_script(instanceId, scripts.init[i], 'init');
-			this._currentInstanceId = null;
-		}
-		var rt = this.scripts[instanceId];
-		if (rt && rt.init)
-			for (var i = 0; i < rt.init.length; i ++)
-				this._exec_script(instanceId, rt.init[i], 'init');
-	}
-	run_update_scripts ()
-	{
-		var self = this;
-		this.liveInstanceIds.forEach(function (id)
-		{
-			var tid = self.instanceToTemplate[id];
-			var scripts = typeof templateScripts !== 'undefined' && templateScripts && templateScripts[tid];
-			if (scripts && scripts.update)
-			{
-				self._currentInstanceId = id;
-				for (var i = 0; i < scripts.update.length; i ++)
-					self._exec_script(id, scripts.update[i], 'update');
-				self._currentInstanceId = null;
-			}
-			var rt = self.scripts[id];
-			if (rt && rt.update)
-				for (var i = 0; i < rt.update.length; i ++)
-					self._exec_script(id, rt.update[i], 'update');
-		});
-	}
-	add_script (instanceId, code, type)
-	{
-		if (!this.scripts[instanceId])
-			this.scripts[instanceId] = { init: [], update: [] };
-		this.scripts[instanceId][type].push(code);
-		if (type === 'init')
-		{
-			this._currentInstanceId = instanceId;
-			this._exec_script(instanceId, code, 'init');
-			this._currentInstanceId = null;
-		}
-	}
-	remove_script (instanceId, type, index)
-	{
-		if (this.scripts[instanceId] && this.scripts[instanceId][type])
-			this.scripts[instanceId][type].splice(index, 1);
-	}
-	get_svg_paths_and_strings (framesStrings, cyclic)
-	{
-		var pathsVals = [];
-		var pathsStrings = [];
-		var i = 0;
-		var pathMode = 'compressed';
-		for (var frameStr of framesStrings)
-		{
-			if (frameStr.length > 0 && frameStr.charCodeAt(0) == 2)
-			{
-				pathMode = 'raw';
-				frameStr = frameStr.slice(1);
-			}
-			if (i == 0)
-				var prevPathStr = frameStr;
-			else if (pathMode == 'compressed')
-				for (var i2 = 0; i2 < frameStr.length; i2 += 2)
-				{
-					var idx = frameStr.charCodeAt(i2) - 32;
-					prevPathStr = prevPathStr.slice(0, idx) + String.fromCharCode(prevPathStr.charCodeAt(idx) + frameStr.charCodeAt(i2 + 1) - 160) + prevPathStr.slice(idx + 1);
-				}
-			else
-				prevPathStr = frameStr;
-			if (pathMode == 'compressed')
-				pathsVals.push($.get_svg_path(prevPathStr, cyclic));
-			else
-				pathsVals.push(prevPathStr);
-			pathsStrings.push(prevPathStr);
-			i ++;
-		}
-		return [pathsVals, pathsStrings, pathMode];
-	}
-	get_svg_path (pathStr, cyclic)
-	{
-		var output = 'M ' + pathStr.charCodeAt(0) + ', ' + pathStr.charCodeAt(1) + ' ';
-		var i = 2;
-		while (i < pathStr.length)
-		{
-			if ((i - 2) % 6 == 0 && i + 6 <= pathStr.length)
-			{
-				output += 'C ';
-				output += pathStr.charCodeAt(i) + ', ' + pathStr.charCodeAt(i + 1) + ' ' + pathStr.charCodeAt(i + 2) + ', ' + pathStr.charCodeAt(i + 3) + ' ' + pathStr.charCodeAt(i + 4) + ', ' + pathStr.charCodeAt(i + 5) + ' ';
-				i += 6;
-			}
-			else if (i + 2 <= pathStr.length)
-			{
-				output += 'L ' + pathStr.charCodeAt(i) + ', ' + pathStr.charCodeAt(i + 1) + ' ';
-				i += 2;
-			}
-			else
-				break;
-		}
-		if (cyclic)
-			output += 'Z';
-		return output;
-	}
-	get_local_transform (node)
-	{
-		var trs = '';
-		if (node && node.style && node.style.transform)
-			trs = node.style.transform;
-		else if (node && node.getAttribute)
-			trs = node.getAttribute('transform') || '';
-		var tx = 0;
-		var ty = 0;
-		var rz = 0;
-		var tm = trs.match(/translate\\(\\s*([\\-\\d.]+(?:e[-+]?\\d+)?)(?:px)?\\s*,\\s*([\\-\\d.]+(?:e[-+]?\\d+)?)(?:px)?\\s*\\)/i);
-		if (tm)
-		{
-			tx = parseFloat(tm[1]);
-			ty = parseFloat(tm[2]);
-		}
-		var rm = trs.match(/rotate\\(\\s*([\\-\\d.]+(?:e[-+]?\\d+)?)\\s*(deg|rad)?\\s*\\)/i);
-		if (rm)
-		{
-			rz = parseFloat(rm[1]);
-			if (!rm[2] || rm[2] == 'deg')
-				rz *= Math.PI / 180;
-		}
-		return {x : tx, y : ty, rot : rz};
-	}
-	get_world_transform (node)
-	{
-		var chain = [];
-		var curr = node;
-		while (curr && curr !== document.body)
-		{
-			chain.push(curr);
-			curr = curr.parentElement;
-		}
-		chain.reverse();
-		var world = {x : 0, y : 0, rot : 0};
-		for (var n of chain)
-		{
-			var local = this.get_local_transform(n);
-			var dx = local.x * Math.cos(world.rot) - local.y * Math.sin(world.rot);
-			var dy = local.x * Math.sin(world.rot) + local.y * Math.cos(world.rot);
-			world.x += dx;
-			world.y += dy;
-			world.rot += local.rot;
-		}
-		return world;
-	}
-	clone_node_physics (id, newId, worldTrs)
-	{
-		var world = globalThis.world;
-		if (!world)
-			return false;
-		if (rigidBodiesIds[newId] || collidersIds[newId])
-			return true;
-		var rigidBody = rigidBodiesIds[id];
-		var collider = collidersIds[id];
-		if (!rigidBody && !collider)
-			return false;
-		var srcNode = document.getElementById(id);
-		var srcWorld = srcNode ? this.get_world_transform(srcNode) : {x : 0, y : 0, rot : 0};
-		var baseOff = colliderOffsetsIds[id] || [0, 0];
-		var colliders = [];
-		if (rigidBody)
-		{
-			rigidBodiesIds[newId] = world.createRigidBody(new RAPIER.RigidBodyDesc(rigidBody.bodyType()).setAngularDamping(rigidBody.angularDamping()).setCanSleep(rigidBodyDescsIds[id].canSleep).setCcdEnabled(rigidBody.isCcdEnabled()).setDominanceGroup(rigidBody.dominanceGroup()).setEnabled(rigidBody.isEnabled()).setGravityScale(rigidBody.gravityScale()).setLinearDamping(rigidBody.linearDamping()).lockRotations(rigidBody.lockRotations()).setRotation(worldTrs.rot).setTranslation(worldTrs.x, worldTrs.y));
-			for (var i = 0; i < rigidBody.numColliders(); i ++)
-				colliders.push(rigidBody.collider(i));
-		}
-		if (collider)
-		{
-			var activeEvents = typeof collider.activeEvents == 'function' ? collider.activeEvents() : collider.activeEvents;
-			var collisionGroups = typeof collider.collisionGroups == 'function' ? collider.collisionGroups() : collider.collisionGroups;
-			var density = typeof collider.density == 'function' ? collider.density() : collider.density;
-			var enabled = typeof collider.isEnabled == 'function' ? collider.isEnabled() : collider.enabled;
-			var sensor = typeof collider.isSensor == 'function' ? collider.isSensor() : false;
-			var newColliderDesc;
-			if (rigidBody)
-			{
-				// For attached colliders, translation/rotation are body-local.
-				var localRot = collider.rotation();
-				if (typeof rigidBody.rotation == 'function')
-					localRot -= rigidBody.rotation();
-				newColliderDesc = new RAPIER.ColliderDesc(collider.shape).setRotation(localRot).setTranslation(baseOff[0], baseOff[1]);
-				collider = world.createCollider(newColliderDesc, rigidBodiesIds[newId]);
-			}
-			else
-			{
-				var worldRot = collider.rotation();
-				var rotDelta = worldRot - srcWorld.rot;
-				var tx = worldTrs.x + baseOff[0];
-				var ty = worldTrs.y + baseOff[1];
-				newColliderDesc = new RAPIER.ColliderDesc(collider.shape).setRotation(worldTrs.rot + rotDelta).setTranslation(tx, ty);
-				collider = world.createCollider(newColliderDesc);
-			}
-			if (activeEvents !== undefined && activeEvents !== null)
-				collider.setActiveEvents(activeEvents);
-			if (collisionGroups !== undefined && collisionGroups !== null && !Number.isNaN(Number(collisionGroups)))
-				collider.setCollisionGroups(Number(collisionGroups));
-			if (density !== undefined && density !== null && !Number.isNaN(Number(density)))
-				collider.setDensity(Number(density));
-			if (enabled !== undefined && enabled !== null)
-				collider.setEnabled(!!enabled);
-			if (sensor)
-				collider.setSensor(true);
-			collidersIds[newId] = collider;
-			colliderOffsetsIds[newId] = colliderOffsetsIds[id] || [0, 0];
-			colliders.push(collider);
-		}
-		return true;
-	}
-	resolve_pending_physics_copies ()
-	{
-		if (!globalThis.world || this.pendingPhysicsCopies.length == 0)
-			return;
-		for (var i = this.pendingPhysicsCopies.length - 1; i >= 0; i --)
-		{
-			var p = this.pendingPhysicsCopies[i];
-			var node = document.getElementById(p.newId);
-			if (!node)
-			{
-				this.pendingPhysicsCopies.splice(i, 1);
-				continue;
-			}
-			var worldTrs = this.get_world_transform(node);
-			if (this.clone_node_physics(p.id, p.newId, worldTrs))
-				this.pendingPhysicsCopies.splice(i, 1);
-		}
-	}
-	copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null)
-	{
-		var copy = document.getElementById(id).cloneNode(true);
-		copy.id = newId;
-		copy.style.x = pos[0];
-		copy.style.y = pos[1];
-		copy.style.transform = 'translate(' + pos[0] + ', ' + pos[1] + ')rotate(' + rot + 'deg)';
-		for (var [key, val] of Object.entries(attributes))
-			copy.setAttribute(key, val);
-		var parent = null;
-		if (parentId)
-			parent = document.getElementById(parentId);
-		var deferPhysics = parentId && !parent;
-		if (parent)
-			parent.appendChild(copy);
-		else
-			document.body.appendChild(copy);
-		var worldTrs = this.get_world_transform(copy);
-		var colliders = [];
-		var hadPhysics = false;
-		if (!deferPhysics)
-			hadPhysics = this.clone_node_physics(id, newId, worldTrs);
-		if (!hadPhysics)
-			this.pendingPhysicsCopies.push({id : id, newId : newId});
-		return [copy, colliders];
-	}
-	add_radial_gradient (id, pos, zIdx, diameter, clr, clr2, clr3, clrPositions, subtractive)
-	{
-		var group = document.createElementNS(svgNS, 'g');
-		group.id = id;
-		group.style.x = pos[0];
-		group.style.y = pos[1];
-		var mixMode = 'lighter';
-		if (subtractive)
-			mixMode = 'darker';
-		group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ', ' + clr[1] + ', ' + clr[2] + ', ' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ', ' + clr2[1] + ', ' + clr2[2] + ', ' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ', ' + clr3[1] + ', ' + clr3[2] + ', ' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
-		document.body.appendChild(group);
-	}
-	add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, attributes, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, pivot, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
-	{
-		var fillClrTxt = 'rgb(' + fillClr[0] + ' ' + fillClr[1] + ' ' + fillClr[2] + ')';
-		var lineClrTxt = 'rgb(' + lineClr[0] + ' ' + lineClr[1] + ' ' + lineClr[2] + ')';
-		var pos = positions[0];
-		var svg = document.createElementNS(svgNS, 'svg');
-		svg.setAttribute('fill-opacity', fillClr[3] / 255);
-		svg.id = id;
-		svg.style = 'z-index:' + zIdx + ';position:absolute';
-		svg.setAttribute('transform-pivot', pivot[0] + '% ' + pivot[1] + '%');
-		svg.style.x = pos[0];
-		svg.style.y = pos[1];
-		svg.setAttribute('width', size[0]);
-		svg.setAttribute('height', size[1]);
-		var trs = 'translate(' + pos[0] + ', ' + pos[1] + ')';
-		svg.setAttribute('transform', trs);
-		var i = 0;
-		var pathsValsAndStrings = $.get_svg_paths_and_strings(pathFramesStrings, cyclic);
-		var pathMode = pathsValsAndStrings[2];
-		var anim;
-		var frames;
-		var firstFrame = '';
-		for (var pathVals of pathsValsAndStrings[0])
-		{
-			var path = document.createElementNS(svgNS, 'path');
-			path.id = id + ' ';
-			if (i > 0)
-				path.setAttribute('opacity', 0);
-			path.style = 'fill:' + fillClrTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineClrTxt;
-			path.setAttribute('d', pathVals);
-			if (jiggleFrames > 0)
-			{
-				anim = document.createElementNS(svgNS, 'animate');
-				anim.setAttribute('attributename', 'd');
-				anim.setAttribute('repeatcount', 'indefinite');
-				anim.setAttribute('dur', jiggleDur + 's');
-				frames = '';
-				for (var i2 = 0; i2 < jiggleFrames; i2 ++)
-				{
-					pathVals = pathsValsAndStrings[1][i];
-					if (pathMode == 'compressed')
-					{
-						for (var i3 = 0; i3 < pathVals.length; i3 += 2)
-						{
-							off = normalize(random_vector(1));
-							off = [off[0] * jiggleDist, off[1] * jiggleDist];
-							pathVals = pathVals.slice(0, i3) + String.fromCharCode(pathVals.charCodeAt(i3) + off[0]) + String.fromCharCode(pathVals.charCodeAt(i3 + 1) + off[1]) + pathVals.slice(i3 + 2);
-						}
-						pathVals = $.get_svg_path(pathVals, cyclic);
-					}
-					else
-					{
-						var coordIdx = 0;
-						var jiggleOff = [0, 0];
-						var numPattern = /-?\\d*\\.?\\d+(?:e[-+]?\\d+)?/ig;
-						pathVals = pathVals.replace(numPattern, function (match)
-						{
-							if (coordIdx % 2 == 0)
-							{
-								jiggleOff = normalize(random_vector(1));
-								jiggleOff = [jiggleOff[0] * jiggleDist, jiggleOff[1] * jiggleDist];
-							}
-							var output = parseFloat(match) + jiggleOff[coordIdx % 2];
-							coordIdx ++;
-							return output;
-						});
-					}
-					if (i2 == 0)
-					{
-						firstFrame = pathVals;
-						anim.setAttribute('from', pathVals);
-						anim.setAttribute('to', pathVals);
-					}
-					frames += pathVals + ';';
-				}
-				anim.setAttribute('values', frames + firstFrame);
-				path.appendChild(anim);
-			}
-			svg.appendChild(path);
-			i ++;
-		}
-		for (var [key, val] of Object.entries(attributes))
-			svg.setAttribute(key, val);
-		document.body.appendChild(svg);
-		var off = lineWidth / 2 + jiggleDist;
-		var min = 32 - off;
-		svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
-		svg = document.getElementById(id);
-		path = document.getElementById(id + ' ');
-		var svgRect = svg.getBoundingClientRect();
-		var pathRect = path.getBoundingClientRect();
-		path.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
-		if (rotDur > 0)
-		{
-			anim = document.createElementNS(svgNS, 'animatetransform');
-			anim.setAttribute('attributename', 'transform');
-			anim.setAttribute('type', 'rotate');
-			anim.setAttribute('repeatcount', 'indefinite');
-			anim.setAttribute('dur', rotDur + 's');
-			firstFrame = rotAngRange[0];
-			anim.setAttribute('from', firstFrame);
-			frames = firstFrame + ';' + rotAngRange[1];
-			if (rotPingPong)
-			{
-				anim.setAttribute('to', firstFrame);
-				frames += ';' + firstFrame;
-			}
-			else
-				anim.setAttribute('to', rotAngRange[1]);
-			anim.setAttribute('values', frames);
-			anim.setAttribute('additive', 'sum');
-			svg.appendChild(anim);
-		}
-		var totalScaleDur = scaleDur + scaleHaltDurAtMin + scaleHaltDurAtMax;
-		if (totalScaleDur > 0)
-		{
-			anim = document.createElementNS(svgNS, 'animatetransform');
-			anim.setAttribute('attributename', 'transform');
-			anim.setAttribute('type', 'scale');
-			anim.setAttribute('repeatcount', 'indefinite');
-			if (scalePingPong)
-				totalScaleDur += scaleDur;
-			anim.setAttribute('dur', totalScaleDur + 's');
-			firstFrame = scaleXRange[0] + ' ' + scaleYRange[0];
-			anim.setAttribute('from', firstFrame);
-			var thirdFrame = scaleXRange[1] + ' ' + scaleYRange[1];
-			frames = firstFrame + ';' + firstFrame + ';' + thirdFrame + ';' + thirdFrame;
-			var time = scaleHaltDurAtMin / totalScaleDur;
-			var times = '0;' + time + ';';
-			time += scaleDur / totalScaleDur;
-			times += time + ';';
-			time += scaleHaltDurAtMax / totalScaleDur;
-			times += time;
-			if (scalePingPong)
-			{
-				anim.setAttribute('to', firstFrame);
-				frames += ';' + firstFrame;
-				times += ';' + 1;
-			}
-			else
-				anim.setAttribute('to', thirdFrame);
-			anim.setAttribute('values', frames);
-			anim.setAttribute('keytimes', times);
-			anim.setAttribute('additive', 'sum');
-			svg.appendChild(anim);
-		}
-		if (cycleDur != 0)
-		{
-			anim = document.createElementNS(svgNS, 'animate');
-			anim.setAttribute('attributename', 'stroke-dashoffset');
-			anim.setAttribute('repeatcount', 'indefinite');
-			var pathLen = path.getTotalLength();
-			anim.setAttribute('dur', cycleDur + 's');
-			anim.setAttribute('from', 0);
-			anim.setAttribute('to', pathLen);
-			anim.setAttribute('values', '0;' + pathLen);
-			path.appendChild(anim);
-		}
-		document.getElementById(id + ' ').remove();
-		svg.appendChild(path);
-		var capTypes = ['butt', 'round', 'square'];
-		svg.style.strokeLinecap = capTypes[capType];
-		var joinTypes = ['arcs', 'bevel', 'miter', 'miter-clip', 'round'];
-		svg.style.strokeLinejoin = joinTypes[joinType];
-		svg.style.strokeDasharray = dashArr;
-		if (magnitude(fillHatchDensity) > 0)
-		{
-			var args = [fillClr, true, svg, path]; 
-			if (fillHatchDensity[0] > 0)
-				$.hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
-			if (fillHatchDensity[1] > 0)
-				$.hatch ('|' + id, ...args, fillHatchDensity[1], fillHatchRandDensity[1], fillHatchAng[1], fillHatchWidth[1]);
-			lineClr[3] = 255;
-		}
-		if (magnitude(lineHatchDensity) > 0)
-		{
-			var args = [lineClr, false, svg, path]; 
-			if (lineHatchDensity[0] > 0)
-				$.hatch ('@' + id, ...args, lineHatchDensity[0], lineHatchRandDensity[0], lineHatchAng[0], lineHatchWidth[0]);
-			if (lineHatchDensity[1] > 0)
-				$.hatch ('$' + id, ...args, lineHatchDensity[1], lineHatchRandDensity[1], lineHatchAng[1], lineHatchWidth[1]);
-			lineClr[3] = 255;
-		}
-		svg.setAttribute('stroke-opacity', lineClr[3] / 255);
-		if (mirrorX)
-		{
-			svg = $.copy_node(id, '~' + id, pos);
-			svg.setAttribute('transform', trs + 'scale(-1,1)');
-			svg.setAttribute('transform-origin', 50 - (pivot[0] - 50) + '% ' + pivot[1] + '%');
-		}
-		if (mirrorY)
-		{
-			svg = $.copy_node(id, '`' + id, pos);
-			svg.setAttribute('transform', trs + 'scale(1,-1)');
-			svg.setAttribute('transform-origin', pivot[0] + '% ' + (50 - (pivot[1] - 50)) + '%');
-		}
-		var pathRect = svg.children[svg.children.length - 1].getBoundingClientRect();
-		for (var i = svg.children.length - 2; i >= 0; i --)
-		{
-			var child = svg.children[i];
-			var childRect = child.getBoundingClientRect();
-			var pathAnchor = [lerp(pathRect.x, pathRect.right, pivot[0] / 100), lerp(pathRect.y, pathRect.bottom, pivot[1] / 100)];
-			var childAnchor = [lerp(childRect.x, childRect.right, pivot[0] / 100), lerp(childRect.y, childRect.bottom, pivot[1] / 100)];
-			child.setAttribute('transform', 'translate(' + (pathAnchor[0] - childAnchor[0]) + ', ' + (pathAnchor[1] - childAnchor[1]) + ')');
-			pathRect = childRect;
-		}
-	}
-	hatch (id, clr, useFIll, svg, path, density, randDensity, ang, width)
-	{
-		var luminance = (.2126 * clr[0] + .7152 * clr[1] + .0722 * clr[2]) / 255;
-		var pattern = document.createElementNS(svgNS, 'pattern');
-		pattern.id = id;
-		pattern.style = 'transform:rotate(' + ang + 'deg)';
-		pattern.setAttribute('width', '100%');
-		pattern.setAttribute('height', '100%');
-		pattern.setAttribute('patternunits', 'userSpaceOnUse');
-		var path = path.cloneNode();
-		var pathTxt = '';
-		var x = 0;
-		var interval = 15 / density * luminance;
-		for (var i = 0; i < 99; i ++)
-		{
-			var off = random(-interval * randDensity, interval * randDensity);
-			pathTxt += 'M ' + (x + off) + ' 0 L ' + (x + off) + ' ' + 999 + ' ';
-			x += interval;
-		}
-		path.setAttribute('d', pathTxt);
-		path.style = 'stroke-width:' + (width * (1 - luminance)) + ';stroke:black';
-		pattern.appendChild(path);
-		svg.appendChild(pattern);
-		path = path.cloneNode(true);
-		if (useFIll)
-			path.style.fill = 'url(#' + id + ')';
-		else
-			path.style.stroke = 'url(#' + id + ')';
-		svg.appendChild(path);
-	}
-	// Physics Section Start
-	set_transforms (dict)
-	{
-		for (var [key, val] of Object.entries(dict))
-		{
-			if (dict === collidersIds && rigidBodiesIds[key])
-				continue;
-			var node = document.getElementById(key);
-			if (!node)
-				continue;
-			var pos = val.translation();
-			if (dict === collidersIds)
-			{
-				var colliderOff = colliderOffsetsIds[key];
-				if (colliderOff)
-				{
-					pos.x -= colliderOff[0];
-					pos.y -= colliderOff[1];
-				}
-			}
-			var rect = node.getBoundingClientRect();
-			var posX = pos.x - rect.width / 2;
-			var posY = pos.y - rect.height / 2;
-			var parent = node.parentElement;
-			var parentWorld = {x : 0, y : 0, rot : 0};
-			if (parent && parent !== document.body)
-			{
-				parentWorld = this.get_world_transform(parent);
-				posX -= parentWorld.x;
-				posY -= parentWorld.y;
-				var cos = Math.cos(-parentWorld.rot);
-				var sin = Math.sin(-parentWorld.rot);
-				var lx = posX * cos - posY * sin;
-				var ly = posX * sin + posY * cos;
-				posX = lx;
-				posY = ly;
-			}
-			var localRot = val.rotation();
-			if (parent && parent !== document.body)
-				localRot -= parentWorld.rot;
-			var existingTransform = node.style.transform || '';
-			var extraTransforms = existingTransform
-				.replace(/translate\\(\\s*[\\-\\d.]+(?:e[-+]?\\d+)?(?:px)?\\s*,\\s*[\\-\\d.]+(?:e[-+]?\\d+)?(?:px)?\\s*\\)/gi, '')
-				.replace(/rotate\\(\\s*[\\-\\d.]+(?:e[-+]?\\d+)?\\s*(?:deg|rad)?\\s*\\)/gi, '')
-				.trim();
-			node.style.transform = 'translate(' + posX + 'px,' + posY + 'px) rotate(' + localRot + 'rad)' + (extraTransforms ? ' ' + extraTransforms : '');
-		}
-	}
-	remove (node)
-	{
-		if (rigidBodiesIds[node.id])
-			delete rigidBodiesIds[node.id];
-		else if (collidersIds[node.id])
-		{
-			delete collidersIds[node.id];
-			delete colliderOffsetsIds[node.id];
-		}
-		node.remove();
-	}
-	spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides = {})
-	{
-		var defn = prefabs[prefabName];
-		if (!defn)
-			return null;
-		var roots = defn.roots;
-		var nodes = defn.nodes;
-		function worldFromLocal (parentWorldPos, parentWorldRot, localPos, localRot)
-		{
-			var rad = parentWorldRot * (Math.PI / 180);
-			var dx = localPos[0] * Math.cos(rad) - localPos[1] * Math.sin(rad);
-			var dy = localPos[0] * Math.sin(rad) + localPos[1] * Math.cos(rad);
-			return [[parentWorldPos[0] + dx, parentWorldPos[1] + dy], parentWorldRot + localRot];
-		}
-		function spawnNode (templateId, newId, worldPos, worldRot, parentNode = null)
-		{
-			var attrs = attributeOverrides[templateId] || {};
-			var result = $.copy_node(templateId, newId, worldPos, worldRot, attrs);
-			$.register_instance (templateId, newId);
-			var spawnedNode = result && result[0] ? result[0] : null;
-			if (parentNode && spawnedNode)
-				parentNode.appendChild(spawnedNode);
-			var nodeDef = nodes[templateId];
-			if (nodeDef && spawnedNode)
-			{
-				var childIds = nodeDef.children;
-				for (var i = 0; i < childIds.length; i ++)
-				{
-					var childTemplateId = childIds[i];
-					var childDef = nodes[childTemplateId];
-					if (!childDef)
-						continue;
-					var childNewId = instanceId + '_' + childTemplateId;
-					var childWorld = worldFromLocal(worldPos, worldRot, childDef.localPos, childDef.localRot);
-					spawnNode (childTemplateId, childNewId, childWorld[0], childWorld[1], spawnedNode);
-				}
-			}
-			$.run_init_scripts (newId);
-			return result;
-		}
-		var rootWorld = [pos[0], pos[1]];
-		var rootRot = rot;
-		var container = null;
-		if (roots.length > 1)
-		{
-			container = add_div(instanceId, rootWorld, [], {}, '');
-			for (var r = 0; r < roots.length; r ++)
-			{
-				var rdef = nodes[roots[r]];
-				var rpos = r === 0 ? rootWorld : [rootWorld[0] + (rdef.localPos[0] || 0), rootWorld[1] + (rdef.localPos[1] || 0)];
-				var rrot = rootRot + (rdef.localRot || 0);
-				spawnNode (roots[r], instanceId + '_' + roots[r], rpos, rrot, container);
-			}
-			return container;
-		}
-		var firstRoot = roots[0];
-		if (!firstRoot)
-			return null;
-		return spawnNode(firstRoot, instanceId, rootWorld, rootRot) && document.getElementById(instanceId) ? document.getElementById(instanceId) : null;
-	}
-	remove_prefab (rootNodeOrId)
-	{
-		var root = typeof rootNodeOrId === 'string' ? document.getElementById(rootNodeOrId) : rootNodeOrId;
-		if (!root)
-			return;
-		var self = this;
-		function removeRecursive (node)
-		{
-			self.unregister_instance (node.id);
-			while (node.firstChild)
-				removeRecursive (node.firstChild);
-			$.remove (node);
-		}
-		removeRecursive (root);
-	}
-	get_prefab_node (instanceId, templateId)
-	{
-		return document.getElementById(instanceId + '_' + templateId) || document.getElementById(instanceId);
-	}
-	// Physics Section End
-	main ()
-	{
-		var f = t => {
-			$.dt = (t - $.prevTicks) / 1000;
-			$.prevTicks = t;
-			window.requestAnimationFrame(f);
-			$.run_update_scripts();
-			// Update
-		};
-		window.requestAnimationFrame(t => {
-			$.prevTicks = t;
-			window.requestAnimationFrame(f);
-		});
-		// Physics Section Start
-		setInterval(() => {
-			if (!globalThis.world || !globalThis.eventQueue)
-				return;
-			globalThis.world.step(globalThis.eventQueue);
-			$.resolve_pending_physics_copies();
-			$.set_transforms (rigidBodiesIds);
-			$.set_transforms (collidersIds);
-		}, 16);
-		// Physics Section End
+		console.error('[script:' + phase + '] ' + instanceId, err);
 	}
 }
-var $ = new api;
-globalThis.api = $;
+function run_init_scripts (instanceId)
+{
+	var tid = instanceToTemplate[instanceId];
+	var templateScriptSet = typeof templateScripts !== 'undefined' && templateScripts && templateScripts[tid];
+	if (templateScriptSet && templateScriptSet.init)
+	{
+		_currentInstanceId = instanceId;
+		for (var i = 0; i < templateScriptSet.init.length; i ++)
+			_exec_script(instanceId, templateScriptSet.init[i], 'init');
+		_currentInstanceId = null;
+	}
+	var rt = (typeof scripts === 'object' && scripts) ? scripts[instanceId] : null;
+	if (rt && rt.init)
+		for (var i = 0; i < rt.init.length; i ++)
+			_exec_script(instanceId, rt.init[i], 'init');
+}
+function run_update_scripts ()
+{
+	liveInstanceIds.forEach(function (id)
+	{
+		var tid = instanceToTemplate[id];
+		var templateScriptSet = typeof templateScripts !== 'undefined' && templateScripts && templateScripts[tid];
+		if (templateScriptSet && templateScriptSet.update)
+		{
+			_currentInstanceId = id;
+			for (var i = 0; i < templateScriptSet.update.length; i ++)
+				_exec_script(id, templateScriptSet.update[i], 'update');
+			_currentInstanceId = null;
+		}
+		var rt = (typeof scripts === 'object' && scripts) ? scripts[id] : null;
+		if (rt && rt.update)
+			for (var i = 0; i < rt.update.length; i ++)
+				_exec_script(id, rt.update[i], 'update');
+	});
+}
+function add_script (instanceId, code, type)
+{
+	if (!scripts[instanceId])
+		scripts[instanceId] = { init: [], update: [] };
+	scripts[instanceId][type].push(code);
+	if (type === 'init')
+	{
+		_currentInstanceId = instanceId;
+		_exec_script(instanceId, code, 'init');
+		_currentInstanceId = null;
+	}
+}
+function remove_script (instanceId, type, index)
+{
+	if (scripts[instanceId] && scripts[instanceId][type])
+		scripts[instanceId][type].splice(index, 1);
+}
+function get_svg_paths_and_strings (framesStrings, cyclic)
+{
+	var pathsVals = [];
+	var pathsStrings = [];
+	var i = 0;
+	var pathMode = 'compressed';
+	for (var frameStr of framesStrings)
+	{
+		if (frameStr.length > 0 && frameStr.charCodeAt(0) == 2)
+		{
+			pathMode = 'raw';
+			frameStr = frameStr.slice(1);
+		}
+		if (i == 0)
+			var prevPathStr = frameStr;
+		else if (pathMode == 'compressed')
+			for (var i2 = 0; i2 < frameStr.length; i2 += 2)
+			{
+				var idx = frameStr.charCodeAt(i2) - 32;
+				prevPathStr = prevPathStr.slice(0, idx) + String.fromCharCode(prevPathStr.charCodeAt(idx) + frameStr.charCodeAt(i2 + 1) - 160) + prevPathStr.slice(idx + 1);
+			}
+		else
+			prevPathStr = frameStr;
+		if (pathMode == 'compressed')
+			pathsVals.push(get_svg_path(prevPathStr, cyclic));
+		else
+			pathsVals.push(prevPathStr);
+		pathsStrings.push(prevPathStr);
+		i ++;
+	}
+	return [pathsVals, pathsStrings, pathMode];
+}
+function get_svg_path (pathStr, cyclic)
+{
+	var output = 'M ' + pathStr.charCodeAt(0) + ', ' + pathStr.charCodeAt(1) + ' ';
+	var i = 2;
+	while (i < pathStr.length)
+	{
+		if ((i - 2) % 6 == 0 && i + 6 <= pathStr.length)
+		{
+			output += 'C ';
+			output += pathStr.charCodeAt(i) + ', ' + pathStr.charCodeAt(i + 1) + ' ' + pathStr.charCodeAt(i + 2) + ', ' + pathStr.charCodeAt(i + 3) + ' ' + pathStr.charCodeAt(i + 4) + ', ' + pathStr.charCodeAt(i + 5) + ' ';
+			i += 6;
+		}
+		else if (i + 2 <= pathStr.length)
+		{
+			output += 'L ' + pathStr.charCodeAt(i) + ', ' + pathStr.charCodeAt(i + 1) + ' ';
+			i += 2;
+		}
+		else
+			break;
+	}
+	if (cyclic)
+		output += 'Z';
+	return output;
+}
+function get_local_transform (node)
+{
+	var trs = '';
+	if (node && node.style && node.style.transform)
+		trs = node.style.transform;
+	else if (node && node.getAttribute)
+		trs = node.getAttribute('transform') || '';
+	var tx = 0;
+	var ty = 0;
+	var rz = 0;
+	var tm = trs.match(/translate\\(\\s*([\\-\\d.]+(?:e[-+]?\\d+)?)(?:px)?\\s*,\\s*([\\-\\d.]+(?:e[-+]?\\d+)?)(?:px)?\\s*\\)/i);
+	if (tm)
+	{
+		tx = parseFloat(tm[1]);
+		ty = parseFloat(tm[2]);
+	}
+	var rm = trs.match(/rotate\\(\\s*([\\-\\d.]+(?:e[-+]?\\d+)?)\\s*(deg|rad)?\\s*\\)/i);
+	if (rm)
+	{
+		rz = parseFloat(rm[1]);
+		if (!rm[2] || rm[2] == 'deg')
+			rz *= Math.PI / 180;
+	}
+	return {x : tx, y : ty, rot : rz};
+}
+function get_world_transform (node)
+{
+	var chain = [];
+	var curr = node;
+	while (curr && curr !== document.body)
+	{
+		chain.push(curr);
+		curr = curr.parentElement;
+	}
+	chain.reverse();
+	var world = {x : 0, y : 0, rot : 0};
+	for (var n of chain)
+	{
+		var local = get_local_transform(n);
+		var dx = local.x * Math.cos(world.rot) - local.y * Math.sin(world.rot);
+		var dy = local.x * Math.sin(world.rot) + local.y * Math.cos(world.rot);
+		world.x += dx;
+		world.y += dy;
+		world.rot += local.rot;
+	}
+	return world;
+}
+function clone_node_physics (id, newId, worldTrs)
+{
+	function get_rigidbody_ancestor (node)
+	{
+		var curr = node ? node.parentElement : null;
+		while (curr && curr !== document.body)
+		{
+			if (rigidBodiesIds[curr.id])
+				return rigidBodiesIds[curr.id];
+			curr = curr.parentElement;
+		}
+		return null;
+	}
+	var world = globalThis.world;
+	if (!world)
+		return false;
+	if (rigidBodiesIds[newId] || collidersIds[newId])
+		return true;
+	var rigidBody = rigidBodiesIds[id];
+	var collider = collidersIds[id];
+	if (!rigidBody && !collider)
+		return false;
+	var srcNode = document.getElementById(id);
+	var srcWorld = srcNode ? get_world_transform(srcNode) : {x : 0, y : 0, rot : 0};
+	var baseOff = colliderOffsetsIds[id] || [0, 0];
+	var colliders = [];
+	if (rigidBody)
+	{
+		rigidBodiesIds[newId] = world.createRigidBody(new RAPIER.RigidBodyDesc(rigidBody.bodyType()).setAngularDamping(rigidBody.angularDamping()).setCanSleep(rigidBodyDescsIds[id].canSleep).setCcdEnabled(rigidBody.isCcdEnabled()).setDominanceGroup(rigidBody.dominanceGroup()).setEnabled(rigidBody.isEnabled()).setGravityScale(rigidBody.gravityScale()).setLinearDamping(rigidBody.linearDamping()).lockRotations(rigidBody.lockRotations()).setRotation(worldTrs.rot).setTranslation(worldTrs.x, worldTrs.y));
+		for (var i = 0; i < rigidBody.numColliders(); i ++)
+			colliders.push(rigidBody.collider(i));
+	}
+	if (collider)
+	{
+		var activeEvents = typeof collider.activeEvents == 'function' ? collider.activeEvents() : collider.activeEvents;
+		var collisionGroups = typeof collider.collisionGroups == 'function' ? collider.collisionGroups() : collider.collisionGroups;
+		var density = typeof collider.density == 'function' ? collider.density() : collider.density;
+		var enabled = typeof collider.isEnabled == 'function' ? collider.isEnabled() : collider.enabled;
+		var sensor = typeof collider.isSensor == 'function' ? collider.isSensor() : false;
+		var newColliderDesc;
+		var newNode = document.getElementById(newId);
+		var parentRigidBody = (!rigidBody && newNode) ? get_rigidbody_ancestor(newNode) : null;
+		if (rigidBody)
+		{
+			// For attached colliders, translation/rotation are body-local.
+			var localRot = collider.rotation();
+			if (typeof rigidBody.rotation == 'function')
+				localRot -= rigidBody.rotation();
+			newColliderDesc = new RAPIER.ColliderDesc(collider.shape).setRotation(localRot).setTranslation(baseOff[0], baseOff[1]);
+			collider = world.createCollider(newColliderDesc, rigidBodiesIds[newId]);
+		}
+		else if (parentRigidBody)
+		{
+			var worldRot = collider.rotation();
+			var rotDelta = worldRot - srcWorld.rot;
+			var targetWorldRot = worldTrs.rot + rotDelta;
+			var targetWorldX = worldTrs.x + baseOff[0];
+			var targetWorldY = worldTrs.y + baseOff[1];
+			var bodyPos = parentRigidBody.translation();
+			var bodyRot = typeof parentRigidBody.rotation == 'function' ? parentRigidBody.rotation() : 0;
+			var dx = targetWorldX - bodyPos.x;
+			var dy = targetWorldY - bodyPos.y;
+			var cos = Math.cos(-bodyRot);
+			var sin = Math.sin(-bodyRot);
+			var localX = dx * cos - dy * sin;
+			var localY = dx * sin + dy * cos;
+			newColliderDesc = new RAPIER.ColliderDesc(collider.shape).setRotation(targetWorldRot - bodyRot).setTranslation(localX, localY);
+			collider = world.createCollider(newColliderDesc, parentRigidBody);
+		}
+		else
+		{
+			var worldRot = collider.rotation();
+			var rotDelta = worldRot - srcWorld.rot;
+			var tx = worldTrs.x + baseOff[0];
+			var ty = worldTrs.y + baseOff[1];
+			newColliderDesc = new RAPIER.ColliderDesc(collider.shape).setRotation(worldTrs.rot + rotDelta).setTranslation(tx, ty);
+			collider = world.createCollider(newColliderDesc);
+		}
+		if (activeEvents !== undefined && activeEvents !== null)
+			collider.setActiveEvents(activeEvents);
+		if (collisionGroups !== undefined && collisionGroups !== null && !Number.isNaN(Number(collisionGroups)))
+			collider.setCollisionGroups(Number(collisionGroups));
+		if (density !== undefined && density !== null && !Number.isNaN(Number(density)))
+			collider.setDensity(Number(density));
+		if (enabled !== undefined && enabled !== null)
+			collider.setEnabled(!!enabled);
+		if (sensor)
+			collider.setSensor(true);
+		collidersIds[newId] = collider;
+		colliderOffsetsIds[newId] = colliderOffsetsIds[id] || [0, 0];
+		colliders.push(collider);
+	}
+	return true;
+}
+function resolve_pending_physics_copies ()
+{
+	if (!globalThis.world || pendingPhysicsCopies.length == 0)
+		return;
+	for (var i = pendingPhysicsCopies.length - 1; i >= 0; i --)
+	{
+		var p = pendingPhysicsCopies[i];
+		var node = document.getElementById(p.newId);
+		if (!node)
+		{
+			pendingPhysicsCopies.splice(i, 1);
+			continue;
+		}
+		var worldTrs = get_world_transform(node);
+		if (clone_node_physics(p.id, p.newId, worldTrs))
+			pendingPhysicsCopies.splice(i, 1);
+	}
+}
+function copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null)
+{
+	var copy = document.getElementById(id).cloneNode(true);
+	copy.id = newId;
+	copy.style.x = pos[0];
+	copy.style.y = pos[1];
+	copy.style.transform = 'translate(' + pos[0] + ', ' + pos[1] + ')rotate(' + rot + 'deg)';
+	for (var [key, val] of Object.entries(attributes))
+		copy.setAttribute(key, val);
+	var parent = null;
+	if (parentId)
+		parent = document.getElementById(parentId);
+	var deferPhysics = parentId && !parent;
+	if (parent)
+		parent.appendChild(copy);
+	else
+		document.body.appendChild(copy);
+	var worldTrs = get_world_transform(copy);
+	var colliders = [];
+	var hadPhysics = false;
+	if (!deferPhysics)
+		hadPhysics = clone_node_physics(id, newId, worldTrs);
+	if (!hadPhysics)
+		pendingPhysicsCopies.push({id : id, newId : newId});
+	return [copy, colliders];
+}
+function add_radial_gradient (id, pos, zIdx, diameter, clr, clr2, clr3, clrPositions, subtractive)
+{
+	var group = document.createElementNS(svgNS, 'g');
+	group.id = id;
+	group.style.x = pos[0];
+	group.style.y = pos[1];
+	var mixMode = 'lighter';
+	if (subtractive)
+		mixMode = 'darker';
+	group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ', ' + clr[1] + ', ' + clr[2] + ', ' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ', ' + clr2[1] + ', ' + clr2[2] + ', ' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ', ' + clr3[1] + ', ' + clr3[2] + ', ' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
+	document.body.appendChild(group);
+}
+function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, attributes, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, pivot, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
+{
+	var fillClrTxt = 'rgb(' + fillClr[0] + ' ' + fillClr[1] + ' ' + fillClr[2] + ')';
+	var lineClrTxt = 'rgb(' + lineClr[0] + ' ' + lineClr[1] + ' ' + lineClr[2] + ')';
+	var pos = positions[0];
+	var svg = document.createElementNS(svgNS, 'svg');
+	svg.setAttribute('fill-opacity', fillClr[3] / 255);
+	svg.id = id;
+	svg.style = 'z-index:' + zIdx + ';position:absolute';
+	svg.setAttribute('transform-pivot', pivot[0] + '% ' + pivot[1] + '%');
+	svg.style.x = pos[0];
+	svg.style.y = pos[1];
+	svg.setAttribute('width', size[0]);
+	svg.setAttribute('height', size[1]);
+	var trs = 'translate(' + pos[0] + ', ' + pos[1] + ')';
+	svg.setAttribute('transform', trs);
+	var i = 0;
+	var pathsValsAndStrings = get_svg_paths_and_strings(pathFramesStrings, cyclic);
+	var pathMode = pathsValsAndStrings[2];
+	var anim;
+	var frames;
+	var firstFrame = '';
+	for (var pathVals of pathsValsAndStrings[0])
+	{
+		var path = document.createElementNS(svgNS, 'path');
+		path.id = id + ' ';
+		if (i > 0)
+			path.setAttribute('opacity', 0);
+		path.style = 'fill:' + fillClrTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineClrTxt;
+		path.setAttribute('d', pathVals);
+		if (jiggleFrames > 0)
+		{
+			anim = document.createElementNS(svgNS, 'animate');
+			anim.setAttribute('attributename', 'd');
+			anim.setAttribute('repeatcount', 'indefinite');
+			anim.setAttribute('dur', jiggleDur + 's');
+			frames = '';
+			for (var i2 = 0; i2 < jiggleFrames; i2 ++)
+			{
+				pathVals = pathsValsAndStrings[1][i];
+				if (pathMode == 'compressed')
+				{
+					for (var i3 = 0; i3 < pathVals.length; i3 += 2)
+					{
+						off = normalize(random_vector(1));
+						off = [off[0] * jiggleDist, off[1] * jiggleDist];
+						pathVals = pathVals.slice(0, i3) + String.fromCharCode(pathVals.charCodeAt(i3) + off[0]) + String.fromCharCode(pathVals.charCodeAt(i3 + 1) + off[1]) + pathVals.slice(i3 + 2);
+					}
+					pathVals = get_svg_path(pathVals, cyclic);
+				}
+				else
+				{
+					var coordIdx = 0;
+					var jiggleOff = [0, 0];
+					var numPattern = /-?\\d*\\.?\\d+(?:e[-+]?\\d+)?/ig;
+					pathVals = pathVals.replace(numPattern, function (match)
+					{
+						if (coordIdx % 2 == 0)
+						{
+							jiggleOff = normalize(random_vector(1));
+							jiggleOff = [jiggleOff[0] * jiggleDist, jiggleOff[1] * jiggleDist];
+						}
+						var output = parseFloat(match) + jiggleOff[coordIdx % 2];
+						coordIdx ++;
+						return output;
+					});
+				}
+				if (i2 == 0)
+				{
+					firstFrame = pathVals;
+					anim.setAttribute('from', pathVals);
+					anim.setAttribute('to', pathVals);
+				}
+				frames += pathVals + ';';
+			}
+			anim.setAttribute('values', frames + firstFrame);
+			path.appendChild(anim);
+		}
+		svg.appendChild(path);
+		i ++;
+	}
+	for (var [key, val] of Object.entries(attributes))
+		svg.setAttribute(key, val);
+	document.body.appendChild(svg);
+	var off = lineWidth / 2 + jiggleDist;
+	var min = 32 - off;
+	svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
+	svg = document.getElementById(id);
+	path = document.getElementById(id + ' ');
+	var svgRect = svg.getBoundingClientRect();
+	var pathRect = path.getBoundingClientRect();
+	path.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
+	if (rotDur > 0)
+	{
+		anim = document.createElementNS(svgNS, 'animatetransform');
+		anim.setAttribute('attributename', 'transform');
+		anim.setAttribute('type', 'rotate');
+		anim.setAttribute('repeatcount', 'indefinite');
+		anim.setAttribute('dur', rotDur + 's');
+		firstFrame = rotAngRange[0];
+		anim.setAttribute('from', firstFrame);
+		frames = firstFrame + ';' + rotAngRange[1];
+		if (rotPingPong)
+		{
+			anim.setAttribute('to', firstFrame);
+			frames += ';' + firstFrame;
+		}
+		else
+			anim.setAttribute('to', rotAngRange[1]);
+		anim.setAttribute('values', frames);
+		anim.setAttribute('additive', 'sum');
+		svg.appendChild(anim);
+	}
+	var totalScaleDur = scaleDur + scaleHaltDurAtMin + scaleHaltDurAtMax;
+	if (totalScaleDur > 0)
+	{
+		anim = document.createElementNS(svgNS, 'animatetransform');
+		anim.setAttribute('attributename', 'transform');
+		anim.setAttribute('type', 'scale');
+		anim.setAttribute('repeatcount', 'indefinite');
+		if (scalePingPong)
+			totalScaleDur += scaleDur;
+		anim.setAttribute('dur', totalScaleDur + 's');
+		firstFrame = scaleXRange[0] + ' ' + scaleYRange[0];
+		anim.setAttribute('from', firstFrame);
+		var thirdFrame = scaleXRange[1] + ' ' + scaleYRange[1];
+		frames = firstFrame + ';' + firstFrame + ';' + thirdFrame + ';' + thirdFrame;
+		var time = scaleHaltDurAtMin / totalScaleDur;
+		var times = '0;' + time + ';';
+		time += scaleDur / totalScaleDur;
+		times += time + ';';
+		time += scaleHaltDurAtMax / totalScaleDur;
+		times += time;
+		if (scalePingPong)
+		{
+			anim.setAttribute('to', firstFrame);
+			frames += ';' + firstFrame;
+			times += ';' + 1;
+		}
+		else
+			anim.setAttribute('to', thirdFrame);
+		anim.setAttribute('values', frames);
+		anim.setAttribute('keytimes', times);
+		anim.setAttribute('additive', 'sum');
+		svg.appendChild(anim);
+	}
+	if (cycleDur != 0)
+	{
+		anim = document.createElementNS(svgNS, 'animate');
+		anim.setAttribute('attributename', 'stroke-dashoffset');
+		anim.setAttribute('repeatcount', 'indefinite');
+		var pathLen = path.getTotalLength();
+		anim.setAttribute('dur', cycleDur + 's');
+		anim.setAttribute('from', 0);
+		anim.setAttribute('to', pathLen);
+		anim.setAttribute('values', '0;' + pathLen);
+		path.appendChild(anim);
+	}
+	document.getElementById(id + ' ').remove();
+	svg.appendChild(path);
+	var capTypes = ['butt', 'round', 'square'];
+	svg.style.strokeLinecap = capTypes[capType];
+	var joinTypes = ['arcs', 'bevel', 'miter', 'miter-clip', 'round'];
+	svg.style.strokeLinejoin = joinTypes[joinType];
+	svg.style.strokeDasharray = dashArr;
+	if (magnitude(fillHatchDensity) > 0)
+	{
+		var args = [fillClr, true, svg, path]; 
+		if (fillHatchDensity[0] > 0)
+			hatch ('_' + id, ...args, fillHatchDensity[0], fillHatchRandDensity[0], fillHatchAng[0], fillHatchWidth[0]);
+		if (fillHatchDensity[1] > 0)
+			hatch ('|' + id, ...args, fillHatchDensity[1], fillHatchRandDensity[1], fillHatchAng[1], fillHatchWidth[1]);
+		lineClr[3] = 255;
+	}
+	if (magnitude(lineHatchDensity) > 0)
+	{
+		var args = [lineClr, false, svg, path]; 
+		if (lineHatchDensity[0] > 0)
+			hatch ('@' + id, ...args, lineHatchDensity[0], lineHatchRandDensity[0], lineHatchAng[0], lineHatchWidth[0]);
+		if (lineHatchDensity[1] > 0)
+			hatch ('$' + id, ...args, lineHatchDensity[1], lineHatchRandDensity[1], lineHatchAng[1], lineHatchWidth[1]);
+		lineClr[3] = 255;
+	}
+	svg.setAttribute('stroke-opacity', lineClr[3] / 255);
+	if (mirrorX)
+	{
+		svg = copy_node(id, '~' + id, pos);
+		svg.setAttribute('transform', trs + 'scale(-1,1)');
+		svg.setAttribute('transform-origin', 50 - (pivot[0] - 50) + '% ' + pivot[1] + '%');
+	}
+	if (mirrorY)
+	{
+		svg = copy_node(id, '`' + id, pos);
+		svg.setAttribute('transform', trs + 'scale(1,-1)');
+		svg.setAttribute('transform-origin', pivot[0] + '% ' + (50 - (pivot[1] - 50)) + '%');
+	}
+	var pathRect = svg.children[svg.children.length - 1].getBoundingClientRect();
+	for (var i = svg.children.length - 2; i >= 0; i --)
+	{
+		var child = svg.children[i];
+		var childRect = child.getBoundingClientRect();
+		var pathAnchor = [lerp(pathRect.x, pathRect.right, pivot[0] / 100), lerp(pathRect.y, pathRect.bottom, pivot[1] / 100)];
+		var childAnchor = [lerp(childRect.x, childRect.right, pivot[0] / 100), lerp(childRect.y, childRect.bottom, pivot[1] / 100)];
+		child.setAttribute('transform', 'translate(' + (pathAnchor[0] - childAnchor[0]) + ', ' + (pathAnchor[1] - childAnchor[1]) + ')');
+		pathRect = childRect;
+	}
+}
+function hatch (id, clr, useFIll, svg, path, density, randDensity, ang, width)
+{
+	var luminance = (.2126 * clr[0] + .7152 * clr[1] + .0722 * clr[2]) / 255;
+	var pattern = document.createElementNS(svgNS, 'pattern');
+	pattern.id = id;
+	pattern.style = 'transform:rotate(' + ang + 'deg)';
+	pattern.setAttribute('width', '100%');
+	pattern.setAttribute('height', '100%');
+	pattern.setAttribute('patternunits', 'userSpaceOnUse');
+	var path = path.cloneNode();
+	var pathTxt = '';
+	var x = 0;
+	var interval = 15 / density * luminance;
+	for (var i = 0; i < 99; i ++)
+	{
+		var off = random(-interval * randDensity, interval * randDensity);
+		pathTxt += 'M ' + (x + off) + ' 0 L ' + (x + off) + ' ' + 999 + ' ';
+		x += interval;
+	}
+	path.setAttribute('d', pathTxt);
+	path.style = 'stroke-width:' + (width * (1 - luminance)) + ';stroke:black';
+	pattern.appendChild(path);
+	svg.appendChild(pattern);
+	path = path.cloneNode(true);
+	if (useFIll)
+		path.style.fill = 'url(#' + id + ')';
+	else
+		path.style.stroke = 'url(#' + id + ')';
+	svg.appendChild(path);
+}
+// Physics Section Start
+function set_transforms (dict)
+{
+	function has_rigidbody_ancestor (node)
+	{
+		var curr = node ? node.parentElement : null;
+		while (curr && curr !== document.body)
+		{
+			if (rigidBodiesIds[curr.id])
+				return true;
+			curr = curr.parentElement;
+		}
+		return false;
+	}
+	for (var [key, val] of Object.entries(dict))
+	{
+		if (dict === collidersIds && rigidBodiesIds[key])
+			continue;
+		var node = document.getElementById(key);
+		if (!node)
+			continue;
+		if (dict === collidersIds && has_rigidbody_ancestor(node))
+			continue;
+		var pos = val.translation();
+		if (dict === collidersIds)
+		{
+			var colliderOff = colliderOffsetsIds[key];
+			if (colliderOff)
+			{
+				pos.x -= colliderOff[0];
+				pos.y -= colliderOff[1];
+			}
+		}
+		var rect = node.getBoundingClientRect();
+		var posX = pos.x - rect.width / 2;
+		var posY = pos.y - rect.height / 2;
+		var parent = node.parentElement;
+		var parentWorld = {x : 0, y : 0, rot : 0};
+		if (parent && parent !== document.body)
+		{
+			parentWorld = get_world_transform(parent);
+			posX -= parentWorld.x;
+			posY -= parentWorld.y;
+			var cos = Math.cos(-parentWorld.rot);
+			var sin = Math.sin(-parentWorld.rot);
+			var lx = posX * cos - posY * sin;
+			var ly = posX * sin + posY * cos;
+			posX = lx;
+			posY = ly;
+		}
+		var localRot = val.rotation();
+		if (parent && parent !== document.body)
+			localRot -= parentWorld.rot;
+		var existingTransform = node.style.transform || '';
+		var extraTransforms = existingTransform
+			.replace(/translate\\(\\s*[\\-\\d.]+(?:e[-+]?\\d+)?(?:px)?\\s*,\\s*[\\-\\d.]+(?:e[-+]?\\d+)?(?:px)?\\s*\\)/gi, '')
+			.replace(/rotate\\(\\s*[\\-\\d.]+(?:e[-+]?\\d+)?\\s*(?:deg|rad)?\\s*\\)/gi, '')
+			.trim();
+		node.style.transform = 'translate(' + posX + 'px,' + posY + 'px) rotate(' + localRot + 'rad)' + (extraTransforms ? ' ' + extraTransforms : '');
+	}
+}
+function remove (node)
+{
+	if (rigidBodiesIds[node.id])
+		delete rigidBodiesIds[node.id];
+	else if (collidersIds[node.id])
+	{
+		delete collidersIds[node.id];
+		delete colliderOffsetsIds[node.id];
+	}
+	node.remove();
+}
+function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides = {})
+{
+	var defn = prefabs[prefabName];
+	if (!defn)
+		return null;
+	var roots = defn.roots;
+	var nodes = defn.nodes;
+	function worldFromLocal (parentWorldPos, parentWorldRot, localPos, localRot)
+	{
+		var rad = parentWorldRot * (Math.PI / 180);
+		var dx = localPos[0] * Math.cos(rad) - localPos[1] * Math.sin(rad);
+		var dy = localPos[0] * Math.sin(rad) + localPos[1] * Math.cos(rad);
+		return [[parentWorldPos[0] + dx, parentWorldPos[1] + dy], parentWorldRot + localRot];
+	}
+	function spawnNode (templateId, newId, worldPos, worldRot, parentNode = null)
+	{
+		var attrs = attributeOverrides[templateId] || {};
+		var result = copy_node(templateId, newId, worldPos, worldRot, attrs);
+		register_instance (templateId, newId);
+		var spawnedNode = result && result[0] ? result[0] : null;
+		if (parentNode && spawnedNode)
+			parentNode.appendChild(spawnedNode);
+		var nodeDef = nodes[templateId];
+		if (nodeDef && spawnedNode)
+		{
+			var childIds = nodeDef.children;
+			for (var i = 0; i < childIds.length; i ++)
+			{
+				var childTemplateId = childIds[i];
+				var childDef = nodes[childTemplateId];
+				if (!childDef)
+					continue;
+				var childNewId = instanceId + '_' + childTemplateId;
+				var childWorld = worldFromLocal(worldPos, worldRot, childDef.localPos, childDef.localRot);
+				spawnNode (childTemplateId, childNewId, childWorld[0], childWorld[1], spawnedNode);
+			}
+		}
+		run_init_scripts (newId);
+		return result;
+	}
+	var rootWorld = [pos[0], pos[1]];
+	var rootRot = rot;
+	var container = null;
+	if (roots.length > 1)
+	{
+		container = add_div(instanceId, rootWorld, [], {}, '');
+		for (var r = 0; r < roots.length; r ++)
+		{
+			var rdef = nodes[roots[r]];
+			var rpos = r === 0 ? rootWorld : [rootWorld[0] + (rdef.localPos[0] || 0), rootWorld[1] + (rdef.localPos[1] || 0)];
+			var rrot = rootRot + (rdef.localRot || 0);
+			spawnNode (roots[r], instanceId + '_' + roots[r], rpos, rrot, container);
+		}
+		return container;
+	}
+	var firstRoot = roots[0];
+	if (!firstRoot)
+		return null;
+	return spawnNode(firstRoot, instanceId, rootWorld, rootRot) && document.getElementById(instanceId) ? document.getElementById(instanceId) : null;
+}
+function remove_prefab (rootNodeOrId)
+{
+	var root = typeof rootNodeOrId === 'string' ? document.getElementById(rootNodeOrId) : rootNodeOrId;
+	if (!root)
+		return;
+	var self = this;
+	function removeRecursive (node)
+	{
+		self.unregister_instance (node.id);
+		while (node.firstChild)
+			removeRecursive (node.firstChild);
+		remove (node);
+	}
+	removeRecursive (root);
+}
+function get_prefab_node (instanceId, templateId)
+{
+	return document.getElementById(instanceId + '_' + templateId) || document.getElementById(instanceId);
+}
+// Physics Section End
+globalThis.prevTicks = 0;
+globalThis.dt = 0;
+function main ()
+{
+	var f = t => {
+		dt = (t - prevTicks) / 1000;
+		prevTicks = t;
+		window.requestAnimationFrame(f);
+		run_update_scripts();
+		// Update
+	};
+	window.requestAnimationFrame(t => {
+		prevTicks = t;
+		window.requestAnimationFrame(f);
+	});
+	// Physics Section Start
+	setInterval(() => {
+		if (!globalThis.world || !globalThis.eventQueue)
+			return;
+		globalThis.world.step(globalThis.eventQueue);
+		resolve_pending_physics_copies();
+		set_transforms (rigidBodiesIds);
+		set_transforms (collidersIds);
+	}, 16);
+	// Physics Section End
+}
 '''
 
 def GenJs (world):
@@ -3316,8 +3358,8 @@ def GenJs (world):
 	templateScriptsJson = json.dumps(templateScripts)
 	templateScriptsInlined = 'JSON.parse("' + templateScriptsJson.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r') + '")'
 	def _prepare_injected_script (code):
-		code = re.sub(r'(^|[^\w$.])(new\s+)?globalThis\.RAPIER\.Vector2\s*\(', lambda m: m.group(1) + ('' if m.group(2) else 'new ') + 'globalThis.RAPIER.Vector2(', code, flags = re.M)
-		code = re.sub(r'(^|[^\w$.])(new\s+)?RAPIER\.Vector2\s*\(', lambda m: m.group(1) + ('' if m.group(2) else 'new ') + 'RAPIER.Vector2(', code, flags = re.M)
+		code = re.sub(r'(^|[^\w])(new\s+)?globalThis\.RAPIER\.Vector2\s*\(', lambda m: m.group(1) + ('' if m.group(2) else 'new ') + 'globalThis.RAPIER.Vector2(', code, flags = re.M)
+		code = re.sub(r'(^|[^\w])(new\s+)?RAPIER\.Vector2\s*\(', lambda m: m.group(1) + ('' if m.group(2) else 'new ') + 'RAPIER.Vector2(', code, flags = re.M)
 		code = re.sub(r'([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\.items\s*\(\)', r'Object.entries(\1)', code)
 		return code
 	initInjected = '\n'.join('(function(){ ' + _prepare_injected_script(s) + ' })();' for s in initCode)
