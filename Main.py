@@ -389,7 +389,11 @@ def GatherPrefabs ():
 				prefabs[coll.name] = defn
 
 def GetInstancedObjects (scene):
-	sceneObs = set(scene.collection.objects)
+	sceneObs = set(scene.collection.all_objects)
+	return sceneObs
+
+def GetInstancedCollectionTemplateObjects (scene):
+	sceneObs = set(scene.collection.all_objects)
 	pendingCollections = []
 	for ob in sceneObs:
 		if ob.exportOb and getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
@@ -405,7 +409,11 @@ def GetInstancedObjects (scene):
 				sceneObs.add(ob)
 			if ob.exportOb and getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None):
 				pendingCollections.append(ob.instance_collection)
-	return sceneObs
+	templateObs = set()
+	for coll in visitedCollections:
+		for ob in coll.all_objects:
+			templateObs.add(ob)
+	return templateObs
 
 def ExportObject (ob):
 	global svgsDatas
@@ -1619,6 +1627,7 @@ def GetBlenderData ():
 	prefabPathsDatas = []
 	collectionInstanceCopyCounts = {}
 	instancedObjects = GetInstancedObjects(bpy.context.scene)
+	instancedCollectionTemplateObjects = GetInstancedCollectionTemplateObjects(bpy.context.scene)
 	inPrefabColl = set()
 	inNonPrefabColl = set()
 	for coll in bpy.data.collections:
@@ -1630,7 +1639,7 @@ def GetBlenderData ():
 				inNonPrefabColl.add(ob)
 	templateOnlyObs = inPrefabColl - inNonPrefabColl
 	for ob in bpy.data.objects:
-		if ob in instancedObjects:
+		if ob in instancedObjects and ob not in instancedCollectionTemplateObjects:
 			ExportObject (ob)
 	GatherPrefabs ()
 	for ob in bpy.data.objects:
@@ -3240,23 +3249,20 @@ function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides 
 	}
 	var rootWorld = [pos[0], pos[1]];
 	var rootRot = rot;
-	var container = null;
-	if (roots.length > 1)
-	{
-		container = add_div(instanceId, rootWorld, [], {}, '');
-		for (var r = 0; r < roots.length; r ++)
-		{
-			var rdef = nodes[roots[r]];
-			var rpos = r === 0 ? rootWorld : [rootWorld[0] + (rdef.localPos[0] || 0), rootWorld[1] + (rdef.localPos[1] || 0)];
-			var rrot = rootRot + (rdef.localRot || 0);
-			spawnNode (roots[r], instanceId + '_' + roots[r], rpos, rrot, container);
-		}
-		return container;
-	}
-	var firstRoot = roots[0];
-	if (!firstRoot)
+	if (roots.length == 0)
 		return null;
-	return spawnNode(firstRoot, instanceId, rootWorld, rootRot) && document.getElementById(instanceId) ? document.getElementById(instanceId) : null;
+	var container = add_div(instanceId, rootWorld, [], {}, '', rootRot);
+	for (var r = 0; r < roots.length; r ++)
+	{
+		var rid = roots[r];
+		var rdef = nodes[rid];
+		if (!rdef)
+			continue;
+		var rpos = [rdef.localPos[0] || 0, rdef.localPos[1] || 0];
+		var rrot = rdef.localRot || 0;
+		spawnNode (rid, instanceId + '_' + rid, rpos, rrot, container);
+	}
+	return container;
 }
 globalThis.spawn_prefab = spawn_prefab;
 function remove_prefab (rootNodeOrId)
