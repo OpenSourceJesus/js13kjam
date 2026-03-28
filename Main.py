@@ -185,7 +185,7 @@ def Copy (ob, copyData = True, copyActions = True, collection = None):
 		childCopy.parent = copy
 	return copy
 
-def ToByteString (n, delimeters = '\\`', escapeQuotes : bool = True):
+def ToByteString (n, delimeters = '\\`', escapeQuotes : bool = False):
 	n = round(n)
 	if n < 32:
 		n = 32
@@ -523,9 +523,6 @@ def ExportObject (ob):
 					components = vector.split(',')
 					x = float(components[0])
 					y = float(components[1])
-					if ob.roundAndCompressPathData:
-						x = int(round(x))
-						y = int(round(y))
 					vector = newOb.matrix_world @ Vector((x, y, 0))
 					x = vector.x
 					y = vector.y
@@ -2521,22 +2518,19 @@ var scripts = {};
 var scriptScopes = {};
 var _currentInstanceId = null;
 var pendingPhysicsCopies = [];
-[
-    "Player",
-    "Saw.001",
-    "Wall.030"
-]
 function register_instance (templateId, instanceId)
 {
 	liveInstanceIds.add(instanceId);
 	instanceToTemplate[instanceId] = templateId;
 }
+globalThis.register_instance = register_instance;
 function unregister_instance (instanceId)
 {
 	liveInstanceIds.delete(instanceId);
 	delete instanceToTemplate[instanceId];
 	delete scriptScopes[instanceId];
 }
+globalThis.unregister_instance = unregister_instance;
 function _prepare_script (code)
 {
 	return code
@@ -2552,6 +2546,7 @@ function _prepare_script (code)
 		.replace(/^async function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = async ($2) => {')
 		.replace(/^function\\s+([A-Za-z_$][\\w$]*)\\s*\\(([^)]*)\\)\\s*\\{/gm, '_scope.$1 = ($2) => {');
 }
+globalThis._prepare_script = _prepare_script;
 function _exec_script (instanceId, code, phase)
 {
 	var el = document.getElementById(instanceId);
@@ -2572,6 +2567,7 @@ function _exec_script (instanceId, code, phase)
 		console.error('[script:' + phase + '] ' + instanceId, err);
 	}
 }
+globalThis._exec_script = _exec_script;
 function run_init_scripts (instanceId)
 {
 	var tid = instanceToTemplate[instanceId];
@@ -2588,6 +2584,7 @@ function run_init_scripts (instanceId)
 		for (var i = 0; i < rt.init.length; i ++)
 			_exec_script(instanceId, rt.init[i], 'init');
 }
+globalThis.run_init_scripts = run_init_scripts;
 function run_update_scripts ()
 {
 	liveInstanceIds.forEach(function (id)
@@ -2607,6 +2604,7 @@ function run_update_scripts ()
 				_exec_script(id, rt.update[i], 'update');
 	});
 }
+globalThis.run_update_scripts = run_update_scripts;
 function add_script (instanceId, code, type)
 {
 	if (!scripts[instanceId])
@@ -2619,11 +2617,13 @@ function add_script (instanceId, code, type)
 		_currentInstanceId = null;
 	}
 }
+globalThis.add_script = add_script;
 function remove_script (instanceId, type, index)
 {
 	if (scripts[instanceId] && scripts[instanceId][type])
 		scripts[instanceId][type].splice(index, 1);
 }
+globalThis.remove_script = remove_script;
 function get_svg_paths_and_strings (framesStrings, cyclic)
 {
 	var pathsVals = [];
@@ -2656,6 +2656,7 @@ function get_svg_paths_and_strings (framesStrings, cyclic)
 	}
 	return [pathsVals, pathsStrings, pathMode];
 }
+globalThis.get_svg_paths_and_strings = get_svg_paths_and_strings;
 function get_svg_path (pathStr, cyclic)
 {
 	var output = 'M ' + pathStr.charCodeAt(0) + ', ' + pathStr.charCodeAt(1) + ' ';
@@ -2680,6 +2681,7 @@ function get_svg_path (pathStr, cyclic)
 		output += 'Z';
 	return output;
 }
+globalThis.get_svg_path = get_svg_path;
 function get_local_transform (node)
 {
 	var trs = '';
@@ -2705,6 +2707,7 @@ function get_local_transform (node)
 	}
 	return {x : tx, y : ty, rot : rz};
 }
+globalThis.get_local_transform = get_local_transform;
 function get_world_transform (node)
 {
 	var chain = [];
@@ -2727,6 +2730,7 @@ function get_world_transform (node)
 	}
 	return world;
 }
+globalThis.get_world_transform = get_world_transform;
 function clone_node_physics (id, newId, worldTrs)
 {
 	function get_rigidbody_ancestor (node)
@@ -2821,6 +2825,7 @@ function clone_node_physics (id, newId, worldTrs)
 	}
 	return true;
 }
+globalThis.clone_node_physics = clone_node_physics;
 function resolve_pending_physics_copies ()
 {
 	if (!globalThis.world || pendingPhysicsCopies.length == 0)
@@ -2839,6 +2844,7 @@ function resolve_pending_physics_copies ()
 			pendingPhysicsCopies.splice(i, 1);
 	}
 }
+globalThis.resolve_pending_physics_copies = resolve_pending_physics_copies;
 function copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null)
 {
 	var copy = document.getElementById(id).cloneNode(true);
@@ -2865,6 +2871,7 @@ function copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null)
 		pendingPhysicsCopies.push({id : id, newId : newId});
 	return [copy, colliders];
 }
+globalThis.copy_node = copy_node;
 function add_radial_gradient (id, pos, zIdx, diameter, clr, clr2, clr3, clrPositions, subtractive)
 {
 	var group = document.createElementNS(svgNS, 'g');
@@ -2877,6 +2884,7 @@ function add_radial_gradient (id, pos, zIdx, diameter, clr, clr2, clr3, clrPosit
 	group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ', ' + clr[1] + ', ' + clr[2] + ', ' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ', ' + clr2[1] + ', ' + clr2[2] + ', ' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ', ' + clr3[1] + ', ' + clr3[2] + ', ' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
 	document.body.appendChild(group);
 }
+globalThis.add_radial_gradient = add_radial_gradient;
 function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, attributes, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, pivot, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
 {
 	var fillClrTxt = 'rgb(' + fillClr[0] + ' ' + fillClr[1] + ' ' + fillClr[2] + ')';
@@ -3084,6 +3092,7 @@ function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id,
 		pathRect = childRect;
 	}
 }
+globalThis.add_svg = add_svg;
 function hatch (id, clr, useFIll, svg, path, density, randDensity, ang, width)
 {
 	var luminance = (.2126 * clr[0] + .7152 * clr[1] + .0722 * clr[2]) / 255;
@@ -3114,6 +3123,7 @@ function hatch (id, clr, useFIll, svg, path, density, randDensity, ang, width)
 		path.style.stroke = 'url(#' + id + ')';
 	svg.appendChild(path);
 }
+globalThis.hatch = hatch;
 // Physics Section Start
 function set_transforms (dict)
 {
@@ -3175,6 +3185,7 @@ function set_transforms (dict)
 		node.style.transform = 'translate(' + posX + 'px,' + posY + 'px) rotate(' + localRot + 'rad)' + (extraTransforms ? ' ' + extraTransforms : '');
 	}
 }
+globalThis.set_transforms = set_transforms;
 function remove (node)
 {
 	if (rigidBodiesIds[node.id])
@@ -3186,6 +3197,7 @@ function remove (node)
 	}
 	node.remove();
 }
+globalThis.remove = remove;
 function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides = {})
 {
 	var defn = prefabs[prefabName];
@@ -3246,6 +3258,7 @@ function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides 
 		return null;
 	return spawnNode(firstRoot, instanceId, rootWorld, rootRot) && document.getElementById(instanceId) ? document.getElementById(instanceId) : null;
 }
+globalThis.spawn_prefab = spawn_prefab;
 function remove_prefab (rootNodeOrId)
 {
 	var root = typeof rootNodeOrId === 'string' ? document.getElementById(rootNodeOrId) : rootNodeOrId;
@@ -3261,10 +3274,12 @@ function remove_prefab (rootNodeOrId)
 	}
 	removeRecursive (root);
 }
+globalThis.remove_prefab = remove_prefab;
 function get_prefab_node (instanceId, templateId)
 {
 	return document.getElementById(instanceId + '_' + templateId) || document.getElementById(instanceId);
 }
+globalThis.get_prefab_node = get_prefab_node;
 // Physics Section End
 globalThis.prevTicks = 0;
 globalThis.dt = 0;
