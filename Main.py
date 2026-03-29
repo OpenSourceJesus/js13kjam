@@ -1484,7 +1484,9 @@ def GetPivot (ob):
 def GetImagePosition (ob):
 	size = ob.scale * ob.empty_display_size
 	pos = ob.location.copy()
-	pos += size * Vector((ob.empty_image_offset[0], ob.empty_image_offset[1] + 1, 0))
+	localOffset = Vector((size.x * ob.empty_image_offset[0], size.y * (ob.empty_image_offset[1] + 1), 0))
+	rotatedOffset = Rotate2DByAngle(localOffset, ob.rotation_euler.z)
+	pos += rotatedOffset
 	pos.y *= -1
 	return pos
 
@@ -2542,6 +2544,8 @@ var scripts = {};
 var scriptScopes = {};
 var _currentInstanceId = null;
 var pendingPhysicsCopies = [];
+var visualOffsetsIds = globalThis.visualOffsetsIds || {};
+globalThis.visualOffsetsIds = visualOffsetsIds;
 function register_instance (templateId, instanceId)
 {
 	liveInstanceIds.add(instanceId);
@@ -2875,7 +2879,16 @@ function copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null)
 	copy.id = newId;
 	copy.style.x = pos[0];
 	copy.style.y = pos[1];
-	copy.style.transform = 'translate(' + pos[0] + ', ' + pos[1] + ')rotate(' + rot + 'deg)';
+	var base = get_local_transform(copy);
+	var existingTransform = copy.style.transform || '';
+	var extraTransforms = existingTransform
+		.replace(/translate\\(\\s*[\\-\\d.]+(?:e[-+]?\\d+)?(?:px)?\\s*,\\s*[\\-\\d.]+(?:e[-+]?\\d+)?(?:px)?\\s*\\)/gi, '')
+		.replace(/rotate\\(\\s*[\\-\\d.]+(?:e[-+]?\\d+)?\\s*(?:deg|rad)?\\s*\\)/gi, '')
+		.trim();
+	var tx = base.x + pos[0];
+	var ty = base.y + pos[1];
+	var rz = base.rot + rot * (Math.PI / 180);
+	copy.style.transform = 'translate(' + tx + 'px, ' + ty + 'px) rotate(' + rz + 'rad)' + (extraTransforms ? ' ' + extraTransforms : '');
 	for (var [key, val] of Object.entries(attributes))
 		copy.setAttribute(key, val);
 	var parent = null;
@@ -2902,10 +2915,17 @@ function add_radial_gradient (id, pos, zIdx, diameter, clr, clr2, clr3, clrPosit
 	group.id = id;
 	group.style.x = pos[0];
 	group.style.y = pos[1];
+	group.style.position = 'absolute';
+	group.style.left = (pos[0] + diameter / 2) + 'px';
+	group.style.top = (pos[1] + diameter / 2) + 'px';
+	group.style.backgroundImage = 'radial-gradient(rgba(' + clr[0] + ', ' + clr[1] + ', ' + clr[2] + ', ' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ', ' + clr2[1] + ', ' + clr2[2] + ', ' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ', ' + clr3[1] + ', ' + clr3[2] + ', ' + clr3[3] + ') ' + clrPositions[2] + '%)';
+	group.style.width = diameter + 'px';
+	group.style.height = diameter + 'px';
+	group.style.zIndex = zIdx;
 	var mixMode = 'lighter';
 	if (subtractive)
 		mixMode = 'darker';
-	group.style = 'position:absolute;left:' + (pos[0] + diameter / 2) + 'px;top:' + (pos[1] + diameter / 2) + 'px;background-image:radial-gradient(rgba(' + clr[0] + ', ' + clr[1] + ', ' + clr[2] + ', ' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ', ' + clr2[1] + ', ' + clr2[2] + ', ' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ', ' + clr3[1] + ', ' + clr3[2] + ', ' + clr3[3] + ') ' + clrPositions[2] + '%);width:' + diameter + 'px;height:' + diameter + 'px;z-index:' + zIdx + ';mix-blend-mode:plus-' + mixMode;
+	group.style.mixBlendMode = 'plus-' + mixMode;
 	document.body.appendChild(group);
 }
 globalThis.add_radial_gradient = add_radial_gradient;
@@ -2915,14 +2935,14 @@ function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id,
 	var lineClrTxt = 'rgb(' + lineClr[0] + ' ' + lineClr[1] + ' ' + lineClr[2] + ')';
 	var pos = positions[0];
 	var svg = document.createElementNS(svgNS, 'svg');
-	svg.setAttribute('fill-opacity', fillClr[3] / 255);
+	svg.style.fillOpacity = fillClr[3] / 255;
 	svg.id = id;
 	svg.style = 'z-index:' + zIdx + ';position:absolute';
-	svg.setAttribute('transform-pivot', pivot[0] + '% ' + pivot[1] + '%');
+	svg.style.transformOrigin = pivot[0] + '% ' + pivot[1] + '%';
 	svg.style.x = pos[0];
 	svg.style.y = pos[1];
-	svg.setAttribute('width', size[0]);
-	svg.setAttribute('height', size[1]);
+	svg.style.width = size[0];
+	svg.style.height = size[1];
 	var trs = 'translate(' + pos[0] + ', ' + pos[1] + ')';
 	svg.setAttribute('transform', trs);
 	var i = 0;
@@ -2934,10 +2954,11 @@ function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id,
 	for (var pathVals of pathsValsAndStrings[0])
 	{
 		var path = document.createElementNS(svgNS, 'path');
-		path.id = id + ' ';
 		if (i > 0)
-			path.setAttribute('opacity', 0);
-		path.style = 'fill:' + fillClrTxt + ';stroke-width:' + lineWidth + ';stroke:' + lineClrTxt;
+			path.style.opacity = 0;
+		path.style.fill = fillClrTxt;
+		path.style.strokeWidth = lineWidth;
+		path.style.stroke = lineClrTxt;
 		path.setAttribute('d', pathVals);
 		if (jiggleFrames > 0)
 		{
@@ -2996,8 +3017,7 @@ function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id,
 	var off = lineWidth / 2 + jiggleDist;
 	var min = 32 - off;
 	svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
-	svg = document.getElementById(id);
-	path = document.getElementById(id + ' ');
+	path = svg.children[0];
 	var svgRect = svg.getBoundingClientRect();
 	var pathRect = path.getBoundingClientRect();
 	path.style.transform = 'translate(' + (svgRect.x - pathRect.x + off) + 'px,' + (svgRect.y - pathRect.y + off) + 'px)';
@@ -3067,7 +3087,7 @@ function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id,
 		anim.setAttribute('values', '0;' + pathLen);
 		path.appendChild(anim);
 	}
-	document.getElementById(id + ' ').remove();
+	path.remove();
 	svg.appendChild(path);
 	var capTypes = ['butt', 'round', 'square'];
 	svg.style.strokeLinecap = capTypes[capType];
@@ -3092,18 +3112,18 @@ function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id,
 			hatch ('$' + id, ...args, lineHatchDensity[1], lineHatchRandDensity[1], lineHatchAng[1], lineHatchWidth[1]);
 		lineClr[3] = 255;
 	}
-	svg.setAttribute('stroke-opacity', lineClr[3] / 255);
+	svg.style.strokeOpacity = lineClr[3] / 255;
 	if (mirrorX)
 	{
 		svg = copy_node(id, '~' + id, pos);
-		svg.setAttribute('transform', trs + 'scale(-1,1)');
-		svg.setAttribute('transform-origin', 50 - (pivot[0] - 50) + '% ' + pivot[1] + '%');
+		svg.style.transform = trs + 'scale(-1,1)';
+		svg.style.transformOrigin = 50 - (pivot[0] - 50) + '% ' + pivot[1] + '%';
 	}
 	if (mirrorY)
 	{
 		svg = copy_node(id, '`' + id, pos);
-		svg.setAttribute('transform', trs + 'scale(1,-1)');
-		svg.setAttribute('transform-origin', pivot[0] + '% ' + (50 - (pivot[1] - 50)) + '%');
+		svg.style.transform = trs + 'scale(1,-1)';
+		svg.style.transformOrigin = pivot[0] + '% ' + (50 - (pivot[1] - 50)) + '%';
 	}
 	var pathRect = svg.children[svg.children.length - 1].getBoundingClientRect();
 	for (var i = svg.children.length - 2; i >= 0; i --)
@@ -3123,9 +3143,9 @@ function hatch (id, clr, useFIll, svg, path, density, randDensity, ang, width)
 	var pattern = document.createElementNS(svgNS, 'pattern');
 	pattern.id = id;
 	pattern.style = 'transform:rotate(' + ang + 'deg)';
-	pattern.setAttribute('width', '100%');
-	pattern.setAttribute('height', '100%');
-	pattern.setAttribute('patternunits', 'userSpaceOnUse');
+	pattern.style.width = '100%';
+	pattern.style.height = '100%';
+	pattern.style.patternUnits = 'userSpaceOnUse';
 	var path = path.cloneNode();
 	var pathTxt = '';
 	var x = 0;
@@ -3137,7 +3157,8 @@ function hatch (id, clr, useFIll, svg, path, density, randDensity, ang, width)
 		x += interval;
 	}
 	path.setAttribute('d', pathTxt);
-	path.style = 'stroke-width:' + (width * (1 - luminance)) + ';stroke:black';
+	path.style.strokeWidth = width * (1 - luminance);
+	path.style.stroke = 'black';
 	pattern.appendChild(path);
 	svg.appendChild(pattern);
 	path = path.cloneNode(true);
@@ -3172,6 +3193,7 @@ function set_transforms (dict)
 		if (dict === collidersIds && has_rigidbody_ancestor(node))
 			continue;
 		var pos = val.translation();
+		var localVisualOffset = null;
 		if (dict === collidersIds)
 		{
 			var colliderOff = colliderOffsetsIds[key];
@@ -3180,10 +3202,58 @@ function set_transforms (dict)
 				pos.x -= colliderOff[0];
 				pos.y -= colliderOff[1];
 			}
+			if (!visualOffsetsIds[key])
+			{
+				var authoredWorld = get_world_transform(node);
+				var dx = authoredWorld.x - pos.x;
+				var dy = authoredWorld.y - pos.y;
+				var initialRot = val.rotation();
+				var c0 = Math.cos(initialRot);
+				var s0 = Math.sin(initialRot);
+				visualOffsetsIds[key] = [dx * c0 + dy * s0, -dx * s0 + dy * c0];
+			}
+			localVisualOffset = visualOffsetsIds[key];
 		}
 		var rect = node.getBoundingClientRect();
-		var posX = pos.x - rect.width / 2;
-		var posY = pos.y - rect.height / 2;
+		var nodeWidth = 0;
+		var nodeHeight = 0;
+		if (node.tagName && node.tagName.toLowerCase() == 'svg')
+		{
+			nodeWidth = parseFloat(node.style.width) || 0;
+			nodeHeight = parseFloat(node.style.height) || 0;
+		}
+		else if (node.tagName && node.tagName.toLowerCase() == 'img')
+		{
+			nodeWidth = node.width || node.naturalWidth || 0;
+			nodeHeight = node.height || node.naturalHeight || 0;
+		}
+		if (!nodeWidth || !nodeHeight)
+		{
+			nodeWidth = node.offsetWidth || node.clientWidth || rect.width;
+			nodeHeight = node.offsetHeight || node.clientHeight || rect.height;
+		}
+		var pivotX = 0.5;
+		var pivotY = 0.5;
+		if (nodeWidth > 0 && nodeHeight > 0)
+		{
+			var transformOrigin = (window.getComputedStyle(node).transformOrigin || '').trim();
+			var o = transformOrigin.match(/^([\\-.\\d]+)px\\s+([\\-.\\d]+)px/);
+			if (o)
+			{
+				pivotX = parseFloat(o[1]) / nodeWidth;
+				pivotY = parseFloat(o[2]) / nodeHeight;
+			}
+		}
+		var posX = pos.x - nodeWidth * pivotX;
+		var posY = pos.y - nodeHeight * pivotY;
+		if (dict === collidersIds && localVisualOffset)
+		{
+			var r = val.rotation();
+			var cr = Math.cos(r);
+			var sr = Math.sin(r);
+			posX = pos.x + localVisualOffset[0] * cr - localVisualOffset[1] * sr;
+			posY = pos.y + localVisualOffset[0] * sr + localVisualOffset[1] * cr;
+		}
 		var parent = node.parentElement;
 		var parentWorld = {x : 0, y : 0, rot : 0};
 		if (parent && parent !== document.body)
@@ -3218,6 +3288,7 @@ function remove (node)
 	{
 		delete collidersIds[node.id];
 		delete colliderOffsetsIds[node.id];
+		delete visualOffsetsIds[node.id];
 	}
 	node.remove();
 }
@@ -3449,6 +3520,9 @@ def GenHtml (world, datas, background = ''):
 	o = [
 		'<!DOCTYPE html>',
 		'<html style="' + background + 'width:9999px;height:9999px;overflow:hidden">',
+		'<head>',
+		'<meta charset="utf-8">',
+		'</head>',
 		'<body>',
 		''.join(imgs.values()),
 		''.join(svgsDatas.values()),

@@ -1,3 +1,5 @@
 *.blend1
+*.html
+*.zip
 __pycache__
 .cursor
