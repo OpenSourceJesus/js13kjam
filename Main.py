@@ -98,7 +98,7 @@ def GetScripts (ob):
 		if not getattr(ob, 'scriptDisable%i' %i):
 			txt = getattr(ob, 'script%i' %i)
 			if txt:
-				scripts.append((txt.as_string(), getattr(ob, 'initScript%i' %i), getattr(ob, 'scriptType%i' %i)))
+				scripts.append((txt.as_string(), getattr(ob, 'initScript%i' %i), getattr(ob, 'scriptType%i' %i), txt))
 	return scripts
 
 def TryChangeToInt (f : float):
@@ -1584,7 +1584,7 @@ def GetPathDelta (fromPathData, toPathData):
 			output += ToByteString(i + 32) + ToByteString(toPathVal - fromPathVal + 32 + 128)
 	return output
 
-def Py2Js (pyCode):
+def Py2Js (pyCode, txtBlock = None):
 	pyScriptPath = os.path.join(TMP_DIR, 'Temp.py')
 	jsScriptPath = pyScriptPath.replace('.py', '.js')
 	open(pyScriptPath, 'w').write(pyCode)
@@ -1593,7 +1593,19 @@ def Py2Js (pyCode):
 	try:
 		result = subprocess.run(cmd, check=True, capture_output=True, text=True)
 	except subprocess.CalledProcessError as e:
-		print(f"Error: {e.stderr}", pyCode)
+		if txtBlock:
+			source = str(txtBlock)
+			if not isinstance(txtBlock, str):
+				source = (
+					getattr(txtBlock, 'filename', None)
+					or getattr(txtBlock, 'filepath', None)
+					or getattr(txtBlock, 'name', None)
+					or source
+				)
+			print(source + f': Error: {e.stderr}')
+		else:
+			print(f"Error: {e.stderr}", pyCode)
+		return ''
 	jsCode = open(jsScriptPath, 'r').read()
 	jsCode = re.sub(r'([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\.items\s*\(\)', r'Object.entries(\1)', jsCode)
 	return jsCode
@@ -1644,37 +1656,39 @@ def GetBlenderData ():
 	GatherPrefabs ()
 	for ob in bpy.data.objects:
 		for scriptInfo in GetScripts(ob):
-			script = scriptInfo[0]
+			scriptTxt = scriptInfo[0]
 			isInit = scriptInfo[1]
 			_type = scriptInfo[2]
+			script = scriptInfo[3]
 			if _type.startswith(exportType):
 				if _type == 'html-py':
-					script = Py2Js(script)
+					scriptTxt = Py2Js(scriptTxt, script)
 				obName = ob.name
 				sceneId = obName[:-1] if obName.endswith('_') else obName
 				if sceneId not in templateScripts:
 					templateScripts[sceneId] = {'init': [], 'update': []}
 				if isInit:
-					if script not in templateScripts[sceneId]['init']:
-						templateScripts[sceneId]['init'].append(script)
+					if scriptTxt not in templateScripts[sceneId]['init']:
+						templateScripts[sceneId]['init'].append(scriptTxt)
 				else:
-					if script not in templateScripts[sceneId]['update']:
-						templateScripts[sceneId]['update'].append(script)
+					if scriptTxt not in templateScripts[sceneId]['update']:
+						templateScripts[sceneId]['update'].append(scriptTxt)
 	world = bpy.context.world
 	if world:
 		for scriptInfo in GetScripts(world):
-			script = scriptInfo[0]
+			scriptTxt = scriptInfo[0]
 			isInit = scriptInfo[1]
 			_type = scriptInfo[2]
+			script = scriptInfo[3]
 			if _type.startswith(exportType):
 				if _type == 'html-py':
-					script = Py2Js(script)
+					scriptTxt = Py2Js(scriptTxt, script)
 				if isInit:
 					if script not in initCode:
-						initCode.append(script)
+						initCode.append(scriptTxt)
 				else:
 					if script not in updateCode:
-						updateCode.append(script)
+						updateCode.append(scriptTxt)
 	return (datas, initCode, updateCode)
 
 buildInfo = {
@@ -2402,7 +2416,8 @@ function remap (inFrom, inTo, outFrom, outTo, n)
 globalThis.remap = remap;
 function ang_to_dir (ang)
 {
-	return RAPIER.Vector2(Math.cos(ang), Math.sin(ang));
+	ang *= Math.PI / 180;
+	return new RAPIER.Vector2(Math.cos(ang), Math.sin(ang));
 }
 globalThis.ang_to_dir = ang_to_dir;
 function random_vector (maxDist)
@@ -3214,25 +3229,28 @@ function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides 
 		return null;
 	var roots = defn.roots;
 	var nodes = defn.nodes;
-	function worldFromLocal (parentWorldPos, parentWorldRot, localPos, localRot)
-	{
-		var rad = parentWorldRot * (Math.PI / 180);
-		var dx = localPos[0] * Math.cos(rad) - localPos[1] * Math.sin(rad);
-		var dy = localPos[0] * Math.sin(rad) + localPos[1] * Math.cos(rad);
-		return [[parentWorldPos[0] + dx, parentWorldPos[1] + dy], parentWorldRot + localRot];
-	}
-	function spawnNode (templateId, newId, worldPos, worldRot, parentNode = null)
+	function spawnNode (templateId, newId, localPos, localRot, parentNode = null)
 	{
 		var attrs = attributeOverrides[templateId] || {};
-		var result = copy_node(templateId, newId, worldPos, worldRot, attrs);
+		var result = copy_node(templateId, newId, localPos, localRot, attrs, parentNode ? parentNode.id : null);
 		register_instance (templateId, newId);
 		var spawnedNode = result && result[0] ? result[0] : null;
-		if (parentNode && spawnedNode)
-			parentNode.appendChild(spawnedNode);
 		var nodeDef = nodes[templateId];
 		if (nodeDef && spawnedNode)
 		{
 			var childIds = nodeDef.children;
+			if (childIds && childIds.length > 0)
+			{
+				var childTemplateIds = {};
+				for (var c = 0; c < childIds.length; c ++)
+					childTemplateIds[childIds[c]] = true;
+				for (var c = spawnedNode.children.length - 1; c >= 0; c --)
+				{
+					var existingChild = spawnedNode.children[c];
+					if (childTemplateIds[existingChild.id])
+						existingChild.remove();
+				}
+			}
 			for (var i = 0; i < childIds.length; i ++)
 			{
 				var childTemplateId = childIds[i];
@@ -3240,17 +3258,27 @@ function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides 
 				if (!childDef)
 					continue;
 				var childNewId = instanceId + '_' + childTemplateId;
-				var childWorld = worldFromLocal(worldPos, worldRot, childDef.localPos, childDef.localRot);
-				spawnNode (childTemplateId, childNewId, childWorld[0], childWorld[1], spawnedNode);
+				spawnNode (childTemplateId, childNewId, childDef.localPos, childDef.localRot, spawnedNode);
 			}
 		}
 		run_init_scripts (newId);
 		return result;
 	}
-	var rootWorld = [pos[0], pos[1]];
+	var rootWorld = [pos && pos.x != null ? pos.x : 0, pos && pos.y != null ? pos.y : 0];
 	var rootRot = rot;
 	if (roots.length == 0)
 		return null;
+	if (document.getElementById(instanceId))
+	{
+		var suffix = 1;
+		var candidate = instanceId + '_inst';
+		while (document.getElementById(candidate))
+		{
+			candidate = instanceId + '_inst' + suffix;
+			suffix ++;
+		}
+		instanceId = candidate;
+	}
 	var container = add_div(instanceId, rootWorld, [], {}, '', rootRot);
 	for (var r = 0; r < roots.length; r ++)
 	{
@@ -3270,10 +3298,9 @@ function remove_prefab (rootNodeOrId)
 	var root = typeof rootNodeOrId === 'string' ? document.getElementById(rootNodeOrId) : rootNodeOrId;
 	if (!root)
 		return;
-	var self = this;
 	function removeRecursive (node)
 	{
-		self.unregister_instance (node.id);
+		unregister_instance (node.id);
 		while (node.firstChild)
 			removeRecursive (node.firstChild);
 		remove (node);
@@ -3541,7 +3568,10 @@ def BuildHtml (world):
 		htmlPath += '.html'
 	print('Saving:', htmlPath)
 	open(htmlPath, 'w').write(html)
-	zipPath = os.path.expanduser(world.zipPath)
+	if not world.zipPath:
+		zipPath = TMP_DIR + '/index.zip'
+	else:
+		zipPath = os.path.expanduser(world.zipPath)
 	zipPath = zipPath.replace('\\', '/')
 	if not zipPath.endswith('.zip'):
 		zipPath += '.zip'
