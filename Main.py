@@ -348,14 +348,55 @@ def GatherPrefabDefinition (coll):
 	obSet = { ob for ob in obSet if ob.exportOb and ob in exportedObs }
 	if not obSet:
 		return None
+	exportedTransforms = {}
+	def register_exported_transform (name, pos, rot = 0):
+		if not isinstance(name, str):
+			return
+		if pos is None or len(pos) < 2:
+			return
+		exportedTransforms[name] = (
+			TryChangeToInt(pos[0]),
+			TryChangeToInt(pos[1]),
+			TryChangeToInt(rot)
+		)
+	def parse_exported_entry (entry):
+		if not isinstance(entry, list):
+			return
+		l = len(entry)
+		if l > 10 and isinstance(entry[7], str):
+			frames = entry[0]
+			if isinstance(frames, list) and len(frames) > 0 and isinstance(frames[0], list) and len(frames[0]) >= 2:
+				register_exported_transform(entry[7], frames[0], 0)
+			return
+		if l >= 4 and isinstance(entry[0], str) and isinstance(entry[3], list):
+			register_exported_transform(entry[0], [entry[1], entry[2]], entry[5] if l > 5 else 0)
+			return
+		if l > 5 and isinstance(entry[1], str) and not isinstance(entry[3], list):
+			register_exported_transform(entry[1], [entry[2], entry[3]], entry[4])
+			return
+		if l > 6 and isinstance(entry[0], str):
+			register_exported_transform(entry[0], [entry[1], entry[2]], 0)
+			return
+		if l >= 4 and isinstance(entry[0], str) and isinstance(entry[1], (int, float)) and isinstance(entry[2], (int, float)):
+			register_exported_transform(entry[0], [entry[1], entry[2]], entry[3] if isinstance(entry[3], (int, float)) else 0)
+	for entry in prefabTemplateDatas:
+		parse_exported_entry(entry)
+	for entry in datas:
+		parse_exported_entry(entry)
+	world = bpy.data.worlds[0]
+	SCALE = world.exportScale
+	off = Vector(world.exportOff)
 	def worldPos (ob):
-		pos = GetObjectPosition(ob)
-		return (TryChangeToInt(pos[0]), TryChangeToInt(pos[1]))
+		if ob.name in exportedTransforms:
+			return exportedTransforms[ob.name][:2]
+		wpos = ob.matrix_world.to_translation()
+		x = wpos.x * SCALE + off.x
+		y = -wpos.y * SCALE + off.y
+		return (TryChangeToInt(x), TryChangeToInt(y))
 	def worldRot (ob):
-		prev = ob.rotation_mode
-		ob.rotation_mode = 'XYZ'
-		r = TryChangeToInt(math.degrees(ob.rotation_euler.z))
-		ob.rotation_mode = prev
+		if ob.name in exportedTransforms:
+			return exportedTransforms[ob.name][2]
+		r = TryChangeToInt(-math.degrees(ob.matrix_world.to_euler('XYZ').z))
 		return r
 	roots = [ ob for ob in obSet if ob.parent not in obSet or ob.parent is None ]
 	nodes = {}
@@ -2588,7 +2629,7 @@ function _exec_script (instanceId, code, phase)
 	var prepared = _prepare_script(code);
 	try
 	{
-		(new Function('_scope', '_currentInstanceId', 'with (_scope) {\\n' + prepared + '\\n}')).call(el, scope, instanceId);
+		(new Function('_scope', '_api', '_currentInstanceId', 'with (_api) {\\nwith (_scope) {\\n' + prepared + '\\n}\\n}')).call(el, scope, globalThis, instanceId);
 	}
 	catch (err)
 	{
@@ -2873,13 +2914,15 @@ function resolve_pending_physics_copies ()
 	}
 }
 globalThis.resolve_pending_physics_copies = resolve_pending_physics_copies;
-function copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null)
+function copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null, useTemplateTransform = true)
 {
 	var copy = document.getElementById(id).cloneNode(true);
 	copy.id = newId;
 	copy.style.x = pos[0];
 	copy.style.y = pos[1];
-	var base = get_local_transform(copy);
+	var base = {x : 0, y : 0, rot : 0};
+	if (useTemplateTransform)
+		base = get_local_transform(copy);
 	var existingTransform = copy.style.transform || '';
 	var extraTransforms = existingTransform
 		.replace(/translate\\(\\s*[\\-\\d.]+(?:e[-+]?\\d+)?(?:px)?\\s*,\\s*[\\-\\d.]+(?:e[-+]?\\d+)?(?:px)?\\s*\\)/gi, '')
@@ -2888,7 +2931,10 @@ function copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null)
 	var tx = base.x + pos[0];
 	var ty = base.y + pos[1];
 	var rz = base.rot + rot * (Math.PI / 180);
-	copy.style.transform = 'translate(' + tx + 'px, ' + ty + 'px) rotate(' + rz + 'rad)' + (extraTransforms ? ' ' + extraTransforms : '');
+	var transformTxt = 'translate(' + tx + 'px, ' + ty + 'px) rotate(' + rz + 'rad)' + (extraTransforms ? ' ' + extraTransforms : '');
+	copy.style.transform = transformTxt;
+	if (copy.tagName && copy.tagName.toLowerCase() == 'svg')
+		copy.setAttribute('transform', 'translate(' + tx + ', ' + ty + ') rotate(' + (rz * (180 / Math.PI)) + ')');
 	for (var [key, val] of Object.entries(attributes))
 		copy.setAttribute(key, val);
 	var parent = null;
@@ -3016,7 +3062,7 @@ function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id,
 	document.body.appendChild(svg);
 	var off = lineWidth / 2 + jiggleDist;
 	var min = 32 - off;
-	svg.setAttribute('viewbox', min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2));
+	svg.style.viewbox = min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2);
 	path = svg.children[0];
 	var svgRect = svg.getBoundingClientRect();
 	var pathRect = path.getBoundingClientRect();
@@ -3303,7 +3349,7 @@ function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides 
 	function spawnNode (templateId, newId, localPos, localRot, parentNode = null)
 	{
 		var attrs = attributeOverrides[templateId] || {};
-		var result = copy_node(templateId, newId, localPos, localRot, attrs, parentNode ? parentNode.id : null);
+		var result = copy_node(templateId, newId, localPos, localRot, attrs, parentNode ? parentNode.id : null, false);
 		register_instance (templateId, newId);
 		var spawnedNode = result && result[0] ? result[0] : null;
 		var nodeDef = nodes[templateId];
