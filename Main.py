@@ -3342,19 +3342,6 @@ function set_transforms (dict)
 	}
 }
 globalThis.set_transforms = set_transforms;
-function remove (node)
-{
-	if (rigidBodiesIds[node.id])
-		delete rigidBodiesIds[node.id];
-	else if (collidersIds[node.id])
-	{
-		delete collidersIds[node.id];
-		delete colliderOffsetsIds[node.id];
-		delete visualOffsetsIds[node.id];
-	}
-	node.remove();
-}
-globalThis.remove = remove;
 function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides = {})
 {
 	var defn = prefabs[prefabName];
@@ -3364,8 +3351,8 @@ function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides 
 	var nodes = defn.nodes;
 	function spawnNode (templateId, newId, localPos, localRot, parentNode = null)
 	{
-		var attrs = attributeOverrides[templateId] || {};
-		var result = copy_node(templateId, newId, localPos, localRot, attrs, parentNode ? parentNode.id : null, false);
+		var atts = attributeOverrides[templateId] || {};
+		var result = copy_node(templateId, newId, localPos, localRot, atts, parentNode ? parentNode.id : null, false);
 		register_instance (templateId, newId);
 		var spawnedNode = result && result[0] ? result[0] : null;
 		var nodeDef = nodes[templateId];
@@ -3426,6 +3413,28 @@ function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides 
 	return container;
 }
 globalThis.spawn_prefab = spawn_prefab;
+function remove_node (node)
+{
+	if (!node)
+		return;
+	function removeRecursive (current)
+	{
+		unregister_instance (current.id);
+		while (current.firstChild)
+			removeRecursive (current.firstChild);
+		if (rigidBodiesIds[current.id])
+			delete rigidBodiesIds[current.id];
+		if (collidersIds[current.id])
+		{
+			delete collidersIds[current.id];
+			delete colliderOffsetsIds[current.id];
+			delete visualOffsetsIds[current.id];
+		}
+		current.remove();
+	}
+	removeRecursive (node);
+}
+globalThis.remove_node = remove_node;
 function remove_prefab (rootNodeOrId)
 {
 	var root = typeof rootNodeOrId === 'string' ? document.getElementById(rootNodeOrId) : rootNodeOrId;
