@@ -2429,6 +2429,88 @@ main ()
 '''
 JS = '''
 var svgNS = 'http://www.w3.org/2000/svg';
+var sceneNodeOrder = 0;
+function to_z_index (zIdx)
+{
+	var z = Number(zIdx);
+	if (!Number.isFinite(z))
+		return 0;
+	return Math.round(z);
+}
+globalThis.to_z_index = to_z_index;
+function has_explicit_z_index (node)
+{
+	var z = (node.style && node.style.zIndex != null) ? String(node.style.zIndex).trim() : '';
+	return z != '' && z.toLowerCase() != 'auto';
+}
+globalThis.has_explicit_z_index = has_explicit_z_index;
+function get_effective_z_index (node)
+{
+	if (!node)
+		return 0;
+	if (has_explicit_z_index(node))
+		return to_z_index(node.style.zIndex);
+	var inferred = null;
+	if (node.children)
+	{
+		for (var child of node.children)
+		{
+			var childZ = get_effective_z_index(child);
+			if (inferred == null || childZ < inferred)
+				inferred = childZ;
+		}
+	}
+	if (inferred == null)
+		inferred = 0;
+	node.dataset.inferredZIndex = String(inferred);
+	return inferred;
+}
+globalThis.get_effective_z_index = get_effective_z_index;
+function apply_z_index (node, zIdx)
+{
+	var z = to_z_index(zIdx);
+	node.style.zIndex = String(z);
+	node.dataset.zIndex = String(z);
+	if (!node.dataset.sceneNodeOrder)
+	{
+		node.dataset.sceneNodeOrder = String(sceneNodeOrder);
+		sceneNodeOrder ++;
+	}
+}
+globalThis.apply_z_index = apply_z_index;
+function append_to_scene (node, parent = null, reorderAncestors = true)
+{
+	if (!node.dataset.sceneNodeOrder)
+	{
+		node.dataset.sceneNodeOrder = String(sceneNodeOrder);
+		sceneNodeOrder ++;
+	}
+	var targetParent = parent || document.body;
+	var nodeZ = get_effective_z_index(node);
+	var nodeOrder = Number(node.dataset.sceneNodeOrder || 0);
+	var insertBefore = null;
+	for (var child of targetParent.children)
+	{
+		if (child == node)
+			continue;
+		if (!child.dataset.sceneNodeOrder)
+		{
+			child.dataset.sceneNodeOrder = String(sceneNodeOrder);
+			sceneNodeOrder ++;
+		}
+		var childZ = get_effective_z_index(child);
+		var childOrder = Number(child.dataset.sceneNodeOrder || 0);
+		if (childZ > nodeZ || (childZ == nodeZ && childOrder > nodeOrder))
+		{
+			insertBefore = child;
+			break;
+		}
+	}
+	targetParent.insertBefore(node, insertBefore);
+	if (reorderAncestors && targetParent !== document.body && targetParent.parentElement)
+		append_to_scene (targetParent, targetParent.parentElement, true);
+}
+globalThis.append_to_scene = append_to_scene;
 function ang (from, to)
 {
 	return Math.acos(dot(normalize(from), normalize(to))) * (180 / Math.PI);
@@ -2547,12 +2629,12 @@ function add_div (id, pos, childIds = [], attributes = {}, txt = '', rot = 0)
 	group.innerHTML = txt;
 	for (var [key, val] of Object.entries(attributes))
 		group.setAttribute(key, val);
-	document.body.appendChild(group);
+	append_to_scene (group);
 	for (var childId of childIds)
 	{
 		var node = document.getElementById(childId);
 		node.style.position = 'absolute';
-		group.appendChild(node);
+		append_to_scene (node, group);
 	}
 	return group;
 }
@@ -2958,9 +3040,9 @@ function copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null, u
 		parent = document.getElementById(parentId);
 	var deferPhysics = parentId && !parent;
 	if (parent)
-		parent.appendChild(copy);
+		append_to_scene (copy, parent);
 	else
-		document.body.appendChild(copy);
+		append_to_scene (copy);
 	var worldTrs = get_world_transform(copy);
 	var colliders = [];
 	var hadPhysics = false;
@@ -2983,12 +3065,12 @@ function add_radial_gradient (id, pos, zIdx, diameter, clr, clr2, clr3, clrPosit
 	group.style.backgroundImage = 'radial-gradient(rgba(' + clr[0] + ', ' + clr[1] + ', ' + clr[2] + ', ' + clr[3] + ') ' + clrPositions[0] + '%, rgba(' + clr2[0] + ', ' + clr2[1] + ', ' + clr2[2] + ', ' + clr2[3] + ') ' + clrPositions[1] + '%, rgba(' + clr3[0] + ', ' + clr3[1] + ', ' + clr3[2] + ', ' + clr3[3] + ') ' + clrPositions[2] + '%)';
 	group.style.width = diameter + 'px';
 	group.style.height = diameter + 'px';
-	group.style.zIndex = zIdx;
+	apply_z_index (group, zIdx);
 	var mixMode = 'lighter';
 	if (subtractive)
 		mixMode = 'darker';
 	group.style.mixBlendMode = 'plus-' + mixMode;
-	document.body.appendChild(group);
+	append_to_scene (group);
 }
 globalThis.add_radial_gradient = add_radial_gradient;
 function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id, pathFramesStrings, cyclic, zIdx, attributes, jiggleDist, jiggleDur, jiggleFrames, rotAngRange, rotDur, rotPingPong, scaleXRange, scaleYRange, scaleDur, scaleHaltDurAtMin, scaleHaltDurAtMax, scalePingPong, pivot, fillHatchDensity, fillHatchRandDensity, fillHatchAng, fillHatchWidth, lineHatchDensity, lineHatchRandDensity, lineHatchAng, lineHatchWidth, mirrorX, mirrorY, capType, joinType, dashArr, cycleDur)
@@ -2999,7 +3081,8 @@ function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id,
 	var svg = document.createElementNS(svgNS, 'svg');
 	svg.style.fillOpacity = fillClr[3] / 255;
 	svg.id = id;
-	svg.style = 'z-index:' + zIdx + ';position:absolute';
+	apply_z_index (svg, zIdx);
+	svg.style.position = 'absolute';
 	svg.style.transformOrigin = pivot[0] + '% ' + pivot[1] + '%';
 	svg.style.x = pos[0];
 	svg.style.y = pos[1];
@@ -3075,7 +3158,7 @@ function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id,
 	}
 	for (var [key, val] of Object.entries(attributes))
 		svg.setAttribute(key, val);
-	document.body.appendChild(svg);
+	append_to_scene (svg);
 	var off = lineWidth / 2 + jiggleDist;
 	var min = 32 - off;
 	svg.style.viewbox = min + ' ' + min + ' ' + (size[0] + off * 2) + ' ' + (size[1] + off * 2);
