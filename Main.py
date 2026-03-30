@@ -333,7 +333,7 @@ def AddCollectionInstanceCopy (templateOb, instanceOb):
 	templateOb.rotation_mode = 'XYZ'
 	rot = TryChangeToInt(math.degrees(templateOb.rotation_euler.z))
 	templateOb.rotation_mode = prevRotMode
-	datas.append([
+	(prefabTemplateDatas if templateOb in templateOnlyObs else datas).append([
 		templateOb.name,
 		instanceName,
 		TryChangeToInt(pos[0]),
@@ -673,8 +673,8 @@ def ExportObject (ob):
 					else:
 						pathDataFrames.append(GetPathDelta(prevPathData, pathDataStr))
 				prevPathData = pathDataStr
-			datas.append(data)
-			pathsDatas.append(chr(1).join(pathDataFrames))
+			(prefabTemplateDatas if ob in templateOnlyObs else datas).append(data)
+			(prefabPathsDatas if ob in templateOnlyObs else pathsDatas).append(chr(1).join(pathDataFrames))
 		elif exportType == 'exe':
 			RenderObject (ob, newOb, lambda : RenderCurve (ob, newOb, os.path.join(TMP_DIR, ob.name)))
 		tempCollection.objects.unlink(newOb)
@@ -902,9 +902,9 @@ def ExportObject (ob):
 					ExportObject (child)
 					childrenNames.append(child.name)
 			if collectionInstanceRot is None:
-				datas.append([ob.name, TryChangeToInt(ob.location.x), TryChangeToInt(-ob.location.y), childrenNames, GetAttributes(ob)])
+				(prefabTemplateDatas if ob in templateOnlyObs else datas).append([ob.name, TryChangeToInt(ob.location.x), TryChangeToInt(-ob.location.y), childrenNames, GetAttributes(ob)])
 			else:
-				datas.append([ob.name, TryChangeToInt(ob.location.x), TryChangeToInt(-ob.location.y), childrenNames, GetAttributes(ob), collectionInstanceRot])
+				(prefabTemplateDatas if ob in templateOnlyObs else datas).append([ob.name, TryChangeToInt(ob.location.x), TryChangeToInt(-ob.location.y), childrenNames, GetAttributes(ob), collectionInstanceRot])
 	exportedObs.append(ob)
 
 def RegisterPhysics (ob):
@@ -1687,17 +1687,21 @@ def GetBlenderData ():
 	inNonPrefabColl = set()
 	for coll in bpy.data.collections:
 		exportPrefab = getattr(coll, 'exportPrefab', False)
-		for ob in coll.all_objects:
+		for ob in coll.objects:
 			if exportPrefab:
 				inPrefabColl.add(ob)
 			else:
 				inNonPrefabColl.add(ob)
-	templateOnlyObs = inPrefabColl - inNonPrefabColl
+	templateOnlyObs = set(inPrefabColl)
 	for ob in bpy.data.objects:
 		if ob in instancedObjects and ob not in instancedCollectionTemplateObjects:
 			ExportObject (ob)
 	GatherPrefabs ()
 	for ob in bpy.data.objects:
+		if not ob.exportOb:
+			continue
+		if ob not in exportedObs and ob not in templateOnlyObs:
+			continue
 		for scriptInfo in GetScripts(ob):
 			scriptTxt = scriptInfo[0]
 			isInit = scriptInfo[1]
@@ -2332,6 +2336,9 @@ for (var id of templateIdsToHide)
 	if (el)
 		el.style.visibility = 'hidden';
 }
+var templateIdSet = {};
+for (var id of templateIdsToHide)
+	templateIdSet[id] = 1;
 var i = prefabPathCount;
 var prefabs = typeof P !== 'undefined' ? JSON.parse(P) : {};
 var templateScripts = __TEMPLATE_SCRIPTS_JSON__;
@@ -2342,6 +2349,8 @@ for (var e of d)
 	var l = e.length;
 	if (l > 10)
 	{
+		if (templateIdSet[e[7]])
+			continue;
 		add_svg (e[0], e[1], [e[2], e[3]], c[e[4]], e[5], c[e[6]], e[7], p.split('\\n')[i].split(String.fromCharCode(1)), e[8], e[9], e[10], e[11], e[12], e[13], [e[14], e[15]], e[16], e[17], [e[18], e[19]], [e[20], e[21]], e[22], e[23], e[24], e[25], [e[26], e[27]], [e[28], e[29]], [e[30], e[31]], [e[32], e[33]], [e[34], e[35]], [e[36], e[37]], [e[38], e[39]], [e[40], e[41]], [e[42], e[43]], e[44], e[45], e[46], e[47], e[48], e[49], e[50]);
 		register_instance (e[7], e[7]);
 		run_init_scripts (e[7]);
@@ -2349,17 +2358,23 @@ for (var e of d)
 	}
 	else if (l > 6)
 	{
+		if (templateIdSet[e[0]])
+			continue;
 		add_radial_gradient (e[0], [e[1], e[2]], e[3], e[4], c[e[5]], c[e[6]], c[e[7]], e[8], e[9]);
 		register_instance (e[0], e[0]);
 		run_init_scripts (e[0]);
 	}
 	else if (Array.isArray(e[3]))
-		g.push(e);
+	{
+		if (!templateIdSet[e[0]])
+			g.push(e);
+	}
 	else if (l > 5)
 	{
-		copies.push(e);
+		if (!templateIdSet[e[1]] && !templateIdSet[e[0]])
+			copies.push(e);
 	}
-	else
+	else if (!templateIdSet[e[0]])
 		g.push(e);
 }
 var childParent = build_child_parent_map(g);
@@ -2918,6 +2933,7 @@ function copy_node (id, newId, pos, rot = 0, attributes = {}, parentId = null, u
 {
 	var copy = document.getElementById(id).cloneNode(true);
 	copy.id = newId;
+	copy.style.visibility = 'visible';
 	copy.style.x = pos[0];
 	copy.style.y = pos[1];
 	var base = {x : 0, y : 0, rot : 0};
