@@ -34,19 +34,24 @@ else:
 
 PipInstall ('pygame', 'maturin', 'codon-jit')
 
-# Build tools: patchelf (Linux only), Rust (all platforms)
+# Build tools: patchelf (Linux only), Rust (all platforms); mgba-qt (GBA ROM preview in Main.py)
 if IS_LINUX:
 	# Suppress "command not found" only for package managers we don't use
 	Run ('(sudo apt update && sudo apt install -y patchelf) 2>/dev/null || true')
 	Run ('(sudo dnf install -y patchelf) 2>/dev/null || true')
 	Run ('(sudo pacman -S --noconfirm patchelf) 2>/dev/null || true')
+	Run ('(sudo apt install -y mgba-qt) 2>/dev/null || true')
+	Run ('(sudo dnf install -y mgba-qt) 2>/dev/null || true')
+	Run ('(sudo pacman -S --noconfirm mgba-qt) 2>/dev/null || true')
 	# Install Rust without hiding stderr: sudo often needs a password (script has no TTY)
 	Run ('(sudo apt install -y rustc) 2>/dev/null || true')
 	Run ('(sudo dnf install -y rustc) 2>/dev/null || true')
 	Run ('(sudo pacman -S --noconfirm rust) || true')  # show errors so user sees "password required" etc.
 elif IS_MACOS:
-	Run ('brew install rust 2>/dev/null || true')
-# Windows: Rust typically via rustup (user install) or winget; skip if not present
+	Run ('brew install rust mgba 2>/dev/null || true')
+elif IS_WINDOWS:
+	# mGBA installer; Rust is usually from rustup — see CargoInPath message below
+	Run ('winget install -e --id mGBA.mGBA --accept-package-agreements --accept-source-agreements 2>nul || ver>nul')
 
 # Build PyRapier2d (ensure cargo is on PATH: rustup ~/.cargo/bin, or system /usr/bin)
 buildEnv = os.environ.copy()

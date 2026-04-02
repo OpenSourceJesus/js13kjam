@@ -3979,6 +3979,11 @@ def BuildGba (world):
 		MakeFolderForFile(out)
 		open(out, 'wb').write(rom)
 		print('Saved GBA ROM:', out, '(%i bytes)' %len(rom))
+		rom_path = os.path.abspath(out)
+		try:
+			subprocess.Popen(['mgba-qt', rom_path], start_new_session=True)
+		except FileNotFoundError:
+			print('mgba-qt not found in PATH; open the ROM manually:', rom_path)
 	finally:
 		PostBuild ()
 
