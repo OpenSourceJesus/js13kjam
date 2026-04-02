@@ -3260,13 +3260,13 @@ function add_svg (positions, posPingPong, size, fillClr, lineWidth, lineClr, id,
 	svg.style.strokeOpacity = lineClr[3] / 255;
 	if (mirrorX)
 	{
-		svg = copy_node(id, '~' + id, pos);
+		svg = copy_node(id, '~' + id, pos)[0];
 		svg.style.transform = trs + 'scale(-1,1)';
 		svg.style.transformOrigin = 50 - (pivot[0] - 50) + '% ' + pivot[1] + '%';
 	}
 	if (mirrorY)
 	{
-		svg = copy_node(id, '`' + id, pos);
+		svg = copy_node(id, '`' + id, pos)[0];
 		svg.style.transform = trs + 'scale(1,-1)';
 		svg.style.transformOrigin = pivot[0] + '% ' + (50 - (pivot[1] - 50)) + '%';
 	}
@@ -3545,25 +3545,22 @@ function main ()
 {
 	var f = t => {
 		dt = (t - prevTicks) / 1000;
+// Physics Section Start
+		globalThis.world.timestep = dt;
+		globalThis.world.step(globalThis.eventQueue);
+		resolve_pending_physics_copies ();
+		set_transforms (rigidBodiesIds);
+		set_transforms (collidersIds);
+// Physics Section End
 		prevTicks = t;
 		window.requestAnimationFrame(f);
-		run_update_scripts();
+		run_update_scripts ();
 		// Update
 	};
 	window.requestAnimationFrame(t => {
 		prevTicks = t;
 		window.requestAnimationFrame(f);
 	});
-	// Physics Section Start
-	setInterval(() => {
-		if (!globalThis.world || !globalThis.eventQueue)
-			return;
-		globalThis.world.step(globalThis.eventQueue);
-		resolve_pending_physics_copies();
-		set_transforms (rigidBodiesIds);
-		set_transforms (collidersIds);
-	}, 16);
-	// Physics Section End
 }
 '''
 
