@@ -1,6 +1,8 @@
 *.blend1
 *.html
 *.zip
+*.gba
+*.sav
 __pycache__
 .cursor
 Slime Jump

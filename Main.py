@@ -1,4 +1,4 @@
-import os, re, sys, json, string, atexit, webbrowser, subprocess, math
+import os, re, sys, json, string, atexit, webbrowser, subprocess, math, struct
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
@@ -3775,6 +3775,213 @@ def PostBuild ():
 		bpy.ops.object.mode_set(mode = prevObMode)
 	bpy.context.scene.export_svg_output = prevSvgExportPath
 
+# Nintendo logo bytes required for GBA boot (same as libgba / ezgba).
+_GBA_NINTENDO_LOGO = bytes([
+	0x24, 0xFF, 0xAE, 0x51, 0x69, 0x9A, 0xA2, 0x21, 0x3D, 0x84, 0x82, 0x0A, 0x84, 0xE4, 0x09, 0xAD, 0x11, 0x24,
+	0x8B, 0x98, 0xC0, 0x81, 0x7F, 0x21, 0xA3, 0x52, 0xBE, 0x19, 0x93, 0x09, 0xCE, 0x20, 0x10, 0x46, 0x4A, 0x4A,
+	0xF8, 0x27, 0x31, 0xEC, 0x58, 0xC7, 0xE8, 0x33, 0x82, 0xE3, 0xCE, 0xBF, 0x85, 0xF4, 0xDF, 0x94, 0xCE, 0x4B,
+	0x09, 0xC1, 0x94, 0x56, 0x8A, 0xC0, 0x13, 0x72, 0xA7, 0xFC, 0x9F, 0x84, 0x4D, 0x73, 0xA3, 0xCA, 0x9A, 0x61,
+	0x58, 0x97, 0xA3, 0x27, 0xFC, 0x03, 0x98, 0x76, 0x23, 0x1D, 0xC7, 0x61, 0x03, 0x04, 0xAE, 0x56, 0xBF, 0x38, 0x84,
+	0x00, 0x40, 0xA7, 0x0E, 0xFD, 0xFF, 0x52, 0xFE, 0x03, 0x6F, 0x95, 0x30, 0xF1, 0x97, 0xFB, 0xC0, 0x85,
+	0x60, 0xD6, 0x80, 0x25, 0xA9, 0x63, 0xBE, 0x03, 0x01, 0x4E, 0x38, 0xE2, 0xF9, 0xA2, 0x34, 0xFF, 0xBB, 0x3E,
+	0x03, 0x44, 0x78, 0x00, 0x90, 0xCB, 0x88, 0x11, 0x3A, 0x94, 0x65, 0xC0, 0x7C, 0x63, 0x87, 0xF0, 0x3C, 0xAF,
+	0xD6, 0x25, 0xE4, 0x8B, 0x38, 0x0A, 0xAC, 0x72, 0x21, 0xD4, 0xF8, 0x07,
+])
+
+def _gba_complement_check (rom : bytearray):
+	chk = 0
+	for b in rom[0xA0 : 0xBD]:
+		chk = (chk - b) & 0xFF
+	rom[0xBD] = (chk - 0x19) & 0xFF
+
+def _gba_pack_rgb555_le (r : int, g : int, b : int):
+	return (r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10)
+
+def _gba_rgba_to_mode3 (rgba):
+	'''rgba: float array shape (160, 240, 4) 0..1 -> bytes 76800 halfwords little-endian'''
+	out = bytearray(240 * 160 * 2)
+	i = 0
+	for y in range(160):
+		for x in range(240):
+			r, g, b, a = rgba[y, x]
+			r = int(max(0, min(1, r)) * 255)
+			g = int(max(0, min(1, g)) * 255)
+			b = int(max(0, min(1, b)) * 255)
+			al = max(0.0, min(1.0, a))
+			if al < 1.0:
+				# unpremultiplied over opaque black
+				r = int(r * al)
+				g = int(g * al)
+				b = int(b * al)
+			h = _gba_pack_rgb555_le(r, g, b)
+			out[i] = h & 0xFF
+			out[i + 1] = (h >> 8) & 0xFF
+			i += 2
+	return out
+
+def _gba_nn_resize_rgba (src, tw : int, th : int):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBA requires NumPy (included with Blender).')
+	sh, sw = src.shape[0], src.shape[1]
+	if sw == 0 or sh == 0:
+		return np.zeros((th, tw, 4), dtype = np.float32)
+	ys = (np.arange(th, dtype = np.float32) * sh / th).astype(np.int32)
+	xs = (np.arange(tw, dtype = np.float32) * sw / tw).astype(np.int32)
+	ys = np.clip(ys, 0, sh - 1)
+	xs = np.clip(xs, 0, sw - 1)
+	return src[np.ix_(ys, xs)]
+
+def _gba_blit_rgba (canvas, src, x : int, y : int, tint_rgb, opacity : float):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBA requires NumPy (included with Blender).')
+	ch, cw = canvas.shape[0], canvas.shape[1]
+	sh, sw = src.shape[0], src.shape[1]
+	x0 = max(0, x)
+	y0 = max(0, y)
+	x1 = min(cw, x + sw)
+	y1 = min(ch, y + sh)
+	if x0 >= x1 or y0 >= y1:
+		return
+	sx0 = x0 - x
+	sy0 = y0 - y
+	dst = canvas[y0 : y1, x0 : x1]
+	patch = src[sy0 : sy0 + (y1 - y0), sx0 : sx0 + (x1 - x0)].copy()
+	patch[:, :, 0] *= tint_rgb[0]
+	patch[:, :, 1] *= tint_rgb[1]
+	patch[:, :, 2] *= tint_rgb[2]
+	patch[:, :, 3] *= opacity
+	alpha = patch[:, :, 3 : 4]
+	dst[:] = (1.0 - alpha) * dst + alpha * patch
+
+def _gba_composite_scene (world, image_empties):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBA requires NumPy (included with Blender).')
+	bg = list(world.color)
+	canvas = np.zeros((160, 240, 4), dtype = np.float32)
+	canvas[:, :, 0] = bg[0]
+	canvas[:, :, 1] = bg[1]
+	canvas[:, :, 2] = bg[2]
+	canvas[:, :, 3] = 1.0
+	for ob in image_empties:
+		if ob.rotation_euler.z != 0:
+			print('GBA export: skipping rotation for image empty', ob.name, '(axis-aligned blit only)')
+		img_path = os.path.join(TMP_DIR, GetFileName(ob.data.filepath))
+		if not os.path.isfile(img_path):
+			continue
+		img_name = '__gba_' + GetFileName(img_path).replace('.', '_')
+		prev = bpy.data.images.get(img_name)
+		if prev:
+			bpy.data.images.remove(prev)
+		img = bpy.data.images.load(img_path)
+		img.name = img_name
+		w, h = img.size
+		if w < 1 or h < 1:
+			bpy.data.images.remove(img)
+			continue
+		pix = np.array(img.pixels[:], dtype = np.float32).reshape(h, w, 4)
+		# Blender stores rows bottom-to-top; GBA blit is top-down like the screen buffer.
+		pix = pix[::-1, :, :]
+		bpy.data.images.remove(img)
+		size = ob.scale * ob.empty_display_size
+		img_size = Vector(list(ob.data.size) + [0])
+		if img_size.x > img_size.y:
+			size.x *= img_size.x / img_size.y
+		else:
+			size.y *= img_size.y / img_size.x
+		tw = max(1, int(round(abs(size.x))))
+		th = max(1, int(round(abs(size.y))))
+		scaled = _gba_nn_resize_rgba(pix, tw, th)
+		pos = GetImagePosition(ob)
+		tint = list(ob.tint)
+		_gba_blit_rgba(canvas, scaled, int(pos.x), int(pos.y), tint, ob.color[3])
+	return canvas
+
+def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int):
+	'''pixel_bytes: 76800 bytes (240x160 RGB555 LE). bitmap_rom_offset: file offset where pixels start.'''
+	CODE_START = 0x200
+	rom_len = bitmap_rom_offset + len(pixel_bytes)
+	rom = bytearray(rom_len)
+	struct.pack_into('<I', rom, 0, 0xEA000000 | (((CODE_START - 8) // 4) & 0xFFFFFF))
+	rom[0x04 : 0x04 + len(_GBA_NINTENDO_LOGO)] = _GBA_NINTENDO_LOGO
+	title = b'JS13KGBAEXP'
+	rom[0xA0 : 0xAC] = title[: 12].ljust(12, b'\x00')
+	rom[0xAC : 0xB0] = b'JS13'
+	rom[0xB0] = 0x30
+	rom[0xB2] = 0x96
+	rom[0xB3] = 0x00
+	rom[0xB4] = 0x00
+	rom[0xBC] = 0x00
+	words = [
+		0xE59F002C,
+		0xE3A01003,
+		0xE5C01000,
+		0xE3A01004,
+		0xE5C01001,
+		0xE59F201C,
+		0xE59F301C,
+		0xE59F401C,
+		0xE4925004,
+		0xE4835004,
+		0xE2544004,
+		0xCAFFFFFB,
+		0xEAFFFFFE,
+	]
+	pool = CODE_START + len(words) * 4
+	for i, w in enumerate(words):
+		struct.pack_into('<I', rom, CODE_START + i * 4, w)
+	struct.pack_into('<I', rom, pool, 0x04000000)
+	struct.pack_into('<I', rom, pool + 4, 0x08000000 + bitmap_rom_offset)
+	struct.pack_into('<I', rom, pool + 8, 0x06000000)
+	struct.pack_into('<I', rom, pool + 12, 240 * 160 * 2)
+	rom[bitmap_rom_offset : bitmap_rom_offset + len(pixel_bytes)] = pixel_bytes
+	_gba_complement_check(rom)
+	return bytes(rom)
+
+def BuildGba (world):
+	PreBuild ()
+	try:
+		try:
+			import numpy
+		except ImportError:
+			raise RuntimeError('GBA export needs NumPy.')
+		scene_obs = list(bpy.context.scene.collection.all_objects)
+		gba_imgs = []
+		for ob in scene_obs:
+			if not ob.exportOb or ob.hide_get():
+				continue
+			if ob.type != 'EMPTY' or ob.empty_display_type != 'IMAGE' or not ob.data or not ob.data.filepath:
+				continue
+			gba_imgs.append(ob)
+		if not gba_imgs:
+			print('GBA export: no image empties with Export object enabled; wrote blank screen.')
+		gba_imgs.sort(key = lambda o: o.location.z)
+		for ob in gba_imgs:
+			img_path = os.path.join(TMP_DIR, GetFileName(ob.data.filepath))
+			prev_rot = ob.rotation_mode
+			ob.rotation_mode = 'XYZ'
+			ob.data.save(filepath = img_path)
+			ob.rotation_mode = prev_rot
+		canvas = _gba_composite_scene(world, gba_imgs)
+		pixel_bytes = _gba_rgba_to_mode3(canvas)
+		bitmap_off = 0x300
+		rom = _gba_build_rom_mode3(pixel_bytes, bitmap_off)
+		out = os.path.expanduser(world.gbaPath).replace('\\', '/')
+		if not out:
+			out = TMP_DIR + '/' + bpy.path.basename(bpy.data.filepath).replace('.blend', '') + '.gba'
+		elif not out.lower().endswith('.gba'):
+			out += '.gba'
+		MakeFolderForFile(out)
+		open(out, 'wb').write(rom)
+		print('Saved GBA ROM:', out, '(%i bytes)' %len(rom))
+	finally:
+		PostBuild ()
+
 def BuildHtml (world):
 	global exportType
 	# global SERVER_PROC
@@ -4257,6 +4464,7 @@ bpy.types.World.exportOff = bpy.props.IntVectorProperty(name = 'Offset', size = 
 bpy.types.World.importMap = bpy.props.StringProperty(name = 'Import map')
 bpy.types.World.htmlPath = bpy.props.StringProperty(name = 'Export .html')
 bpy.types.World.exePath = bpy.props.StringProperty(name = 'Export .exe')
+bpy.types.World.gbaPath = bpy.props.StringProperty(name = 'Export .gba', default = TMP_DIR + '/export.gba')
 bpy.types.World.zipPath = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = TMP_DIR + '/TestUnityProject')
 bpy.types.World.minifyMethod = bpy.props.EnumProperty(name = 'Minify using library', items = MINIFY_METHOD_ITEMS)
@@ -4754,6 +4962,24 @@ class UnityExport (bpy.types.Operator):
 		return {'FINISHED'}
 
 @bpy.utils.register_class
+class GbaExport (bpy.types.Operator):
+	bl_idname = 'world.gba_export'
+	bl_label = 'Export to GBA (.gba)'
+	bl_description = 'Build a Game Boy Advance ROM (Mode 3 bitmap) from image empties; open the .gba in Dolphin (GBA), mGBA, or VisualBoyAdvance'
+
+	@classmethod
+	def poll (cls, ctx):
+		return True
+
+	def execute (self, ctx):
+		try:
+			BuildGba (ctx.world)
+		except Exception as e:
+			self.report({'ERROR'}, str(e))
+			return {'CANCELLED'}
+		return {'FINISHED'}
+
+@bpy.utils.register_class
 class WorldPanel (bpy.types.Panel):
 	bl_idname = 'WORLD_PT_World_Panel'
 	bl_label = 'Export'
@@ -4767,6 +4993,7 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.prop(ctx.world, 'importMap')
 		self.layout.prop(ctx.world, 'htmlPath')
 		self.layout.prop(ctx.world, 'exePath')
+		self.layout.prop(ctx.world, 'gbaPath')
 		self.layout.prop(ctx.world, 'zipPath')
 		self.layout.prop(ctx.world, 'unityProjPath')
 		if usePhysics:
@@ -4782,6 +5009,7 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.operator('world.html_export', icon = 'CONSOLE')
 		self.layout.operator('world.exe_export', icon = 'CONSOLE')
 		self.layout.operator('world.unity_export', icon = 'CONSOLE')
+		self.layout.operator('world.gba_export', icon = 'CONSOLE')
 
 @bpy.utils.register_class
 class JS13KBPanel (bpy.types.Panel):
