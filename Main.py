@@ -3798,7 +3798,6 @@ def _gba_pack_rgb555_le (r : int, g : int, b : int):
 	return (r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10)
 
 def _gba_rgba_to_mode3 (rgba):
-	'''rgba: float array shape (160, 240, 4) 0..1 -> bytes 76800 halfwords little-endian'''
 	out = bytearray(240 * 160 * 2)
 	i = 0
 	for y in range(160):
@@ -3832,6 +3831,76 @@ def _gba_nn_resize_rgba (src, tw : int, th : int):
 	ys = np.clip(ys, 0, sh - 1)
 	xs = np.clip(xs, 0, sw - 1)
 	return src[np.ix_(ys, xs)]
+
+def _gba_rotate_rgba_degrees (src, angle_deg):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBA requires NumPy (included with Blender).')
+	if abs(angle_deg) < 1e-7:
+		return src
+	h, w = int(src.shape[0]), int(src.shape[1])
+	if h < 1 or w < 1:
+		return src
+	rad = math.radians(angle_deg)
+	cos_a = math.cos(rad)
+	sin_a = math.sin(rad)
+	cx = (w - 1) * 0.5
+	cy = (h - 1) * 0.5
+
+	def rot_fwd(px, py):
+		dx = px - cx
+		dy = py - cy
+		return (dx * cos_a + dy * sin_a + cx, -dx * sin_a + dy * cos_a + cy)
+
+	minx = miny = float('inf')
+	maxx = maxy = float('-inf')
+	for px, py in ((0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)):
+		qx, qy = rot_fwd(px, py)
+		minx = min(minx, qx)
+		maxx = max(maxx, qx)
+		miny = min(miny, qy)
+		maxy = max(maxy, qy)
+
+	ox0 = int(math.floor(minx + 1e-9))
+	oy0 = int(math.floor(miny + 1e-9))
+	out_w = max(1, int(math.ceil(maxx - 1e-9)) - ox0 + 1)
+	out_h = max(1, int(math.ceil(maxy - 1e-9)) - oy0 + 1)
+
+	yy, xx = np.mgrid[0 : out_h, 0 : out_w].astype(np.float32)
+	qx = xx + float(ox0)
+	qy = yy + float(oy0)
+	dqx = qx - cx
+	dqy = qy - cy
+	sx = cos_a * dqx - sin_a * dqy + cx
+	sy = sin_a * dqx + cos_a * dqy + cy
+
+	x0 = np.floor(sx).astype(np.int32)
+	y0 = np.floor(sy).astype(np.int32)
+	x1 = x0 + 1
+	y1 = y0 + 1
+	wx = (sx - x0).astype(np.float32)
+	wy = (sy - y0).astype(np.float32)
+	wx = np.clip(wx, 0.0, 1.0)
+	wy = np.clip(wy, 0.0, 1.0)
+
+	valid = (sx >= 0) & (sx <= w - 1) & (sy >= 0) & (sy <= h - 1)
+	x0c = np.clip(x0, 0, w - 1)
+	x1c = np.clip(x1, 0, w - 1)
+	y0c = np.clip(y0, 0, h - 1)
+	y1c = np.clip(y1, 0, h - 1)
+
+	c00 = src[y0c, x0c]
+	c10 = src[y0c, x1c]
+	c01 = src[y1c, x0c]
+	c11 = src[y1c, x1c]
+	one_wx = (1.0 - wx)[..., None]
+	wx_ = wx[..., None]
+	one_wy = (1.0 - wy)[..., None]
+	wy_ = wy[..., None]
+	out = one_wx * one_wy * c00 + wx_ * one_wy * c10 + one_wx * wy_ * c01 + wx_ * wy_ * c11
+	out = out * valid[..., None].astype(np.float32)
+	return out
 
 def _gba_blit_rgba (canvas, src, x : int, y : int, tint_rgb, opacity : float):
 	try:
@@ -3869,8 +3938,6 @@ def _gba_composite_scene (world, image_empties):
 	canvas[:, :, 2] = bg[2]
 	canvas[:, :, 3] = 1.0
 	for ob in image_empties:
-		if ob.rotation_euler.z != 0:
-			print('GBA export: skipping rotation for image empty', ob.name, '(axis-aligned blit only)')
 		img_path = os.path.join(TMP_DIR, GetFileName(ob.data.filepath))
 		if not os.path.isfile(img_path):
 			continue
@@ -3885,7 +3952,6 @@ def _gba_composite_scene (world, image_empties):
 			bpy.data.images.remove(img)
 			continue
 		pix = np.array(img.pixels[:], dtype = np.float32).reshape(h, w, 4)
-		# Blender stores rows bottom-to-top; GBA blit is top-down like the screen buffer.
 		pix = pix[::-1, :, :]
 		bpy.data.images.remove(img)
 		size = ob.scale * ob.empty_display_size
@@ -3897,13 +3963,15 @@ def _gba_composite_scene (world, image_empties):
 		tw = max(1, int(round(abs(size.x))))
 		th = max(1, int(round(abs(size.y))))
 		scaled = _gba_nn_resize_rgba(pix, tw, th)
+		rot_deg = math.degrees(ob.rotation_euler.z)
+		if abs(ob.rotation_euler.z) > 1e-10:
+			scaled = _gba_rotate_rgba_degrees(scaled, rot_deg)
 		pos = GetImagePosition(ob)
 		tint = list(ob.tint)
 		_gba_blit_rgba(canvas, scaled, int(pos.x), int(pos.y), tint, ob.color[3])
 	return canvas
 
 def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int):
-	'''pixel_bytes: 76800 bytes (240x160 RGB555 LE). bitmap_rom_offset: file offset where pixels start.'''
 	CODE_START = 0x200
 	rom_len = bitmap_rom_offset + len(pixel_bytes)
 	rom = bytearray(rom_len)
