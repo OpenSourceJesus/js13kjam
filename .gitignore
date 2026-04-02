@@ -3,6 +3,7 @@
 *.zip
 *.gba
 *.sav
+*.s
 __pycache__
 .cursor
 Slime Jump

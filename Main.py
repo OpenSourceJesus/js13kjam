@@ -1,11 +1,20 @@
-import os, re, sys, json, string, atexit, webbrowser, subprocess, math, struct
+import os, re, sys, json, math, string, atexit, struct, webbrowser, subprocess
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
 Util_SCRIPTS_PATH = os.path.join(_thisDir, 'Util')
 sys.path.append(Util_SCRIPTS_PATH)
+PY2GBA_PATH = os.path.join(_thisDir, 'Py2Gba')
+if os.path.isdir(PY2GBA_PATH) and PY2GBA_PATH not in sys.path:
+	sys.path.insert(0, PY2GBA_PATH)
 from MathUtil import *
 from SystemUtil import *
+try:
+	from py2gba.blender_export import export_gba_py_assembly as _py2gba_export_gba_py_assembly
+	from py2gba.blender_export import py2gba_asm as _py2gba_py2gba_asm
+except Exception:
+	_py2gba_export_gba_py_assembly = None
+	_py2gba_py2gba_asm = None
 
 isLinux = False
 POTRACE_PATH = 'potrace-1.16.'
@@ -1653,6 +1662,101 @@ def Py2Js (pyCode, txtBlock = None):
 	jsCode = re.sub(r'([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\.items\s*\(\)', r'Object.entries(\1)', jsCode)
 	return jsCode
 
+def Py2GbaAsm (pyCode, txtBlock = None, symbol_base : str = 'gba_export', kind : str = 'update'):
+	'''Transpile Python to ARM Thumb assembly for GBA (via py2gba package). kind is "init" or "update".'''
+	if _py2gba_py2gba_asm:
+		return _py2gba_py2gba_asm(
+			pyCode,
+			tmp_dir = TMP_DIR,
+			repo_root_dir = _thisDir,
+			txt_block = txtBlock,
+			symbol_base = symbol_base,
+			kind = kind,
+		)
+	return ''
+
+def _gba_draw_circle_rgba (canvas, center_xy, radius, color_rgba, width = 0.0):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBA requires NumPy (included with Blender).')
+	h = int(canvas.shape[0])
+	w = int(canvas.shape[1])
+	if radius <= 0:
+		return
+	cx = float(center_xy[0])
+	cy = float(center_xy[1])
+	r = float(radius)
+	x0 = max(0, int(math.floor(cx - r - 1)))
+	y0 = max(0, int(math.floor(cy - r - 1)))
+	x1 = min(w, int(math.ceil(cx + r + 1)))
+	y1 = min(h, int(math.ceil(cy + r + 1)))
+	if x0 >= x1 or y0 >= y1:
+		return
+	yy, xx = np.ogrid[y0 : y1, x0 : x1]
+	dist2 = (xx - cx) * (xx - cx) + (yy - cy) * (yy - cy)
+	r2 = r * r
+	if width <= 0:
+		mask = dist2 <= r2
+	else:
+		inner = max(0.0, r - float(width))
+		mask = (dist2 <= r2) & (dist2 >= inner * inner)
+	if not np.any(mask):
+		return
+	src = np.zeros((y1 - y0, x1 - x0, 4), dtype = np.float32)
+	src[:, :, 0] = max(0, min(255, int(color_rgba[0]))) / 255.0
+	src[:, :, 1] = max(0, min(255, int(color_rgba[1]))) / 255.0
+	src[:, :, 2] = max(0, min(255, int(color_rgba[2]))) / 255.0
+	src[:, :, 3] = 1.0
+	alpha = max(0.0, min(1.0, max(0, min(255, int(color_rgba[3]))) / 255.0))
+	blend = mask.astype(np.float32)[..., None] * alpha
+	dst = canvas[y0 : y1, x0 : x1]
+	dst[:] = (1.0 - blend) * dst + blend * src
+
+def ExportGbaPyAssembly (world, gba_out_path : str):
+	'''Collect gba-py scripts from world and exported objects; write Thumb assembly next to the .gba.'''
+	global exportType
+	prev_export = exportType
+	exportType = 'gba'
+	script_entries = []
+	if world:
+		for scriptInfo in GetScripts(world):
+			scriptTxt = scriptInfo[0]
+			is_init = scriptInfo[1]
+			_type = scriptInfo[2]
+			script = scriptInfo[3]
+			if _type == 'gba-py':
+				script_entries.append({
+					'code' : scriptTxt,
+					'is_init' : is_init,
+					'script_obj' : script,
+					'symbol_hint' : 'world_' + getattr(script, 'name', 'script'),
+				})
+	for ob in bpy.data.objects:
+		if not ob.exportOb or ob.hide_get():
+			continue
+		for scriptInfo in GetScripts(ob):
+			scriptTxt = scriptInfo[0]
+			is_init = scriptInfo[1]
+			_type = scriptInfo[2]
+			script = scriptInfo[3]
+			if _type == 'gba-py':
+				script_entries.append({
+					'code' : scriptTxt,
+					'is_init' : is_init,
+					'script_obj' : script,
+					'symbol_hint' : ob.name + '_' + getattr(script, 'name', 'script'),
+				})
+	exportType = prev_export
+	if _py2gba_export_gba_py_assembly:
+		return _py2gba_export_gba_py_assembly(
+			script_entries,
+			gba_out_path,
+			tmp_dir = TMP_DIR,
+			repo_root_dir = _thisDir,
+		)
+	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'builtin_only_quit' : True}
+
 def GetBlenderData ():
 	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs, collectionInstanceCopyCounts
 	vars = []
@@ -1710,6 +1814,8 @@ def GetBlenderData ():
 			if _type.startswith(exportType):
 				if _type == 'html-py':
 					scriptTxt = Py2Js(scriptTxt, script)
+				elif _type == 'gba-py':
+					continue
 				obName = ob.name
 				sceneId = obName[:-1] if obName.endswith('_') else obName
 				if sceneId not in templateScripts:
@@ -1730,6 +1836,8 @@ def GetBlenderData ():
 			if _type.startswith(exportType):
 				if _type == 'html-py':
 					scriptTxt = Py2Js(scriptTxt, script)
+				elif _type == 'gba-py':
+					continue
 				if isInit:
 					if script not in initCode:
 						initCode.append(scriptTxt)
@@ -3971,7 +4079,7 @@ def _gba_composite_scene (world, image_empties):
 		_gba_blit_rgba(canvas, scaled, int(pos.x), int(pos.y), tint, ob.color[3])
 	return canvas
 
-def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int):
+def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int, script_runtime = None):
 	CODE_START = 0x200
 	rom_len = bitmap_rom_offset + len(pixel_bytes)
 	rom = bytearray(rom_len)
@@ -4000,6 +4108,9 @@ def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int):
 		0xCAFFFFFB,
 		0xEAFFFFFE,
 	]
+	if script_runtime and (script_runtime.get('init_quit') or script_runtime.get('update_quit')):
+		# BIOS SoftReset; this is the built-in fallback execution path for pygame.quit().
+		words[-1] = 0xEF000000
 	pool = CODE_START + len(words) * 4
 	for i, w in enumerate(words):
 		struct.pack_into('<I', rom, CODE_START + i * 4, w)
@@ -4036,14 +4147,19 @@ def BuildGba (world):
 			ob.data.save(filepath = img_path)
 			ob.rotation_mode = prev_rot
 		canvas = _gba_composite_scene(world, gba_imgs)
-		pixel_bytes = _gba_rgba_to_mode3(canvas)
 		bitmap_off = 0x300
-		rom = _gba_build_rom_mode3(pixel_bytes, bitmap_off)
 		out = os.path.expanduser(world.gbaPath).replace('\\', '/')
 		if not out:
 			out = TMP_DIR + '/' + bpy.path.basename(bpy.data.filepath).replace('.blend', '') + '.gba'
 		elif not out.lower().endswith('.gba'):
 			out += '.gba'
+		script_runtime = ExportGbaPyAssembly(world, out)
+		for circle in script_runtime.get('init_draw_circles', []):
+			_gba_draw_circle_rgba(canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
+		for circle in script_runtime.get('update_draw_circles', []):
+			_gba_draw_circle_rgba(canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
+		pixel_bytes = _gba_rgba_to_mode3(canvas)
+		rom = _gba_build_rom_mode3(pixel_bytes, bitmap_off, script_runtime)
 		MakeFolderForFile(out)
 		open(out, 'wb').write(rom)
 		print('Saved GBA ROM:', out, '(%i bytes)' %len(rom))
@@ -4528,7 +4644,7 @@ SHAPE_TYPES = ['ball', 'halfspace', 'cuboid', 'roundCuboid', 'capsule', 'segment
 RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinematicPositionBased', 'kinematic-position-based', ''), ('kinematicVelocityBased', 'kinematic-velocity-based', '')]
 RIGID_BODY_TYPES = ['dynamic', 'fixed', 'kinematicPositionBased', 'kinematicVelocityBased']
 JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
-SCRIPT_TYPE_ITEMS = [('html-py', 'html-py', ''), ('html-js', 'html-js', ''), ('exe', 'exe', ''), ('unity', 'unity', '')]
+SCRIPT_TYPE_ITEMS = [('html-py', 'html-py', ''), ('html-js', 'html-js', ''), ('exe', 'exe', ''), ('unity', 'unity', ''), ('gba-py', 'gba-py', 'Python → Thumb asm for GBA (see Export to GBA)')]
 BOUNCINESS_COMBINE_RULE_ITEMS = [('average', 'average', ''), ('minimum', 'min', ''), ('multiply', 'multiply', ''), ('maximum', 'max', '')]
 BOUNCINESS_COMBINE_RULES = ['average', 'minimum', 'multiply', 'maximum']
 
