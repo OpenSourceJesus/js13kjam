@@ -1730,6 +1730,7 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 					'code' : scriptTxt,
 					'is_init' : is_init,
 					'script_obj' : script,
+					'owner_name' : '__world__',
 					'symbol_hint' : 'world_' + getattr(script, 'name', 'script'),
 				})
 	for ob in bpy.data.objects:
@@ -1745,6 +1746,7 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 					'code' : scriptTxt,
 					'is_init' : is_init,
 					'script_obj' : script,
+					'owner_name' : ob.name,
 					'symbol_hint' : ob.name + '_' + getattr(script, 'name', 'script'),
 				})
 	exportType = prev_export
@@ -1755,7 +1757,7 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 			tmp_dir = TMP_DIR,
 			repo_root_dir = _thisDir,
 		)
-	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'builtin_only_quit' : True}
+	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
 
 def GetBlenderData ():
 	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs, collectionInstanceCopyCounts
@@ -4034,7 +4036,84 @@ def _gba_blit_rgba (canvas, src, x : int, y : int, tint_rgb, opacity : float):
 	alpha = patch[:, :, 3 : 4]
 	dst[:] = (1.0 - alpha) * dst + alpha * patch
 
-def _gba_composite_scene (world, image_empties):
+def _gba_load_saved_image_rgba (ob):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBA requires NumPy (included with Blender).')
+	img_path = os.path.join(TMP_DIR, GetFileName(ob.data.filepath))
+	if not os.path.isfile(img_path):
+		return None
+	img_name = '__gba_' + GetFileName(img_path).replace('.', '_')
+	prev = bpy.data.images.get(img_name)
+	if prev:
+		bpy.data.images.remove(prev)
+	img = bpy.data.images.load(img_path)
+	img.name = img_name
+	w, h = img.size
+	if w < 1 or h < 1:
+		bpy.data.images.remove(img)
+		return None
+	pix = np.array(img.pixels[:], dtype = np.float32).reshape(h, w, 4)
+	pix = pix[::-1, :, :]
+	bpy.data.images.remove(img)
+	return pix
+
+def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBA requires NumPy (included with Blender).')
+	if not surface_ops:
+		return image_surfaces
+	owner_members = {}
+	for owner_name, surf in image_surfaces.items():
+		owner_members[owner_name] = {'surface' : surf}
+	for op in surface_ops:
+		owner_name = op.get('owner_name')
+		if not owner_name:
+			continue
+		members = owner_members.setdefault(owner_name, {})
+		member = op.get('member')
+		_type = op.get('op')
+		if _type == 'create_surface_member' and member:
+			size = op.get('size') or [1, 1]
+			w = max(1, int(size[0]))
+			h = max(1, int(size[1]))
+			members[member] = np.zeros((h, w, 4), dtype = np.float32)
+		elif _type == 'assign_surface_member' and member:
+			src_owner = op.get('src_owner_name') or owner_name
+			src_member = op.get('src_member')
+			src = owner_members.get(src_owner, {}).get(src_member) if src_member else None
+			if src is not None:
+				members[member] = src
+		elif _type == 'fill_surface_member' and member:
+			surf = members.get(member)
+			if surf is None:
+				continue
+			clr = op.get('color') or [255, 255, 255, 255]
+			surf[:, :, 0] = max(0, min(255, int(clr[0]))) / 255.0
+			surf[:, :, 1] = max(0, min(255, int(clr[1]))) / 255.0
+			surf[:, :, 2] = max(0, min(255, int(clr[2]))) / 255.0
+			surf[:, :, 3] = max(0, min(255, int(clr[3]))) / 255.0
+		elif _type == 'draw_circle_surface_member' and member:
+			surf = members.get(member)
+			if surf is None:
+				continue
+			_gba_draw_circle_rgba(
+				surf,
+				op.get('center') or [0.0, 0.0],
+				op.get('radius') or 0.0,
+				op.get('color') or [255, 255, 255, 255],
+				op.get('width') or 0.0,
+			)
+	for owner_name in list(image_surfaces.keys()):
+		override = owner_members.get(owner_name, {}).get('surface')
+		if override is not None:
+			image_surfaces[owner_name] = override
+	return image_surfaces
+
+def _gba_composite_scene (world, image_empties, image_surfaces = None):
 	try:
 		import numpy as np
 	except ImportError:
@@ -4046,22 +4125,13 @@ def _gba_composite_scene (world, image_empties):
 	canvas[:, :, 2] = bg[2]
 	canvas[:, :, 3] = 1.0
 	for ob in image_empties:
-		img_path = os.path.join(TMP_DIR, GetFileName(ob.data.filepath))
-		if not os.path.isfile(img_path):
+		pix = None
+		if image_surfaces:
+			pix = image_surfaces.get(ob.name)
+		if pix is None:
+			pix = _gba_load_saved_image_rgba(ob)
+		if pix is None:
 			continue
-		img_name = '__gba_' + GetFileName(img_path).replace('.', '_')
-		prev = bpy.data.images.get(img_name)
-		if prev:
-			bpy.data.images.remove(prev)
-		img = bpy.data.images.load(img_path)
-		img.name = img_name
-		w, h = img.size
-		if w < 1 or h < 1:
-			bpy.data.images.remove(img)
-			continue
-		pix = np.array(img.pixels[:], dtype = np.float32).reshape(h, w, 4)
-		pix = pix[::-1, :, :]
-		bpy.data.images.remove(img)
 		size = ob.scale * ob.empty_display_size
 		img_size = Vector(list(ob.data.size) + [0])
 		if img_size.x > img_size.y:
@@ -4146,7 +4216,6 @@ def BuildGba (world):
 			ob.rotation_mode = 'XYZ'
 			ob.data.save(filepath = img_path)
 			ob.rotation_mode = prev_rot
-		canvas = _gba_composite_scene(world, gba_imgs)
 		bitmap_off = 0x300
 		out = os.path.expanduser(world.gbaPath).replace('\\', '/')
 		if not out:
@@ -4154,6 +4223,13 @@ def BuildGba (world):
 		elif not out.lower().endswith('.gba'):
 			out += '.gba'
 		script_runtime = ExportGbaPyAssembly(world, out)
+		image_surfaces = {}
+		for ob in gba_imgs:
+			pix = _gba_load_saved_image_rgba(ob)
+			if pix is not None:
+				image_surfaces[ob.name] = pix
+		_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []))
+		canvas = _gba_composite_scene(world, gba_imgs, image_surfaces = image_surfaces)
 		for circle in script_runtime.get('init_draw_circles', []):
 			_gba_draw_circle_rgba(canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
 		for circle in script_runtime.get('update_draw_circles', []):
