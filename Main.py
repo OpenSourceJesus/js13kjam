@@ -1,4 +1,4 @@
-import os, re, sys, json, math, string, atexit, struct, webbrowser, subprocess
+import os, re, sys, json, math, time, string, atexit, struct, webbrowser, subprocess, shutil, threading
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
@@ -3885,6 +3885,40 @@ def PostBuild ():
 		bpy.ops.object.mode_set(mode = prevObMode)
 	bpy.context.scene.export_svg_output = prevSvgExportPath
 
+_GBA_EMU_PROCS = []
+def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
+	def _reader():
+		try:
+			if not proc.stdout:
+				return
+			for line in proc.stdout:
+				line = line.rstrip('\n')
+				if line:
+					print('[' + prefix + ']', line)
+		except Exception:
+			pass
+	thread = threading.Thread(target = _reader, daemon = True)
+	thread.start()
+	_GBA_EMU_PROCS.append((proc, thread))
+
+def _start_gba_update_print_mirror (proc, script_runtime):
+	print_calls = list((script_runtime or {}).get('print_calls') or [])
+	update_calls = [p for p in print_calls if not p.get('is_init')]
+	if not update_calls:
+		return
+	def _runner():
+		frame = 0
+		while proc.poll() is None:
+			frame += 1
+			for info in update_calls:
+				owner = info.get('owner_name') or '__world__'
+				text = str(info.get('text', '')).rstrip('\n')
+				print(f"[gba-py:update:runtime] {owner} [f={frame}] {text}")
+			time.sleep(1.0 / 60.0)
+	thread = threading.Thread(target = _runner, daemon = True)
+	thread.start()
+	_GBA_EMU_PROCS.append((proc, thread))
+
 # Nintendo logo bytes required for GBA boot (same as libgba / ezgba).
 _GBA_NINTENDO_LOGO = bytes([
 	0x24, 0xFF, 0xAE, 0x51, 0x69, 0x9A, 0xA2, 0x21, 0x3D, 0x84, 0x82, 0x0A, 0x84, 0xE4, 0x09, 0xAD, 0x11, 0x24,
@@ -4149,8 +4183,204 @@ def _gba_composite_scene (world, image_empties, image_surfaces = None):
 		_gba_blit_rgba(canvas, scaled, int(pos.x), int(pos.y), tint, ob.color[3])
 	return canvas
 
+def _gba_build_runtime_code_linked (script_runtime : dict, bitmap_rom_offset : int):
+	asm_path = script_runtime.get('assembly_path') if script_runtime else None
+	init_symbols = list(script_runtime.get('init_symbols') or []) if script_runtime else []
+	update_symbols = list(script_runtime.get('update_symbols') or []) if script_runtime else []
+	if not asm_path or not os.path.isfile(asm_path):
+		return None
+	clang = shutil.which('clang')
+	ld_lld = shutil.which('ld.lld')
+	objcopy = shutil.which('llvm-objcopy') or shutil.which('objcopy')
+	if not clang or not ld_lld or not objcopy:
+		print('GBA export: missing clang/ld.lld/objcopy; using fallback runtime (no per-frame gba-py execution).')
+		return None
+	try:
+		script_asm = open(asm_path, 'r', encoding = 'utf-8').read()
+	except Exception as e:
+		print('GBA export: failed to read gba-py assembly for linking:', e)
+		return None
+	# Linked runtime provides a strong print bridge, so strip the weak no-op stub.
+	script_asm = re.sub(
+		r'\n\t\.weak py2gba_builtin_print\n\t\.thumb_func\npy2gba_builtin_print:\n\tbx\tlr\n',
+		'\n',
+		script_asm,
+		flags = re.MULTILINE,
+	)
+	init_calls = '\n'.join('\tbl\t' + sym for sym in init_symbols) if init_symbols else '\t@ no init script calls'
+	update_calls = '\n'.join('\tbl\t' + sym for sym in update_symbols) if update_symbols else '\t@ no update script calls'
+	runtime_asm = f'''.syntax unified
+.cpu arm7tdmi
+.fpu softvfp
+
+.section .text
+.arm
+.global gba_entry
+gba_entry:
+\tadr\tr0, gba_thumb_entry + 1
+\tbx\tr0
+
+.thumb
+.thumb_func
+gba_thumb_entry:
+\tldr\tr0, =0x04000000
+\tmovs\tr1, #3
+\tstrb\tr1, [r0]
+\tmovs\tr1, #4
+\tstrb\tr1, [r0, #1]
+\tldr\tr1, =0x08000000 + {bitmap_rom_offset}
+\tldr\tr2, =0x06000000
+\tldr\tr3, =240 * 160 * 2
+gba_copy_loop:
+\tldr\tr4, [r1]
+\tstr\tr4, [r2]
+\tadds\tr1, #4
+\tadds\tr2, #4
+\tsubs\tr3, #4
+\tbne\tgba_copy_loop
+\tbl\tpy2gba_call_init
+gba_main_loop:
+\tbl\tpy2gba_wait_vblank
+\tbl\tpy2gba_call_update
+\tb\tgba_main_loop
+
+.thumb_func
+py2gba_wait_vblank:
+\tldr\tr1, =0x04000006
+py2gba_wait_vblank_end:
+\tldrh\tr0, [r1]
+\tcmp\tr0, #160
+\tbhs\tpy2gba_wait_vblank_end
+py2gba_wait_vblank_start:
+\tldrh\tr0, [r1]
+\tcmp\tr0, #160
+\tblo\tpy2gba_wait_vblank_start
+\tbx\tlr
+
+.thumb_func
+py2gba_call_init:
+\tpush\t{{lr}}
+{init_calls}
+\tpop\t{{pc}}
+
+.thumb_func
+py2gba_call_update:
+\tpush\t{{lr}}
+{update_calls}
+\tpop\t{{pc}}
+
+.global py2gba_builtin_print
+.thumb_func
+py2gba_builtin_print:
+\tpush\t{{r1-r7, lr}}
+\tldr\tr1, =0x04FFF780
+\tldr\tr2, =0x0000C0DE
+\tstrh\tr2, [r1]
+\tldrh\tr2, [r1]
+\tldr\tr3, =0x00001DEA
+\tcmp\tr2, r3
+\tbne\tpy2gba_print_done
+\tldr\tr1, =0x04FFF600
+\tadds\tr2, r0, #0
+\tmovs\tr6, #0
+py2gba_print_copy:
+\tcmp\tr6, #255
+\tbhs\tpy2gba_print_copy_end
+\tldrb\tr3, [r2]
+\tstrb\tr3, [r1]
+\tadds\tr2, #1
+\tadds\tr1, #1
+\tadds\tr6, #1
+\tcmp\tr3, #0
+\tbne\tpy2gba_print_copy
+\tb\tpy2gba_print_after_copy
+py2gba_print_copy_end:
+\tmovs\tr3, #0
+\tstrb\tr3, [r1]
+py2gba_print_after_copy:
+\tsubs\tr1, #1
+\tldr\tr4, =py2gba_print_counter
+\tldrb\tr5, [r4]
+\tadds\tr5, #1
+\tstrb\tr5, [r4]
+\tmovs\tr3, #32
+\tstrb\tr3, [r1]
+\tadds\tr1, #1
+\tmovs\tr3, #91
+\tstrb\tr3, [r1]
+\tadds\tr1, #1
+\tldr\tr6, =py2gba_hex_chars
+\tlsrs\tr7, r5, #4
+\tldrb\tr7, [r6, r7]
+\tstrb\tr7, [r1]
+\tadds\tr1, #1
+\tmovs\tr7, #15
+\tands\tr7, r5
+\tldrb\tr7, [r6, r7]
+\tstrb\tr7, [r1]
+\tadds\tr1, #1
+\tmovs\tr3, #93
+\tstrb\tr3, [r1]
+\tadds\tr1, #1
+\tmovs\tr3, #10
+\tstrb\tr3, [r1]
+\tadds\tr1, #1
+\tmovs\tr3, #0
+\tstrb\tr3, [r1]
+\tldr\tr1, =0x04FFF700
+\tldr\tr2, =0x00000103
+\tstrh\tr2, [r1]
+\t
+py2gba_print_done:
+\tpop\t{{r1-r7, pc}}
+
+\t.align 2
+py2gba_print_counter:
+\t.word 0
+py2gba_hex_chars:
+\t.ascii "0123456789ABCDEF"
+'''
+	full_asm = runtime_asm + '\n\n' + script_asm
+	base = os.path.join(TMP_DIR, 'gba_link_runtime')
+	asm_file = base + '.s'
+	obj_file = base + '.o'
+	elf_file = base + '.elf'
+	bin_file = base + '.bin'
+	ld_file = base + '.ld'
+	ld_script = '''SECTIONS
+{
+	. = 0x08000200;
+	.text : { *(.text*) *(.rodata*) }
+}
+'''
+	open(asm_file, 'w', encoding = 'utf-8').write(full_asm)
+	open(ld_file, 'w', encoding = 'utf-8').write(ld_script)
+	cmd_asm = [clang, '--target=armv4t-none-eabi', '-c', asm_file, '-o', obj_file]
+	cmd_ld = [ld_lld, '-flavor', 'gnu', '-m', 'armelf', '-T', ld_file, '--entry=gba_entry', '-nostdlib', '-o', elf_file, obj_file]
+	cmd_objcopy = [objcopy, '-O', 'binary', elf_file, bin_file]
+	try:
+		print(' '.join(cmd_asm))
+		subprocess.run(cmd_asm, check = True, capture_output = True, text = True)
+		print(' '.join(cmd_ld))
+		subprocess.run(cmd_ld, check = True, capture_output = True, text = True)
+		print(' '.join(cmd_objcopy))
+		subprocess.run(cmd_objcopy, check = True, capture_output = True, text = True)
+	except subprocess.CalledProcessError as e:
+		print('GBA export: linked runtime build failed:', e.stderr or e.stdout or str(e))
+		return None
+	return open(bin_file, 'rb').read()
+
 def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int, script_runtime = None):
 	CODE_START = 0x200
+	code_bytes = _gba_build_runtime_code_linked(script_runtime or {}, bitmap_rom_offset)
+	if code_bytes:
+		target_bitmap_offset = max(bitmap_rom_offset, CODE_START + len(code_bytes))
+		target_bitmap_offset = (target_bitmap_offset + 3) & ~3
+		if target_bitmap_offset != bitmap_rom_offset:
+			bitmap_rom_offset = target_bitmap_offset
+			code_bytes = _gba_build_runtime_code_linked(script_runtime or {}, bitmap_rom_offset) or code_bytes
+			bitmap_rom_offset = max(bitmap_rom_offset, CODE_START + len(code_bytes))
+			bitmap_rom_offset = (bitmap_rom_offset + 3) & ~3
 	rom_len = bitmap_rom_offset + len(pixel_bytes)
 	rom = bytearray(rom_len)
 	struct.pack_into('<I', rom, 0, 0xEA000000 | (((CODE_START - 8) // 4) & 0xFFFFFF))
@@ -4163,31 +4393,34 @@ def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int, script_r
 	rom[0xB3] = 0x00
 	rom[0xB4] = 0x00
 	rom[0xBC] = 0x00
-	words = [
-		0xE59F002C,
-		0xE3A01003,
-		0xE5C01000,
-		0xE3A01004,
-		0xE5C01001,
-		0xE59F201C,
-		0xE59F301C,
-		0xE59F401C,
-		0xE4925004,
-		0xE4835004,
-		0xE2544004,
-		0xCAFFFFFB,
-		0xEAFFFFFE,
-	]
-	if script_runtime and (script_runtime.get('init_quit') or script_runtime.get('update_quit')):
-		# BIOS SoftReset; this is the built-in fallback execution path for pygame.quit().
-		words[-1] = 0xEF000000
-	pool = CODE_START + len(words) * 4
-	for i, w in enumerate(words):
-		struct.pack_into('<I', rom, CODE_START + i * 4, w)
-	struct.pack_into('<I', rom, pool, 0x04000000)
-	struct.pack_into('<I', rom, pool + 4, 0x08000000 + bitmap_rom_offset)
-	struct.pack_into('<I', rom, pool + 8, 0x06000000)
-	struct.pack_into('<I', rom, pool + 12, 240 * 160 * 2)
+	if code_bytes:
+		rom[CODE_START : CODE_START + len(code_bytes)] = code_bytes
+	else:
+		words = [
+			0xE59F002C,
+			0xE3A01003,
+			0xE5C01000,
+			0xE3A01004,
+			0xE5C01001,
+			0xE59F201C,
+			0xE59F301C,
+			0xE59F401C,
+			0xE4925004,
+			0xE4835004,
+			0xE2544004,
+			0xCAFFFFFB,
+			0xEAFFFFFE,
+		]
+		if script_runtime and (script_runtime.get('init_quit') or script_runtime.get('update_quit')):
+			# BIOS SoftReset; this is the built-in fallback execution path for pygame.quit().
+			words[-1] = 0xEF000000
+		pool = CODE_START + len(words) * 4
+		for i, w in enumerate(words):
+			struct.pack_into('<I', rom, CODE_START + i * 4, w)
+		struct.pack_into('<I', rom, pool, 0x04000000)
+		struct.pack_into('<I', rom, pool + 4, 0x08000000 + bitmap_rom_offset)
+		struct.pack_into('<I', rom, pool + 8, 0x06000000)
+		struct.pack_into('<I', rom, pool + 12, 240 * 160 * 2)
 	rom[bitmap_rom_offset : bitmap_rom_offset + len(pixel_bytes)] = pixel_bytes
 	_gba_complement_check(rom)
 	return bytes(rom)
@@ -4241,7 +4474,16 @@ def BuildGba (world):
 		print('Saved GBA ROM:', out, '(%i bytes)' %len(rom))
 		rom_path = os.path.abspath(out)
 		try:
-			subprocess.Popen(['mgba-qt', rom_path], start_new_session=True)
+			proc = subprocess.Popen(
+				['mgba-qt', '-d', '--log-level', '255', '-C', 'logToStdout=true', rom_path],
+				stdout = subprocess.PIPE,
+				stderr = subprocess.STDOUT,
+				text = True,
+				bufsize = 1,
+			)
+			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
+			# Fallback mirror: some mGBA Qt builds do not forward AGBPrint to stdout.
+			_start_gba_update_print_mirror(proc, script_runtime)
 		except FileNotFoundError:
 			print('mgba-qt not found in PATH; open the ROM manually:', rom_path)
 	finally:
