@@ -4734,7 +4734,7 @@ def _gbc_palette4_from_rgba (rgba):
 		return _GBC_DEFAULT_BG_COLORS[: 4]
 	return _gbc_quantize_palette4(pix, lock_extremes = True)
 
-def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, floor_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, grav_step : int = 1):
+def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, floor_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, grav_step_x : int = 0, grav_step_y : int = 1):
 	code = bytearray()
 	def emit(*vals):
 		code.extend(vals)
@@ -4759,14 +4759,20 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	init_x = max(0, min(159, int(init_x)))
 	init_y = max(0, min(143, int(init_y)))
 	floor_y = max(0, min(143, int(floor_y)))
-	grav_step = max(-8, min(8, int(grav_step)))
+	grav_step_x = max(-32, min(32, int(grav_step_x)))
+	grav_step_y = max(-32, min(32, int(grav_step_y)))
 	sprite_tile_count = max(1, min(16, int(sprite_tile_count)))
 	sprite_tiles_w = max(1, min(4, int(sprite_tiles_w)))
 	sprite_tiles_h = max(1, min(4, int(sprite_tiles_h)))
 	if sprite_tiles_w * sprite_tiles_h > sprite_tile_count:
 		sprite_tiles_h = max(1, sprite_tile_count // sprite_tiles_w)
+	max_x = max(0, min(159, 160 - sprite_tiles_w * 8))
 	y_addr = 0xC110
 	vy_addr = 0xC111
+	x_addr = 0xC112
+	vx_addr = 0xC113
+	gacc_y_addr = 0xC114
+	gacc_x_addr = 0xC115
 	emit(0xF3)  # di
 	emit(0x31, 0xFE, 0xFF)  # ld sp, $FFFE
 	emit(0xAF)  # xor a
@@ -4800,6 +4806,14 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 	ld_a_imm(0)
 	emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+	ld_a_imm(init_x)
+	emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+	ld_a_imm(0)
+	emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+	ld_a_imm(0)
+	emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
+	ld_a_imm(0)
+	emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
 	for row in range(sprite_tiles_h):
 		for col in range(sprite_tiles_w):
 			idx = row * sprite_tiles_w + col
@@ -4825,11 +4839,47 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	call_update_patch = len(code) - 2
 	jr_loop = jr(0x18)
 	update_addr = len(code)
-	# vy += grav
+	# Integrate gravity to velocity with a 1/16 accumulator.
+	if grav_step_x != 0:
+		grav_mag_x = max(1, min(32, abs(int(grav_step_x))))
+		emit(0xFA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)  # ld a,(gacc_x)
+		emit(0xC6, grav_mag_x & 0xFF)  # add a, grav_mag_x
+		emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)  # store acc
+		emit(0xFE, 16)  # cp 16
+		jr_x_no_v = jr(0x38)  # jr c, no_vx_step
+		emit(0xD6, 16)  # sub 16
+		emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
+		emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # ld a,(vx)
+		emit(0x3C if grav_step_x > 0 else 0x3D)  # inc/dec a
+		emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # (vx)=a
+		x_no_v_addr = len(code)
+		patch_jr(jr_x_no_v, x_no_v_addr)
+	emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+	emit(0x47)  # ld b,a (vx)
+	# x += vx
+	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+	emit(0x80)  # add a,b
+	emit(0xFE, max_x & 0xFF)
+	jr_store_x = jr(0x38)  # jr c, store_x
+	ld_a_imm(max_x)
+	store_x_addr = len(code)
+	emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+	if grav_step_y != 0:
+		grav_mag_y = max(1, min(32, abs(int(grav_step_y))))
+		emit(0xFA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)  # ld a,(gacc_y)
+		emit(0xC6, grav_mag_y & 0xFF)  # add a, grav_mag_y
+		emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)  # store acc
+		emit(0xFE, 16)  # cp 16
+		jr_y_no_v = jr(0x38)  # jr c, no_vy_step
+		emit(0xD6, 16)  # sub 16
+		emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
+		emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
+		emit(0x3C if grav_step_y > 0 else 0x3D)  # inc/dec a
+		emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # (vy)=a
+		y_no_v_addr = len(code)
+		patch_jr(jr_y_no_v, y_no_v_addr)
 	emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
-	emit(0xC6, grav_step & 0xFF)
-	emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
-	emit(0x47)  # ld b,a
+	emit(0x47)  # ld b,a (vy)
 	# y += vy
 	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 	emit(0x80)  # add a,b
@@ -4852,6 +4902,9 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 			emit(0xC6, (16 + row * 8) & 0xFF)
 			emit(0xEA, base & 0xFF, (base >> 8) & 0xFF)
+			emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+			emit(0xC6, (8 + col * 8) & 0xFF)
+			emit(0xEA, (base + 1) & 0xFF, ((base + 1) >> 8) & 0xFF)
 	emit(0xC9)
 	wait_vblank_addr = len(code)
 	emit(0xF0, 0x44)  # ld a,[LY]
@@ -4885,6 +4938,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		code[pos] = abs_addr & 0xFF
 		code[pos + 1] = (abs_addr >> 8) & 0xFF
 	patch_jr(jr_loop, main_loop_addr)
+	patch_jr(jr_store_x, store_x_addr)
 	patch_jr(jr_store_y, store_y_addr)
 	patch_jr(jr_after_clamp, after_store_addr)
 	patch_call(call_copy_bg_patch, copy_bg_addr)
@@ -4896,7 +4950,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	patch_call(call_copy_bg_attr_patch, copy_addr)
 	return bytes(code)
 
-def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, floor_y : int, bg_palette_bank, obj_palette4, grav_step : int = 1):
+def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, floor_y : int, bg_palette_bank, obj_palette4, grav_step_x : int = 0, grav_step_y : int = 1):
 	tile_data_len = 384 * 16
 	tilemap_len = 32 * 32
 	attrmap_len = 32 * 32
@@ -4913,12 +4967,12 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	code_start = 0x150
 	rom_size = 0x8000
 	sprite_tile_count = max(1, min(16, int((len(sprite_tile_bytes) if sprite_tile_bytes else 0) // 16)))
-	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, floor_y, bg_palette_bytes, obj_palette_bytes, grav_step = grav_step)
+	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, floor_y, bg_palette_bytes, obj_palette_bytes, grav_step_x = grav_step_x, grav_step_y = grav_step_y)
 	bg_data_addr = code_start + len(probe)
 	if bg_data_addr & 0xF:
 		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
 	sprite_data_addr = bg_data_addr + len(bg_payload)
-	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, floor_y, bg_palette_bytes, obj_palette_bytes, grav_step = grav_step)
+	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, floor_y, bg_palette_bytes, obj_palette_bytes, grav_step_x = grav_step_x, grav_step_y = grav_step_y)
 	total_need = sprite_data_addr + sprite_tile_count * 16
 	if total_need > rom_size:
 		raise RuntimeError('GBC dynamic physics export exceeds 32KB ROM size.')
@@ -6112,19 +6166,25 @@ def BuildGbc (world):
 			init_pos = GetImagePosition(sprite_ob)
 			init_x, init_y = _gba_to_gbc_cover_point(float(init_pos.x), float(init_pos.y))
 			floor_y = max(0, 144 - sprite_tiles_h * 8)
+			gravity_x = 0.0
 			gravity_y = 0.0
 			if bpy.context.scene.use_gravity:
-				gravity_y = float(list(bpy.context.scene.gravity)[1])
+				g = list(bpy.context.scene.gravity)
+				gravity_x = float(g[0])
+				gravity_y = float(g[1])
 			gravity_scale = float(getattr(sprite_ob, 'gravityScale', 1.0))
+			effective_x = gravity_x * gravity_scale
 			effective_down = -gravity_y * gravity_scale
-			if abs(effective_down) < 1e-6:
-				grav_step = 0
-			else:
-				grav_step = int(round(effective_down / 100.0))
-				if grav_step == 0:
-					grav_step = 1 if effective_down > 0 else -1
-			grav_step = max(-8, min(8, grav_step))
-			rom = _gbc_build_dynamic_physics_rom(canvas_gbc, sprite_tile, sprite_tiles_w, sprite_tiles_h, init_x, init_y, floor_y, bg_palette_bank, sprite_pal, grav_step = grav_step)
+			# Preserve magnitude differences directly in phase-1 runtime.
+			grav_step_x = int(round(effective_x))
+			grav_step_y = int(round(effective_down))
+			if abs(effective_x) > 1e-6 and grav_step_x == 0:
+				grav_step_x = 1 if effective_x > 0 else -1
+			if abs(effective_down) > 1e-6 and grav_step_y == 0:
+				grav_step_y = 1 if effective_down > 0 else -1
+			grav_step_x = max(-32, min(32, grav_step_x))
+			grav_step_y = max(-32, min(32, grav_step_y))
+			rom = _gbc_build_dynamic_physics_rom(canvas_gbc, sprite_tile, sprite_tiles_w, sprite_tiles_h, init_x, init_y, floor_y, bg_palette_bank, sprite_pal, grav_step_x = grav_step_x, grav_step_y = grav_step_y)
 		else:
 			_gba_apply_script_surface_ops(
 				image_surfaces,
