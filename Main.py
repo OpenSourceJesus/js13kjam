@@ -1,4 +1,4 @@
-import os, re, sys, json, math, time, string, atexit, struct, shutil, threading, subprocess, webbrowser
+import os, re, io, ast, sys, json, math, time, string, atexit, struct, shutil, contextlib, threading, subprocess, webbrowser
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
@@ -1713,6 +1713,266 @@ def _gba_draw_circle_rgba (canvas, center_xy, radius, color_rgba, width = 0.0):
 	dst = canvas[y0 : y1, x0 : x1]
 	dst[:] = (1.0 - blend) * dst + blend * src
 
+def _runtime_ticks_ms (frame : int = None, start_time : float = None):
+	if frame is not None:
+		return int(round((max(0, frame - 1) * 1000.0) / 60.0))
+	if start_time is not None:
+		return int(max(0.0, (time.time() - start_time) * 1000.0))
+	return 0
+
+def _replace_runtime_ticks_calls (expr : str, ticks : int):
+	'''Replace supported tick function calls with a numeric value.'''
+	if not isinstance(expr, str):
+		return expr
+	return re.sub(
+		r'(?:pygame\s*\.\s*time\s*\.\s*get_ticks|js13k_get_ticks)\s*\(\s*\)',
+		str(ticks),
+		expr,
+		flags = re.IGNORECASE,
+	)
+
+def _eval_runtime_expr_value (value, frame : int = None, start_time : float = None):
+	if isinstance(value, (int, float)):
+		return float(value)
+	if value is None:
+		return None
+	if not isinstance(value, str):
+		try:
+			return float(value)
+		except Exception:
+			return None
+	ticks = _runtime_ticks_ms(frame = frame, start_time = start_time)
+	expr = value.strip()
+	match = re.fullmatch(r'(?i)<expr:\s*(.*?)\s*>', expr)
+	if match:
+		expr = match.group(1).strip()
+	expr = _replace_runtime_ticks_calls(expr, ticks)
+	try:
+		return float(expr)
+	except Exception:
+		pass
+	try:
+		val = eval(
+			expr,
+			{'__builtins__' : {}},
+			{
+				'int' : int,
+				'float' : float,
+				'round' : round,
+				'abs' : abs,
+				'max' : max,
+				'min' : min,
+			},
+		)
+		if isinstance(val, (int, float, bool)):
+			return float(val)
+	except Exception:
+		return None
+	return None
+
+def _gba_draw_circle_from_script (canvas, circle : dict, frame : int = None, start_time : float = None):
+	if not isinstance(circle, dict):
+		return
+	center = circle.get('center', [0, 0])
+	if not isinstance(center, (list, tuple)) or len(center) < 2:
+		return
+	cx = _eval_runtime_expr_value(center[0], frame = frame, start_time = start_time)
+	cy = _eval_runtime_expr_value(center[1], frame = frame, start_time = start_time)
+	radius = _eval_runtime_expr_value(circle.get('radius', 0), frame = frame, start_time = start_time)
+	width = _eval_runtime_expr_value(circle.get('width', 0), frame = frame, start_time = start_time)
+	if cx is None or cy is None or radius is None:
+		return
+	if width is None:
+		width = 0.0
+	color_raw = circle.get('color', [255, 255, 255, 255])
+	if isinstance(color_raw, (list, tuple)) and len(color_raw) == 3:
+		color_raw = [color_raw[0], color_raw[1], color_raw[2], 255]
+	elif not isinstance(color_raw, (list, tuple)) or len(color_raw) < 4:
+		color_raw = [255, 255, 255, 255]
+	color = []
+	for i in range(4):
+		c = _eval_runtime_expr_value(color_raw[i], frame = frame, start_time = start_time)
+		if c is None:
+			c = 255 if i < 3 else 255
+		color.append(int(max(0, min(255, round(c)))))
+	_gba_draw_circle_rgba(canvas, [cx, cy], float(radius), color, float(width))
+
+def _is_pygame_draw_circle_call (call_node):
+	if not isinstance(call_node, ast.Call):
+		return False
+	func = call_node.func
+	return (
+		isinstance(func, ast.Attribute)
+		and func.attr == 'circle'
+		and isinstance(func.value, ast.Attribute)
+		and func.value.attr == 'draw'
+		and isinstance(func.value.value, ast.Name)
+		and func.value.value.id == 'pygame'
+	)
+
+def _is_display_get_surface_call (node):
+	return (
+		isinstance(node, ast.Call)
+		and isinstance(node.func, ast.Attribute)
+		and node.func.attr == 'get_surface'
+		and isinstance(node.func.value, ast.Attribute)
+		and node.func.value.attr == 'display'
+		and isinstance(node.func.value.value, ast.Name)
+		and node.func.value.value.id == 'pygame'
+	)
+
+def _is_this_surface_member (node):
+	return (
+		isinstance(node, ast.Attribute)
+		and node.attr == 'surface'
+		and isinstance(node.value, ast.Name)
+		and node.value.id == 'this'
+	)
+
+def _is_get_ticks_call (node):
+	if not isinstance(node, ast.Call):
+		return False
+	# Original pygame runtime API form.
+	if (
+		isinstance(node.func, ast.Attribute)
+		and node.func.attr == 'get_ticks'
+		and isinstance(node.func.value, ast.Attribute)
+		and node.func.value.attr == 'time'
+		and isinstance(node.func.value.value, ast.Name)
+		and node.func.value.value.id == 'pygame'
+	):
+		return True
+	# Normalized gba/gbc script form introduced by _normalize_gb_script_code.
+	return isinstance(node.func, ast.Name) and node.func.id == 'js13k_get_ticks'
+
+def _has_dynamic_runtime_expr (node):
+	for n in ast.walk(node):
+		if _is_get_ticks_call(n):
+			return True
+	return False
+
+def _serialize_script_expr (node):
+	if isinstance(node, ast.Constant):
+		if isinstance(node.value, (int, float)):
+			return node.value
+	if isinstance(node, (ast.Tuple, ast.List)):
+		return [_serialize_script_expr(e) for e in node.elts]
+	try:
+		return '<expr:' + ast.unparse(node) + '>'
+	except Exception:
+		return '<expr:0>'
+
+def _extract_dynamic_draw_circles_from_script (code : str, is_init : bool):
+	circles = []
+	try:
+		tree = ast.parse(code or '')
+	except Exception:
+		return circles
+	for node in ast.walk(tree):
+		if not isinstance(node, ast.Call) or not _is_pygame_draw_circle_call(node):
+			continue
+		if len(node.args) < 4:
+			continue
+		target = node.args[0]
+		target_type = None
+		if _is_display_get_surface_call(target):
+			target_type = 'display_surface'
+		elif _is_this_surface_member(target):
+			target_type = 'this_surface'
+		if not target_type:
+			continue
+		color_node = node.args[1]
+		center_node = node.args[2]
+		radius_node = node.args[3]
+		width_node = node.args[4] if len(node.args) >= 5 else ast.Constant(value = 0)
+		if not (
+			_has_dynamic_runtime_expr(color_node)
+			or _has_dynamic_runtime_expr(center_node)
+			or _has_dynamic_runtime_expr(radius_node)
+			or _has_dynamic_runtime_expr(width_node)
+		):
+			continue
+		circle = {
+			'color' : _serialize_script_expr(color_node),
+			'center' : _serialize_script_expr(center_node),
+			'radius' : _serialize_script_expr(radius_node),
+			'width' : _serialize_script_expr(width_node),
+			'is_init' : bool(is_init),
+			'target_type' : target_type,
+		}
+		circles.append(circle)
+	return circles
+
+def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries : list):
+	if not isinstance(script_runtime, dict):
+		script_runtime = {}
+	init_draw = list(script_runtime.get('init_draw_circles') or [])
+	update_draw = list(script_runtime.get('update_draw_circles') or [])
+	surface_ops = list(script_runtime.get('surface_ops') or [])
+	for entry in script_entries or []:
+		code = entry.get('code', '')
+		is_init = bool(entry.get('is_init'))
+		owner_name = entry.get('owner_name') or '__world__'
+		extracted = _extract_dynamic_draw_circles_from_script(code, is_init)
+		for circle in extracted:
+			target_type = circle.get('target_type')
+			if target_type == 'display_surface':
+				if is_init:
+					init_draw.append(circle)
+				else:
+					update_draw.append(circle)
+			elif target_type == 'this_surface':
+				# Fallback path: apply dynamic this.surface draw calls on image surfaces.
+				surface_ops.append({
+					'op' : 'draw_circle_surface_member',
+					'owner_name' : owner_name,
+					'member' : 'surface',
+					'is_init' : bool(is_init),
+					'center' : circle.get('center') or [0.0, 0.0],
+					'radius' : circle.get('radius') or 0.0,
+					'color' : circle.get('color') or [255, 255, 255, 255],
+					'width' : circle.get('width') or 0.0,
+				})
+			else:
+				continue
+	script_runtime['init_draw_circles'] = init_draw
+	script_runtime['update_draw_circles'] = update_draw
+	script_runtime['surface_ops'] = surface_ops
+	return script_runtime
+
+def _normalize_gb_script_code (code : str, is_init : bool):
+	if not code:
+		return code
+	code2 = code
+	uses_ticks = bool(re.search(r'pygame\s*\.\s*time\s*\.\s*get_ticks\s*\(\s*\)', code2, flags = re.IGNORECASE))
+	if uses_ticks:
+		code2 = re.sub(
+			r'pygame\s*\.\s*time\s*\.\s*get_ticks\s*\(\s*\)',
+			'js13k_get_ticks()',
+			code2,
+			flags = re.IGNORECASE,
+		)
+		if is_init:
+			prefix = (
+				'global __js13k_ticks\n'
+				'__js13k_ticks = 0\n'
+				'def js13k_get_ticks():\n'
+				'    return __js13k_ticks\n'
+			)
+		else:
+			# Keep a monotonic millisecond-ish counter for update scripts.
+			prefix = (
+				'global __js13k_ticks\n'
+				'try:\n'
+				'    __js13k_ticks += 16\n'
+				'except:\n'
+				'    __js13k_ticks = 0\n'
+				'def js13k_get_ticks():\n'
+				'    return __js13k_ticks\n'
+			)
+		code2 = prefix + code2
+	return code2
+
 def ExportGbaPyAssembly (world, gba_out_path : str):
 	'''Collect gba-py scripts from world and exported objects; write Thumb assembly next to the .gba.'''
 	global exportType
@@ -1726,6 +1986,7 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
 			if _type == 'gba-py':
+				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init))
 				script_entries.append({
 					'code' : scriptTxt,
 					'is_init' : is_init,
@@ -1742,6 +2003,7 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
 			if _type == 'gba-py':
+				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init))
 				script_entries.append({
 					'code' : scriptTxt,
 					'is_init' : is_init,
@@ -1751,12 +2013,52 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 				})
 	exportType = prev_export
 	if _py2gba_export_gba_py_assembly:
-		return _py2gba_export_gba_py_assembly(
-			script_entries,
-			gba_out_path,
-			tmp_dir = TMP_DIR,
-			repo_root_dir = _thisDir,
-		)
+		runtime = _run_py2gba_export_with_resolved_logs(_py2gba_export_gba_py_assembly, script_entries, gba_out_path)
+		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
+	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
+
+def ExportGbcPyAssembly (world, gbc_out_path : str):
+	'''Collect gbc-py scripts from world and exported objects; write translated assembly next to the .gbc.'''
+	global exportType
+	prev_export = exportType
+	exportType = 'gbc'
+	script_entries = []
+	if world:
+		for scriptInfo in GetScripts(world):
+			scriptTxt = scriptInfo[0]
+			is_init = scriptInfo[1]
+			_type = scriptInfo[2]
+			script = scriptInfo[3]
+			if _type == 'gbc-py':
+				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init))
+				script_entries.append({
+					'code' : scriptTxt,
+					'is_init' : is_init,
+					'script_obj' : script,
+					'owner_name' : '__world__',
+					'symbol_hint' : 'world_' + getattr(script, 'name', 'script'),
+				})
+	for ob in bpy.data.objects:
+		if not ob.exportOb or ob.hide_get():
+			continue
+		for scriptInfo in GetScripts(ob):
+			scriptTxt = scriptInfo[0]
+			is_init = scriptInfo[1]
+			_type = scriptInfo[2]
+			script = scriptInfo[3]
+			if _type == 'gbc-py':
+				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init))
+				script_entries.append({
+					'code' : scriptTxt,
+					'is_init' : is_init,
+					'script_obj' : script,
+					'owner_name' : ob.name,
+					'symbol_hint' : ob.name + '_' + getattr(script, 'name', 'script'),
+				})
+	exportType = prev_export
+	if _py2gba_export_gba_py_assembly:
+		runtime = _run_py2gba_export_with_resolved_logs(_py2gba_export_gba_py_assembly, script_entries, gbc_out_path)
+		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
 	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
 
 def GetBlenderData ():
@@ -3886,7 +4188,83 @@ def PostBuild ():
 	bpy.context.scene.export_svg_output = prevSvgExportPath
 
 _GBA_EMU_PROCS = []
+def _run_py2gba_export_with_resolved_logs (export_fn, script_entries, out_path):
+	start_time = time.time()
+	stdout_buf = io.StringIO()
+	stderr_buf = io.StringIO()
+	with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+		result = export_fn(
+			script_entries,
+			out_path,
+			tmp_dir = TMP_DIR,
+			repo_root_dir = _thisDir,
+		)
+	for raw in stdout_buf.getvalue().splitlines():
+		line = raw.rstrip('\n')
+		if line:
+			print(_resolve_runtime_print_exprs(line, start_time = start_time))
+	for raw in stderr_buf.getvalue().splitlines():
+		line = raw.rstrip('\n')
+		if line:
+			print(_resolve_runtime_print_exprs(line, start_time = start_time))
+	return result
+
+def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : float = None):
+	'''Resolve <expr:...> print placeholders to runtime values.'''
+	if not isinstance(text, str):
+		text = str(text)
+	if frame is not None:
+		# Match 60 Hz frame stepping used by fallback print mirroring.
+		ticks = int(round((max(0, frame - 1) * 1000.0) / 60.0))
+	elif start_time is not None:
+		ticks = int(max(0.0, (time.time() - start_time) * 1000.0))
+	else:
+		ticks = 0
+	# Fast path for the common placeholder.
+	text = re.sub(
+		r'<expr:\s*(?:pygame\s*\.\s*time\s*\.\s*get_ticks|js13k_get_ticks)\s*\(\s*\)\s*>',
+		str(ticks),
+		text,
+		flags = re.IGNORECASE,
+	)
+	def _eval_expr (m):
+		expr = m.group(1).strip()
+		# Replace supported runtime function calls with numeric values first.
+		expr_with_ticks = _replace_runtime_ticks_calls(expr, ticks)
+		# Fast path: plain integer after replacement.
+		if re.fullmatch(r'[+-]?\d+', expr_with_ticks):
+			return expr_with_ticks
+		try:
+			val = eval(
+				expr_with_ticks,
+				{'__builtins__' : {}},
+				{
+					'int' : int,
+					'float' : float,
+					'round' : round,
+					'abs' : abs,
+					'max' : max,
+					'min' : min,
+				},
+			)
+			if isinstance(val, (int, float, bool, str)):
+				return str(val)
+			return str(val)
+		except Exception:
+			# Fallback: at least substitute ticks call in the placeholder.
+			return expr_with_ticks
+	text = re.sub(r'<expr:\s*([^<>]*)\s*>', _eval_expr, text, flags = re.IGNORECASE)
+	# Last-resort cleanup if any expression wrapper still leaks through.
+	if '<expr:' in text.lower():
+		text = re.sub(r'(?i)<expr:\s*', '', text)
+		text = text.replace('>', '')
+		text = _replace_runtime_ticks_calls(text, ticks)
+	else:
+		text = _replace_runtime_ticks_calls(text, ticks)
+	return text
+
 def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
+	start_time = time.time()
 	def _reader():
 		try:
 			if not proc.stdout:
@@ -3894,6 +4272,7 @@ def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
 			for line in proc.stdout:
 				line = line.rstrip('\n')
 				if line:
+					line = _resolve_runtime_print_exprs(line, start_time = start_time)
 					print('[' + prefix + ']', line)
 		except Exception:
 			pass
@@ -3901,19 +4280,29 @@ def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
 	thread.start()
 	_GBA_EMU_PROCS.append((proc, thread))
 
-def _start_gba_update_print_mirror (proc, script_runtime):
+def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = 'gba-py'):
 	print_calls = list((script_runtime or {}).get('print_calls') or [])
+	init_calls = [p for p in print_calls if p.get('is_init')]
 	update_calls = [p for p in print_calls if not p.get('is_init')]
-	if not update_calls:
+	if not init_calls and not update_calls:
 		return
 	def _runner():
 		frame = 0
+		init_printed = False
 		while proc.poll() is None:
 			frame += 1
+			if not init_printed:
+				for info in init_calls:
+					owner = info.get('owner_name') or '__world__'
+					text = str(info.get('text', '')).rstrip('\n')
+					text = _resolve_runtime_print_exprs(text, frame = frame)
+					print(f"[{script_label}:init:runtime] {owner} {text}")
+				init_printed = True
 			for info in update_calls:
 				owner = info.get('owner_name') or '__world__'
 				text = str(info.get('text', '')).rstrip('\n')
-				print(f"[gba-py:update:runtime] {owner} [f={frame}] {text}")
+				text = _resolve_runtime_print_exprs(text, frame = frame)
+				print(f"[{script_label}:update:runtime] {owner} [f={frame}] {text}")
 			time.sleep(1.0 / 60.0)
 	thread = threading.Thread(target = _runner, daemon = True)
 	thread.start()
@@ -4128,10 +4517,18 @@ def _gbc_encode_tiles_and_map (rgba_canvas_160x144):
 		tile_bytes.extend(_gbc_tile_to_2bpp(tile_8x8))
 	return bytes(tile_bytes), tilemap.tobytes(), attrmap.tobytes(), palette_bank
 
-def _gbc_build_program (tile_data_addr : int, tile_data_len : int, tilemap_addr : int, tilemap_len : int, attrmap_addr : int, attrmap_len : int, bg_palette_bytes : bytes):
+def _gbc_build_program (frame_data_addr : int, frame_stride : int, frame_count : int, tile_data_len : int, tilemap_len : int, attrmap_len : int, bg_palette_bytes : bytes):
 	code = bytearray()
 	def emit(*vals):
 		code.extend(vals)
+	def jr(op):
+		emit(op, 0x00)
+		return len(code) - 1
+	def patch_jr(pos, target):
+		disp = int(target) - int(pos + 1)
+		if disp < -128 or disp > 127:
+			raise RuntimeError('GBC export: branch offset out of range.')
+		code[pos] = disp & 0xFF
 	def ld_a_imm(v):
 		emit(0x3E, int(v) & 0xFF)
 	def ldh_imm_a(reg):
@@ -4142,6 +4539,13 @@ def _gbc_build_program (tile_data_addr : int, tile_data_len : int, tilemap_addr 
 		emit(0x11, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
 	def ld_bc_imm(v):
 		emit(0x01, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
+	frame_count = max(1, int(frame_count))
+	frame_data_addr = int(frame_data_addr) & 0xFFFF
+	frame_stride = int(frame_stride) & 0xFFFF
+	frame_end_addr = (frame_data_addr + frame_stride * frame_count) & 0xFFFF
+	next_frame_addr = frame_data_addr if frame_count <= 1 else ((frame_data_addr + frame_stride) & 0xFFFF)
+	wptr_lo_addr = 0xC100
+	wptr_hi_addr = 0xC101
 	emit(0xF3)  # di
 	emit(0x31, 0xFE, 0xFF)  # ld sp, $FFFE
 	emit(0xAF)  # xor a
@@ -4151,25 +4555,13 @@ def _gbc_build_program (tile_data_addr : int, tile_data_len : int, tilemap_addr 
 	for b in bg_palette_bytes:
 		ld_a_imm(b)
 		ldh_imm_a(0x69)
-	emit(0xAF)  # xor a
-	ldh_imm_a(0x4F)  # VBK = 0
-	ld_hl_imm(tile_data_addr)
-	ld_de_imm(0x8000)
-	ld_bc_imm(tile_data_len)
-	emit(0xCD, 0x00, 0x00)  # call copy_bc (patched)
-	call1_patch = len(code) - 2
-	ld_hl_imm(tilemap_addr)
-	ld_de_imm(0x9800)
-	ld_bc_imm(tilemap_len)
-	emit(0xCD, 0x00, 0x00)  # call copy_bc (patched)
-	call2_patch = len(code) - 2
-	ld_a_imm(0x01)
-	ldh_imm_a(0x4F)  # VBK = 1 (attributes)
-	ld_hl_imm(attrmap_addr)
-	ld_de_imm(0x9800)
-	ld_bc_imm(attrmap_len)
-	emit(0xCD, 0x00, 0x00)  # call copy_bc (patched)
-	call3_patch = len(code) - 2
+	ld_hl_imm(frame_data_addr)
+	emit(0xCD, 0x00, 0x00)  # call copy_frame (patched)
+	call_init_copy_patch = len(code) - 2
+	ld_a_imm(next_frame_addr & 0xFF)
+	emit(0xEA, wptr_lo_addr & 0xFF, (wptr_lo_addr >> 8) & 0xFF)
+	ld_a_imm((next_frame_addr >> 8) & 0xFF)
+	emit(0xEA, wptr_hi_addr & 0xFF, (wptr_hi_addr >> 8) & 0xFF)
 	emit(0xAF)  # xor a
 	ldh_imm_a(0x4F)  # VBK = 0
 	emit(0xAF)  # xor a
@@ -4178,9 +4570,66 @@ def _gbc_build_program (tile_data_addr : int, tile_data_len : int, tilemap_addr 
 	ld_a_imm(0x91)  # LCDC on, BG on
 	ldh_imm_a(0x40)
 	emit(0xFB)  # ei
-	loop_addr = len(code)
-	emit(0x76)  # halt
-	emit(0x18, 0xFD)  # jr loop
+	main_loop_addr = len(code)
+	emit(0xCD, 0x00, 0x00)  # call wait_vblank (patched)
+	call_wait_patch = len(code) - 2
+	emit(0xFA, wptr_lo_addr & 0xFF, (wptr_lo_addr >> 8) & 0xFF)  # ld a, (wptr_lo)
+	emit(0x6F)  # ld l, a
+	emit(0xFA, wptr_hi_addr & 0xFF, (wptr_hi_addr >> 8) & 0xFF)  # ld a, (wptr_hi)
+	emit(0x67)  # ld h, a
+	emit(0xCD, 0x00, 0x00)  # call copy_frame (patched)
+	call_loop_copy_patch = len(code) - 2
+	emit(0x7C)  # ld a, h
+	emit(0xFE, (frame_end_addr >> 8) & 0xFF)  # cp frame_end_hi
+	jr_store_hi_less = jr(0x38)  # jr c, store_ptr
+	jr_reset_hi_gt = jr(0x20)  # jr nz, reset_ptr
+	emit(0x7D)  # ld a, l
+	emit(0xFE, frame_end_addr & 0xFF)  # cp frame_end_lo
+	jr_store_lo_less = jr(0x38)  # jr c, store_ptr
+	reset_ptr_addr = len(code)
+	ld_hl_imm(frame_data_addr)
+	jr_after_reset = jr(0x18)  # jr after_reset
+	store_ptr_addr = len(code)
+	emit(0x7D)  # ld a, l
+	emit(0xEA, wptr_lo_addr & 0xFF, (wptr_lo_addr >> 8) & 0xFF)
+	emit(0x7C)  # ld a, h
+	emit(0xEA, wptr_hi_addr & 0xFF, (wptr_hi_addr >> 8) & 0xFF)
+	after_reset_addr = len(code)
+	jr_loop = jr(0x18)  # jr main_loop
+	wait_vblank_addr = len(code)
+	wait_vblank_end_addr = len(code)
+	emit(0xF0, 0x44)  # ld a, [LY]
+	emit(0xFE, 0x90)  # cp 144
+	emit(0x30, 0xFA)  # jr nc, wait_vblank_end_addr
+	wait_vblank_start_addr = len(code)
+	emit(0xF0, 0x44)  # ld a, [LY]
+	emit(0xFE, 0x90)  # cp 144
+	emit(0x38, 0xFA)  # jr c, wait_vblank_start_addr
+	emit(0xC9)  # ret
+	copy_frame_addr = len(code)
+	emit(0xD5)  # push de
+	emit(0xC5)  # push bc
+	emit(0xAF)  # xor a
+	ldh_imm_a(0x4F)  # VBK = 0
+	ld_de_imm(0x8000)
+	ld_bc_imm(tile_data_len)
+	emit(0xCD, 0x00, 0x00)  # call copy_bc (patched)
+	call_copy_tiles_patch = len(code) - 2
+	ld_de_imm(0x9800)
+	ld_bc_imm(tilemap_len)
+	emit(0xCD, 0x00, 0x00)  # call copy_bc (patched)
+	call_copy_map_patch = len(code) - 2
+	ld_a_imm(0x01)
+	ldh_imm_a(0x4F)  # VBK = 1 (attributes)
+	ld_de_imm(0x9800)
+	ld_bc_imm(attrmap_len)
+	emit(0xCD, 0x00, 0x00)  # call copy_bc (patched)
+	call_copy_attr_patch = len(code) - 2
+	emit(0xAF)  # xor a
+	ldh_imm_a(0x4F)  # VBK = 0
+	emit(0xC1)  # pop bc
+	emit(0xD1)  # pop de
+	emit(0xC9)  # ret
 	copy_addr = len(code)
 	emit(0x78)  # ld a,b
 	emit(0xB1)  # or c
@@ -4190,17 +4639,333 @@ def _gbc_build_program (tile_data_addr : int, tile_data_len : int, tilemap_addr 
 	emit(0x13)  # inc de
 	emit(0x0B)  # dec bc
 	emit(0x18, 0xF7)  # jr copy loop
+	patch_jr(jr_store_hi_less, store_ptr_addr)
+	patch_jr(jr_reset_hi_gt, reset_ptr_addr)
+	patch_jr(jr_store_lo_less, store_ptr_addr)
+	patch_jr(jr_after_reset, after_reset_addr)
+	patch_jr(jr_loop, main_loop_addr)
+	# Silence unused-local warning for explicit locations.
+	_ = (wait_vblank_addr, wait_vblank_end_addr, wait_vblank_start_addr)
 	copy_abs = 0x150 + copy_addr
-	code[call1_patch] = copy_abs & 0xFF
-	code[call1_patch + 1] = (copy_abs >> 8) & 0xFF
-	code[call2_patch] = copy_abs & 0xFF
-	code[call2_patch + 1] = (copy_abs >> 8) & 0xFF
-	code[call3_patch] = copy_abs & 0xFF
-	code[call3_patch + 1] = (copy_abs >> 8) & 0xFF
+	copy_frame_abs = 0x150 + copy_frame_addr
+	wait_vblank_abs = 0x150 + wait_vblank_addr
+	code[call_init_copy_patch] = copy_frame_abs & 0xFF
+	code[call_init_copy_patch + 1] = (copy_frame_abs >> 8) & 0xFF
+	code[call_wait_patch] = wait_vblank_abs & 0xFF
+	code[call_wait_patch + 1] = (wait_vblank_abs >> 8) & 0xFF
+	code[call_loop_copy_patch] = copy_frame_abs & 0xFF
+	code[call_loop_copy_patch + 1] = (copy_frame_abs >> 8) & 0xFF
+	code[call_copy_tiles_patch] = copy_abs & 0xFF
+	code[call_copy_tiles_patch + 1] = (copy_abs >> 8) & 0xFF
+	code[call_copy_map_patch] = copy_abs & 0xFF
+	code[call_copy_map_patch + 1] = (copy_abs >> 8) & 0xFF
+	code[call_copy_attr_patch] = copy_abs & 0xFF
+	code[call_copy_attr_patch + 1] = (copy_abs >> 8) & 0xFF
 	return bytes(code)
 
-def _gbc_build_rom (canvas_160x144):
+def _gbc_encode_metasprite_rgba (rgba, sprite_w_px : int, sprite_h_px : int, palette4 = None, max_tiles : int = 16):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('GBC export requires NumPy.')
+	if rgba is None:
+		return (bytes([0] * 16), 1, 1)
+	sprite_w_px = max(8, min(32, int(sprite_w_px)))
+	sprite_h_px = max(8, min(32, int(sprite_h_px)))
+	tiles_w = max(1, min(4, int(math.ceil(sprite_w_px / 8.0))))
+	tiles_h = max(1, min(4, int(math.ceil(sprite_h_px / 8.0))))
+	while tiles_w * tiles_h > max_tiles:
+		if tiles_w >= tiles_h and tiles_w > 1:
+			tiles_w -= 1
+		elif tiles_h > 1:
+			tiles_h -= 1
+		else:
+			break
+	resized = _gba_nn_resize_rgba(rgba, tiles_w * 8, tiles_h * 8).copy()
+	if resized.shape[0] != tiles_h * 8 or resized.shape[1] != tiles_w * 8:
+		return (bytes([0] * 16), 1, 1)
+	pal = palette4
+	if pal is None or len(pal) < 4:
+		pal = _GBC_DEFAULT_BG_COLORS[: 4]
+	pal_np = np.array([[int(c[0]), int(c[1]), int(c[2])] for c in pal[: 4]], dtype = np.float32)
+	out = bytearray()
+	for ty in range(tiles_h):
+		for tx in range(tiles_w):
+			tile = resized[ty * 8 : (ty + 1) * 8, tx * 8 : (tx + 1) * 8, :]
+			alpha = np.clip(tile[:, :, 3], 0.0, 1.0)
+			rgb255 = np.clip(tile[:, :, :3], 0.0, 1.0) * 255.0
+			idx = np.zeros((8, 8), dtype = np.uint8)
+			for y in range(8):
+				for x in range(8):
+					if alpha[y, x] <= 0.2:
+						idx[y, x] = 0
+						continue
+					d = pal_np[1 : 4] - rgb255[y, x]
+					err = np.sum(d * d, axis = 1)
+					idx[y, x] = int(1 + int(np.argmin(err)))
+			out.extend(_gbc_tile_to_2bpp(idx))
+	return (bytes(out), tiles_w, tiles_h)
+
+def _gbc_palette_bytes_from_palette_bank (palette_bank):
+	palette_bytes = bytearray()
+	default_pal = _GBC_DEFAULT_BG_COLORS[: 4]
+	for p_idx in range(8):
+		pal = palette_bank[p_idx] if palette_bank is not None and p_idx < len(palette_bank) else default_pal
+		for r, g, b in pal:
+			c = _gba_pack_rgb555_le(r, g, b)
+			palette_bytes.append(c & 0xFF)
+			palette_bytes.append((c >> 8) & 0xFF)
+	return bytes(palette_bytes)
+
+def _gbc_palette4_from_rgba (rgba):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBC requires NumPy (included with Blender).')
+	if rgba is None:
+		return _GBC_DEFAULT_BG_COLORS[: 4]
+	alpha = np.clip(rgba[:, :, 3], 0.0, 1.0)
+	opaque = alpha > 0.2
+	if not np.any(opaque):
+		return _GBC_DEFAULT_BG_COLORS[: 4]
+	rgb = (np.clip(rgba[:, :, :3], 0.0, 1.0) * 255.0).astype(np.uint8)
+	pix = rgb[opaque]
+	if pix.shape[0] == 0:
+		return _GBC_DEFAULT_BG_COLORS[: 4]
+	return _gbc_quantize_palette4(pix, lock_extremes = True)
+
+def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, floor_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, grav_step : int = 1):
+	code = bytearray()
+	def emit(*vals):
+		code.extend(vals)
+	def jr(op):
+		emit(op, 0x00)
+		return len(code) - 1
+	def patch_jr(pos, target):
+		disp = int(target) - int(pos + 1)
+		if disp < -128 or disp > 127:
+			raise RuntimeError('GBC export: dynamic physics branch offset out of range.')
+		code[pos] = disp & 0xFF
+	def ld_a_imm(v):
+		emit(0x3E, int(v) & 0xFF)
+	def ldh_imm_a(reg):
+		emit(0xE0, int(reg) & 0xFF)
+	def ld_hl_imm(v):
+		emit(0x21, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
+	def ld_de_imm(v):
+		emit(0x11, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
+	def ld_bc_imm(v):
+		emit(0x01, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
+	init_x = max(0, min(159, int(init_x)))
+	init_y = max(0, min(143, int(init_y)))
+	floor_y = max(0, min(143, int(floor_y)))
+	grav_step = max(-8, min(8, int(grav_step)))
+	sprite_tile_count = max(1, min(16, int(sprite_tile_count)))
+	sprite_tiles_w = max(1, min(4, int(sprite_tiles_w)))
+	sprite_tiles_h = max(1, min(4, int(sprite_tiles_h)))
+	if sprite_tiles_w * sprite_tiles_h > sprite_tile_count:
+		sprite_tiles_h = max(1, sprite_tile_count // sprite_tiles_w)
+	y_addr = 0xC110
+	vy_addr = 0xC111
+	emit(0xF3)  # di
+	emit(0x31, 0xFE, 0xFF)  # ld sp, $FFFE
+	emit(0xAF)  # xor a
+	ldh_imm_a(0x40)  # LCDC off
+	# CGB BG palette 0.
+	ld_a_imm(0x80)
+	ldh_imm_a(0x68)
+	for b in (bg_palette_bytes or bytes()):
+		ld_a_imm(b); ldh_imm_a(0x69)
+	# CGB OBJ palette 0.
+	ld_a_imm(0x80)
+	ldh_imm_a(0x6A)
+	for b in (obj_palette_bytes or bytes()):
+		ld_a_imm(b); ldh_imm_a(0x6B)
+	# Copy static BG once.
+	ld_hl_imm(bg_data_addr)
+	emit(0xCD, 0x00, 0x00)  # call copy_bg
+	call_copy_bg_patch = len(code) - 2
+	# Copy sprite tile into VRAM bank 1 tile 0.
+	ld_a_imm(0x01)
+	ldh_imm_a(0x4F)  # VBK = 1
+	ld_hl_imm(sprite_data_addr)
+	ld_de_imm(0x8000)
+	ld_bc_imm(sprite_tile_count * 16)
+	emit(0xCD, 0x00, 0x00)  # call copy_bc
+	call_copy_sprite_patch = len(code) - 2
+	emit(0xAF)
+	ldh_imm_a(0x4F)  # VBK = 0
+	# Seed y/vy state and OAM metasprite entries.
+	ld_a_imm(init_y)
+	emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	ld_a_imm(0)
+	emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+	for row in range(sprite_tiles_h):
+		for col in range(sprite_tiles_w):
+			idx = row * sprite_tiles_w + col
+			if idx >= sprite_tile_count:
+				continue
+			base = 0xFE00 + idx * 4
+			ld_a_imm(init_y + row * 8 + 16)
+			emit(0xEA, base & 0xFF, (base >> 8) & 0xFF)  # OAM y
+			ld_a_imm(init_x + col * 8 + 8)
+			emit(0xEA, (base + 1) & 0xFF, ((base + 1) >> 8) & 0xFF)  # OAM x
+			ld_a_imm(idx)
+			emit(0xEA, (base + 2) & 0xFF, ((base + 2) >> 8) & 0xFF)  # tile idx
+			ld_a_imm(0x08)  # OBJ tile bank 1
+			emit(0xEA, (base + 3) & 0xFF, ((base + 3) >> 8) & 0xFF)
+	emit(0xAF); ldh_imm_a(0x42); ldh_imm_a(0x43)  # SCY/SCX
+	ld_a_imm(0x93)  # LCDC on with OBJ
+	ldh_imm_a(0x40)
+	emit(0xFB)  # ei
+	main_loop_addr = len(code)
+	emit(0xCD, 0x00, 0x00)  # call wait_vblank
+	call_wait_patch = len(code) - 2
+	emit(0xCD, 0x00, 0x00)  # call update_body
+	call_update_patch = len(code) - 2
+	jr_loop = jr(0x18)
+	update_addr = len(code)
+	# vy += grav
+	emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+	emit(0xC6, grav_step & 0xFF)
+	emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+	emit(0x47)  # ld b,a
+	# y += vy
+	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	emit(0x80)  # add a,b
+	emit(0xFE, floor_y & 0xFF)
+	jr_store_y = jr(0x38)  # jr c, store_y
+	ld_a_imm(floor_y)
+	emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # clamp y to floor
+	emit(0xAF)  # vy = 0 at floor (stable contact)
+	emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+	jr_after_clamp = jr(0x18)
+	store_y_addr = len(code)
+	emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	after_store_addr = len(code)
+	for row in range(sprite_tiles_h):
+		for col in range(sprite_tiles_w):
+			idx = row * sprite_tiles_w + col
+			if idx >= sprite_tile_count:
+				continue
+			base = 0xFE00 + idx * 4
+			emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+			emit(0xC6, (16 + row * 8) & 0xFF)
+			emit(0xEA, base & 0xFF, (base >> 8) & 0xFF)
+	emit(0xC9)
+	wait_vblank_addr = len(code)
+	emit(0xF0, 0x44)  # ld a,[LY]
+	emit(0xFE, 0x90)
+	emit(0x30, 0xFA)  # jr nc, wait_end
+	emit(0xF0, 0x44)
+	emit(0xFE, 0x90)
+	emit(0x38, 0xFA)  # jr c, wait_start
+	emit(0xC9)
+	copy_bg_addr = len(code)
+	emit(0xD5); emit(0xC5)
+	emit(0xAF); ldh_imm_a(0x4F)  # bank 0
+	ld_de_imm(0x8000); ld_bc_imm(bg_tile_data_len)
+	emit(0xCD, 0x00, 0x00)  # call copy_bc
+	call_copy_bg_tiles_patch = len(code) - 2
+	ld_de_imm(0x9800); ld_bc_imm(bg_tilemap_len)
+	emit(0xCD, 0x00, 0x00)  # call copy_bc
+	call_copy_bg_map_patch = len(code) - 2
+	ld_a_imm(0x01); ldh_imm_a(0x4F)  # bank 1 attrs
+	ld_de_imm(0x9800); ld_bc_imm(bg_attrmap_len)
+	emit(0xCD, 0x00, 0x00)  # call copy_bc
+	call_copy_bg_attr_patch = len(code) - 2
+	emit(0xAF); ldh_imm_a(0x4F)
+	emit(0xC1); emit(0xD1); emit(0xC9)
+	copy_addr = len(code)
+	emit(0x78); emit(0xB1); emit(0xC8)
+	emit(0x2A); emit(0x12); emit(0x13); emit(0x0B)
+	emit(0x18, 0xF7)
+	def patch_call(pos, target):
+		abs_addr = 0x150 + target
+		code[pos] = abs_addr & 0xFF
+		code[pos + 1] = (abs_addr >> 8) & 0xFF
+	patch_jr(jr_loop, main_loop_addr)
+	patch_jr(jr_store_y, store_y_addr)
+	patch_jr(jr_after_clamp, after_store_addr)
+	patch_call(call_copy_bg_patch, copy_bg_addr)
+	patch_call(call_copy_sprite_patch, copy_addr)
+	patch_call(call_wait_patch, wait_vblank_addr)
+	patch_call(call_update_patch, update_addr)
+	patch_call(call_copy_bg_tiles_patch, copy_addr)
+	patch_call(call_copy_bg_map_patch, copy_addr)
+	patch_call(call_copy_bg_attr_patch, copy_addr)
+	return bytes(code)
+
+def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, floor_y : int, bg_palette_bank, obj_palette4, grav_step : int = 1):
+	tile_data_len = 384 * 16
+	tilemap_len = 32 * 32
+	attrmap_len = 32 * 32
 	tile_data, tilemap, attrmap, palette_bank = _gbc_encode_tiles_and_map(canvas_160x144)
+	if len(tile_data) > tile_data_len:
+		raise RuntimeError('GBC dynamic physics export frame requires too many tiles.')
+	tile_data = tile_data + b'\x00' * (tile_data_len - len(tile_data))
+	if len(tilemap) != tilemap_len or len(attrmap) != attrmap_len:
+		raise RuntimeError('GBC dynamic physics export map layout mismatch.')
+	bg_palette_bytes = _gbc_palette_bytes_from_palette_bank(bg_palette_bank if bg_palette_bank is not None else palette_bank)
+	obj_bank = [obj_palette4] + [_GBC_DEFAULT_BG_COLORS[: 4] for _ in range(7)]
+	obj_palette_bytes = _gbc_palette_bytes_from_palette_bank(obj_bank)
+	bg_payload = tile_data + tilemap + attrmap
+	code_start = 0x150
+	rom_size = 0x8000
+	sprite_tile_count = max(1, min(16, int((len(sprite_tile_bytes) if sprite_tile_bytes else 0) // 16)))
+	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, floor_y, bg_palette_bytes, obj_palette_bytes, grav_step = grav_step)
+	bg_data_addr = code_start + len(probe)
+	if bg_data_addr & 0xF:
+		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
+	sprite_data_addr = bg_data_addr + len(bg_payload)
+	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, floor_y, bg_palette_bytes, obj_palette_bytes, grav_step = grav_step)
+	total_need = sprite_data_addr + sprite_tile_count * 16
+	if total_need > rom_size:
+		raise RuntimeError('GBC dynamic physics export exceeds 32KB ROM size.')
+	rom = bytearray(rom_size)
+	rom[0x100 : 0x104] = bytes([0x00, 0xC3, 0x50, 0x01])
+	rom[0x104 : 0x134] = _GBC_NINTENDO_LOGO
+	title = b'JS13KGBCDYNPHY'
+	rom[0x134 : 0x143] = title[: 15].ljust(15, b'\x00')
+	rom[0x143] = 0xC0
+	rom[0x144 : 0x146] = b'00'
+	rom[0x146] = 0x00
+	rom[0x147] = 0x00
+	rom[0x148] = 0x00
+	rom[0x149] = 0x00
+	rom[0x14A] = 0x01
+	rom[0x14B] = 0x33
+	rom[0x14C] = 0x00
+	rom[code_start : code_start + len(code)] = code
+	rom[bg_data_addr : bg_data_addr + len(bg_payload)] = bg_payload
+	sprite_payload = (sprite_tile_bytes or b'')
+	if len(sprite_payload) < sprite_tile_count * 16:
+		sprite_payload = sprite_payload + b'\x00' * (sprite_tile_count * 16 - len(sprite_payload))
+	rom[sprite_data_addr : sprite_data_addr + sprite_tile_count * 16] = sprite_payload[: sprite_tile_count * 16]
+	_gbc_compute_header_checksums(rom)
+	print('GBC export: runtime mode = dynamic physics phase1 (single sprite).')
+	return bytes(rom)
+
+def _gbc_build_rom (canvas_160x144):
+	canvases = canvas_160x144 if isinstance(canvas_160x144, list) else [canvas_160x144]
+	canvases = [c for c in canvases if c is not None]
+	if not canvases:
+		raise RuntimeError('GBC export: no canvas frames to encode.')
+	tile_data_len = 384 * 16
+	tilemap_len = 32 * 32
+	attrmap_len = 32 * 32
+	encoded_frames = []
+	palette_bank = None
+	for i, frame_canvas in enumerate(canvases):
+		tile_data, tilemap, attrmap, frame_palette = _gbc_encode_tiles_and_map(frame_canvas)
+		if len(tile_data) > tile_data_len:
+			raise RuntimeError('GBC export frame requires too many tiles.')
+		tile_data = tile_data + b'\x00' * (tile_data_len - len(tile_data))
+		if len(tilemap) != tilemap_len or len(attrmap) != attrmap_len:
+			raise RuntimeError('GBC export map layout mismatch.')
+		if i == 0:
+			palette_bank = frame_palette
+		encoded_frames.append((tile_data, tilemap, attrmap))
 	palette_bytes = bytearray()
 	default_pal = _GBC_DEFAULT_BG_COLORS[: 4]
 	for p_idx in range(8):
@@ -4209,17 +4974,28 @@ def _gbc_build_rom (canvas_160x144):
 			c = _gba_pack_rgb555_le(r, g, b)
 			palette_bytes.append(c & 0xFF)
 			palette_bytes.append((c >> 8) & 0xFF)
-	code_template = _gbc_build_program(0, len(tile_data), 0, len(tilemap), 0, len(attrmap), palette_bytes)
+	frame_stride = tile_data_len + tilemap_len + attrmap_len
+	frame_count = len(encoded_frames)
 	code_start = 0x150
-	tile_data_addr = code_start + len(code_template)
-	if tile_data_addr & 0xF:
-		tile_data_addr += 0x10 - (tile_data_addr & 0xF)
-	map_addr = tile_data_addr + len(tile_data)
-	attr_addr = map_addr + len(tilemap)
-	code = _gbc_build_program(tile_data_addr, len(tile_data), map_addr, len(tilemap), attr_addr, len(attrmap), palette_bytes)
 	rom_size = 0x8000
-	if attr_addr + len(attrmap) > rom_size:
-		raise RuntimeError('GBC export exceeds 32KB ROM size.')
+	while True:
+		code_template = _gbc_build_program(0, frame_stride, frame_count, tile_data_len, tilemap_len, attrmap_len, palette_bytes)
+		frame_data_addr = code_start + len(code_template)
+		if frame_data_addr & 0xF:
+			frame_data_addr += 0x10 - (frame_data_addr & 0xF)
+		need = frame_stride * frame_count
+		if frame_data_addr + need <= rom_size:
+			break
+		if frame_count <= 1:
+			raise RuntimeError('GBC export exceeds 32KB ROM size.')
+		frame_count -= 1
+		print('GBC export: limiting animated frames to', frame_count, 'to fit 32KB ROM.')
+	code = _gbc_build_program(frame_data_addr, frame_stride, frame_count, tile_data_len, tilemap_len, attrmap_len, palette_bytes)
+	frame_payload = bytearray()
+	for tile_data, tilemap, attrmap in encoded_frames[: frame_count]:
+		frame_payload.extend(tile_data)
+		frame_payload.extend(tilemap)
+		frame_payload.extend(attrmap)
 	rom = bytearray(rom_size)
 	rom[0x100 : 0x104] = bytes([0x00, 0xC3, 0x50, 0x01])
 	rom[0x104 : 0x134] = _GBC_NINTENDO_LOGO
@@ -4235,10 +5011,9 @@ def _gbc_build_rom (canvas_160x144):
 	rom[0x14B] = 0x33
 	rom[0x14C] = 0x00
 	rom[code_start : code_start + len(code)] = code
-	rom[tile_data_addr : tile_data_addr + len(tile_data)] = tile_data
-	rom[map_addr : map_addr + len(tilemap)] = tilemap
-	rom[attr_addr : attr_addr + len(attrmap)] = attrmap
+	rom[frame_data_addr : frame_data_addr + len(frame_payload)] = frame_payload
 	_gbc_compute_header_checksums(rom)
+	print('GBC export: runtime mode = animated, frames =', frame_count)
 	return bytes(rom)
 
 def _gba_pack_rgb555_le (r : int, g : int, b : int):
@@ -4293,6 +5068,32 @@ def _gba_resize_cover_rgba (src, tw : int, th : int):
 	x0 = max(0, (rw - tw) // 2)
 	y0 = max(0, (rh - th) // 2)
 	return resized[y0 : y0 + th, x0 : x0 + tw]
+
+def _gba_cover_transform (sw : int, sh : int, tw : int, th : int):
+	scale = max(float(tw) / float(sw), float(th) / float(sh))
+	rw = max(1, int(round(sw * scale)))
+	rh = max(1, int(round(sh * scale)))
+	x0 = max(0, (rw - tw) // 2)
+	y0 = max(0, (rh - th) // 2)
+	return scale, x0, y0
+
+def _gba_to_gbc_cover_point (x : float, y : float):
+	scale, x0, y0 = _gba_cover_transform(240, 160, 160, 144)
+	return int(round(float(x) * scale)) - x0, int(round(float(y) * scale)) - y0
+
+def _gba_to_gbc_cover_len (v : float):
+	scale, _, _ = _gba_cover_transform(240, 160, 160, 144)
+	return max(1, int(round(float(v) * scale)))
+
+def _gba_apply_tint_opacity_to_rgba (rgba, tint_rgb, opacity : float):
+	if rgba is None:
+		return None
+	out = rgba.copy()
+	out[:, :, 0] *= float(tint_rgb[0])
+	out[:, :, 1] *= float(tint_rgb[1])
+	out[:, :, 2] *= float(tint_rgb[2])
+	out[:, :, 3] *= float(opacity)
+	return out
 
 def _gba_rotate_rgba_degrees (src, angle_deg):
 	try:
@@ -4411,7 +5212,7 @@ def _gba_load_saved_image_rgba (ob):
 	bpy.data.images.remove(img)
 	return pix
 
-def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list):
+def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list, frame : int = None, start_time : float = None, include_init : bool = True, include_update : bool = True):
 	try:
 		import numpy as np
 	except ImportError:
@@ -4422,6 +5223,11 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list):
 	for owner_name, surf in image_surfaces.items():
 		owner_members[owner_name] = {'surface' : surf}
 	for op in surface_ops:
+		is_init = bool(op.get('is_init', True))
+		if is_init and not include_init:
+			continue
+		if (not is_init) and not include_update:
+			continue
 		owner_name = op.get('owner_name')
 		if not owner_name:
 			continue
@@ -4444,20 +5250,30 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list):
 			if surf is None:
 				continue
 			clr = op.get('color') or [255, 255, 255, 255]
-			surf[:, :, 0] = max(0, min(255, int(clr[0]))) / 255.0
-			surf[:, :, 1] = max(0, min(255, int(clr[1]))) / 255.0
-			surf[:, :, 2] = max(0, min(255, int(clr[2]))) / 255.0
-			surf[:, :, 3] = max(0, min(255, int(clr[3]))) / 255.0
+			rgba = []
+			for i in range(4):
+				v = _eval_runtime_expr_value(clr[i], frame = frame, start_time = start_time) if i < len(clr) else (255 if i < 3 else 255)
+				if v is None:
+					v = 255
+				rgba.append(max(0, min(255, int(round(v)))))
+			surf[:, :, 0] = rgba[0] / 255.0
+			surf[:, :, 1] = rgba[1] / 255.0
+			surf[:, :, 2] = rgba[2] / 255.0
+			surf[:, :, 3] = rgba[3] / 255.0
 		elif _type == 'draw_circle_surface_member' and member:
 			surf = members.get(member)
 			if surf is None:
 				continue
-			_gba_draw_circle_rgba(
+			_gba_draw_circle_from_script(
 				surf,
-				op.get('center') or [0.0, 0.0],
-				op.get('radius') or 0.0,
-				op.get('color') or [255, 255, 255, 255],
-				op.get('width') or 0.0,
+				{
+					'center' : op.get('center') or [0.0, 0.0],
+					'radius' : op.get('radius') or 0.0,
+					'color' : op.get('color') or [255, 255, 255, 255],
+					'width' : op.get('width') or 0.0,
+				},
+				frame = frame,
+				start_time = start_time,
 			)
 	for owner_name in list(image_surfaces.keys()):
 		override = owner_members.get(owner_name, {}).get('surface')
@@ -4465,7 +5281,17 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list):
 			image_surfaces[owner_name] = override
 	return image_surfaces
 
-def _gba_composite_scene (world, image_empties, image_surfaces = None, transform_overrides = None):
+def _gba_apply_display_draw_circles (canvas, script_runtime, frame : int = None, start_time : float = None):
+	if canvas is None:
+		return canvas
+	runtime = script_runtime or {}
+	for circle in list(runtime.get('init_draw_circles') or []):
+		_gba_draw_circle_from_script(canvas, circle, frame = frame, start_time = start_time)
+	for circle in list(runtime.get('update_draw_circles') or []):
+		_gba_draw_circle_from_script(canvas, circle, frame = frame, start_time = start_time)
+	return canvas
+
+def _gba_composite_scene (world, image_empties, image_surfaces = None, transform_overrides = None, script_runtime = None, frame : int = None):
 	try:
 		import numpy as np
 	except ImportError:
@@ -4506,6 +5332,7 @@ def _gba_composite_scene (world, image_empties, image_surfaces = None, transform
 			pos = GetImagePosition(ob)
 		tint = list(ob.tint)
 		_gba_blit_rgba(canvas, scaled, int(pos.x), int(pos.y), tint, ob.color[3])
+	_gba_apply_display_draw_circles(canvas, script_runtime, frame = frame)
 	return canvas
 
 def _gba_try_build_and_install_pyrapier2d ():
@@ -4805,7 +5632,9 @@ def _gba_generate_rapier_frames (world, scene_obs, image_empties, image_surfaces
 	frames = []
 	debug_first = None
 	debug_last = None
+	_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = 1, include_init = True, include_update = False)
 	for frame in range(frame_count):
+		_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = frame + 1, include_init = False, include_update = True)
 		transform_overrides = {}
 		for ob in image_empties:
 			binding = image_bindings.get(ob.name)
@@ -4819,16 +5648,53 @@ def _gba_generate_rapier_frames (world, scene_obs, image_empties, image_surfaces
 						'y' : pos[1] + off_y,
 						'rot_deg' : rot + binding['rot_off'],
 					}
-		canvas = _gba_composite_scene(world, image_empties, image_surfaces = image_surfaces, transform_overrides = transform_overrides)
-		for circle in script_runtime.get('init_draw_circles', []):
-			_gba_draw_circle_rgba (canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
-		for circle in script_runtime.get('update_draw_circles', []):
-			_gba_draw_circle_rgba (canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
+		canvas = _gba_composite_scene(world, image_empties, image_surfaces = image_surfaces, transform_overrides = transform_overrides, script_runtime = script_runtime, frame = frame + 1)
 		frames.append(_gba_rgba_to_mode3(canvas))
 		if frame + 1 < frame_count:
 			sim.step ()
 	print('GBA export: baked', len(frames), 'Rapier frame(s) for runtime playback.')
 	return frames
+
+def _gba_has_update_visuals (script_runtime):
+	runtime = script_runtime or {}
+	if list(runtime.get('update_draw_circles') or []):
+		return True
+	for op in list(runtime.get('surface_ops') or []):
+		if not bool(op.get('is_init', True)):
+			return True
+	return False
+
+def _gba_generate_script_only_frames (world, image_empties, image_surfaces, script_runtime):
+	if not _gba_has_update_visuals(script_runtime):
+		return None
+	frame_count = int(max(1, min(360, getattr(world, 'bakedPhysicsFrames', 120))))
+	if frame_count <= 1:
+		return None
+	frames = []
+	_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = 1, include_init = True, include_update = False)
+	for frame in range(frame_count):
+		_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = frame + 1, include_init = False, include_update = True)
+		canvas = _gba_composite_scene(world, image_empties, image_surfaces = image_surfaces, script_runtime = script_runtime, frame = frame + 1)
+		frames.append(_gba_rgba_to_mode3(canvas))
+	print('GBA export: baked', len(frames), 'script-driven frame(s) for runtime playback.')
+	return frames
+
+def _gbc_generate_script_canvases (world, image_empties, image_surfaces, script_runtime):
+	if not _gba_has_update_visuals(script_runtime):
+		return None
+	frame_count = int(max(1, min(360, getattr(world, 'bakedPhysicsFrames', 120))))
+	if frame_count <= 1:
+		return None
+	# GBC ROM is 32KB; frame payloads are large, so cap bake upfront.
+	frame_count = min(frame_count, 8)
+	canvases = []
+	_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = 1, include_init = True, include_update = False)
+	for frame in range(frame_count):
+		_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = frame + 1, include_init = False, include_update = True)
+		canvas_gba_space = _gba_composite_scene(world, image_empties, image_surfaces = image_surfaces, script_runtime = script_runtime, frame = frame + 1)
+		canvases.append(_gba_resize_cover_rgba(canvas_gba_space, 160, 144))
+	print('GBC export: baked', len(canvases), 'script-driven frame(s) for runtime playback.')
+	return canvases
 
 def _gba_build_runtime_code_linked (script_runtime : dict, bitmap_rom_offset : int, frame_count : int = 1):
 	asm_path = script_runtime.get('assembly_path') if script_runtime else None
@@ -4856,6 +5722,11 @@ def _gba_build_runtime_code_linked (script_runtime : dict, bitmap_rom_offset : i
 	)
 	init_calls = '\n'.join('\tbl\t' + sym for sym in init_symbols) if init_symbols else '\t@ no init script calls'
 	update_calls = '\n'.join('\tbl\t' + sym for sym in update_symbols) if update_symbols else '\t@ no update script calls'
+	main_loop_body = '\n'.join([
+		'\tbl\tpy2gba_wait_vblank',
+		'\t@ no baked frame playback; keep VRAM live between updates',
+		'\tbl\tpy2gba_call_update',
+	])
 	frame_base_rom = 0x08000000 + bitmap_rom_offset
 	frame_stride = 240 * 160 * 2
 	frame_end_rom = frame_base_rom + frame_stride * frame_count
@@ -4884,9 +5755,7 @@ gba_thumb_entry:
 \tbl\tpy2gba_blit_frame
 \tbl\tpy2gba_call_init
 gba_main_loop:
-\tbl\tpy2gba_wait_vblank
-\tbl\tpy2gba_blit_frame
-\tbl\tpy2gba_call_update
+{main_loop_body}
 \tb\tgba_main_loop
 
 .thumb_func
@@ -5051,9 +5920,9 @@ def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int, script_r
 			code_bytes = _gba_build_runtime_code_linked(script_runtime or {}, bitmap_rom_offset, frame_count = frame_count) or code_bytes
 			bitmap_rom_offset = max(bitmap_rom_offset, CODE_START + len(code_bytes))
 			bitmap_rom_offset = (bitmap_rom_offset + 3) & ~3
-	elif frame_count > 1:
-		print('GBA export: missing linked toolchain; falling back to static frame runtime.')
-	print('GBA export: runtime mode =', 'linked' if code_bytes else 'fallback', ', frames =', frame_count, ', pixel_bytes =', len(pixel_bytes))
+	else:
+		raise RuntimeError('GBA export requires linked runtime (clang + ld.lld + llvm-objcopy/objcopy). Static fallback rendering is disabled.')
+	print('GBA export: runtime mode = linked, frames =', frame_count, ', pixel_bytes =', len(pixel_bytes))
 	rom_len = bitmap_rom_offset + len(pixel_bytes)
 	rom = bytearray(rom_len)
 	struct.pack_into('<I', rom, 0, 0xEA000000 | (((CODE_START - 8) // 4) & 0xFFFFFF))
@@ -5066,36 +5935,28 @@ def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int, script_r
 	rom[0xB3] = 0x00
 	rom[0xB4] = 0x00
 	rom[0xBC] = 0x00
-	if code_bytes:
-		rom[CODE_START : CODE_START + len(code_bytes)] = code_bytes
-	else:
-		words = [
-			0xE59F002C,
-			0xE3A01003,
-			0xE5C01000,
-			0xE3A01004,
-			0xE5C01001,
-			0xE59F201C,
-			0xE59F301C,
-			0xE59F401C,
-			0xE4925004,
-			0xE4835004,
-			0xE2544004,
-			0xCAFFFFFB,
-			0xEAFFFFFE,
-		]
-		if script_runtime and (script_runtime.get('init_quit') or script_runtime.get('update_quit')):
-			words[-1] = 0xEF000000
-		pool = CODE_START + len(words) * 4
-		for i, w in enumerate(words):
-			struct.pack_into('<I', rom, CODE_START + i * 4, w)
-		struct.pack_into('<I', rom, pool, 0x04000000)
-		struct.pack_into('<I', rom, pool + 4, 0x08000000 + bitmap_rom_offset)
-		struct.pack_into('<I', rom, pool + 8, 0x06000000)
-		struct.pack_into('<I', rom, pool + 12, 240 * 160 * 2)
+	rom[CODE_START : CODE_START + len(code_bytes)] = code_bytes
 	rom[bitmap_rom_offset : bitmap_rom_offset + len(pixel_bytes)] = pixel_bytes
 	_gba_complement_check(rom)
 	return bytes(rom)
+
+def _gb_scene_has_physics (scene_obs):
+	for ob in scene_obs or []:
+		if not getattr(ob, 'exportOb', False) or ob.hide_get():
+			continue
+		if getattr(ob, 'rigidBodyExists', False) or getattr(ob, 'colliderExists', False):
+			return True
+	return False
+
+def _gb_runtime_is_stubbed (script_runtime):
+	asm_path = (script_runtime or {}).get('assembly_path')
+	if not asm_path or not os.path.isfile(asm_path):
+		return False
+	try:
+		asm_txt = open(asm_path, 'r', encoding = 'utf-8').read(512)
+	except Exception:
+		return False
+	return 'py2gba pygame-aware stub backend' in asm_txt
 
 def BuildGba (world):
 	PreBuild ()
@@ -5133,19 +5994,24 @@ def BuildGba (world):
 			pix = _gba_load_saved_image_rgba(ob)
 			if pix is not None:
 				image_surfaces[ob.name] = pix
-		_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []))
-		rapier_frames = _gba_generate_rapier_frames(world, scene_obs, gba_imgs, image_surfaces, script_runtime)
-		if rapier_frames:
-			frame_count = len(rapier_frames)
-			pixel_bytes = b''.join(rapier_frames)
-		else:
-			frame_count = 1
-			canvas = _gba_composite_scene(world, gba_imgs, image_surfaces = image_surfaces)
-			for circle in script_runtime.get('init_draw_circles', []):
-				_gba_draw_circle_rgba(canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
-			for circle in script_runtime.get('update_draw_circles', []):
-				_gba_draw_circle_rgba(canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
-			pixel_bytes = _gba_rgba_to_mode3(canvas)
+		has_physics = bool(getattr(world, 'usePhysics', True)) and _gb_scene_has_physics(scene_obs)
+		if has_physics:
+			update_symbols = list((script_runtime or {}).get('update_symbols') or [])
+			if not update_symbols:
+				raise RuntimeError(
+					'GBA dynamic physics requires runtime update code, but no update symbols were generated. '
+					'Blender rigid-body playback bake is disabled, so add gba-py update scripts or disable physics for GBA export.'
+				)
+			if _gb_runtime_is_stubbed(script_runtime):
+				raise RuntimeError(
+					'GBA dynamic physics requires a full py2gba compiler/runtime; the current py2gba backend is a pygame stub. '
+					'Install/use full Py2Gba toolchain to execute real update logic on-device.'
+				)
+		frame_count = 1
+		_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = 1, include_init = True, include_update = False)
+		canvas = _gba_composite_scene(world, gba_imgs, image_surfaces = image_surfaces, script_runtime = script_runtime, frame = 1)
+		pixel_bytes = _gba_rgba_to_mode3(canvas)
+		print('GBA export: baked playback disabled; runtime is dynamic-only.')
 		rom = _gba_build_rom_mode3(pixel_bytes, bitmap_off, script_runtime, frame_count = frame_count)
 		MakeFolderForFile(out)
 		open(out, 'wb').write(rom)
@@ -5195,14 +6061,88 @@ def BuildGbc (world):
 			out = TMP_DIR + '/' + bpy.path.basename(bpy.data.filepath).replace('.blend', '') + '.gbc'
 		elif not out.lower().endswith('.gbc'):
 			out += '.gbc'
+		script_runtime = ExportGbcPyAssembly(world, out)
 		image_surfaces = {}
 		for ob in gbc_imgs:
 			pix = _gba_load_saved_image_rgba(ob)
 			if pix is not None:
 				image_surfaces[ob.name] = pix
-		canvas_gba_space = _gba_composite_scene(world, gbc_imgs, image_surfaces = image_surfaces)
-		canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
-		rom = _gbc_build_rom(canvas_gbc)
+		has_physics = bool(getattr(world, 'usePhysics', True)) and _gb_scene_has_physics(scene_obs)
+		if has_physics:
+			sprite_ob = None
+			for ob in gbc_imgs:
+				if getattr(ob, 'rigidBodyExists', False) and getattr(ob, 'rigidBodyEnable', True) and getattr(ob, 'rigidBodyType', '') == 'dynamic':
+					sprite_ob = ob
+					break
+			if sprite_ob is None:
+				for ob in gbc_imgs:
+					if getattr(ob, 'rigidBodyExists', False) and getattr(ob, 'rigidBodyEnable', True):
+						sprite_ob = ob
+						break
+			if sprite_ob is None:
+				raise RuntimeError('GBC dynamic physics phase1 requires at least one exported image empty with an enabled rigid body.')
+			bg_imgs = [ob for ob in gbc_imgs if ob.name != sprite_ob.name]
+			_gba_apply_script_surface_ops(
+				image_surfaces,
+				script_runtime.get('surface_ops', []),
+				frame = 1,
+				include_init = True,
+				include_update = False,
+			)
+			canvas_gba_space = _gba_composite_scene(
+				world,
+				bg_imgs,
+				image_surfaces = image_surfaces,
+				script_runtime = script_runtime,
+				frame = 1,
+			)
+			canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
+			_, _, _, bg_palette_bank = _gbc_encode_tiles_and_map(canvas_gbc)
+			sprite_rgba = _gba_apply_tint_opacity_to_rgba(image_surfaces.get(sprite_ob.name), list(sprite_ob.tint), sprite_ob.color[3])
+			sprite_pal = _gbc_palette4_from_rgba(sprite_rgba)
+			sprite_w, sprite_h = _gba_get_image_size(sprite_ob)
+			sprite_w = _gba_to_gbc_cover_len(sprite_w)
+			sprite_h = _gba_to_gbc_cover_len(sprite_h)
+			sprite_tile, sprite_tiles_w, sprite_tiles_h = _gbc_encode_metasprite_rgba(
+				sprite_rgba,
+				int(round(sprite_w)),
+				int(round(sprite_h)),
+				palette4 = sprite_pal,
+			)
+			init_pos = GetImagePosition(sprite_ob)
+			init_x, init_y = _gba_to_gbc_cover_point(float(init_pos.x), float(init_pos.y))
+			floor_y = max(0, 144 - sprite_tiles_h * 8)
+			gravity_y = 0.0
+			if bpy.context.scene.use_gravity:
+				gravity_y = float(list(bpy.context.scene.gravity)[1])
+			gravity_scale = float(getattr(sprite_ob, 'gravityScale', 1.0))
+			effective_down = -gravity_y * gravity_scale
+			if abs(effective_down) < 1e-6:
+				grav_step = 0
+			else:
+				grav_step = int(round(effective_down / 100.0))
+				if grav_step == 0:
+					grav_step = 1 if effective_down > 0 else -1
+			grav_step = max(-8, min(8, grav_step))
+			rom = _gbc_build_dynamic_physics_rom(canvas_gbc, sprite_tile, sprite_tiles_w, sprite_tiles_h, init_x, init_y, floor_y, bg_palette_bank, sprite_pal, grav_step = grav_step)
+		else:
+			_gba_apply_script_surface_ops(
+				image_surfaces,
+				script_runtime.get('surface_ops', []),
+				frame = 1,
+				include_init = True,
+				include_update = False,
+			)
+			canvas_gba_space = _gba_composite_scene(
+				world,
+				gbc_imgs,
+				image_surfaces = image_surfaces,
+				script_runtime = script_runtime,
+				frame = 1,
+			)
+			canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
+			rom = _gbc_build_rom(canvas_gbc)
+			print('GBC export: baked playback disabled; runtime is dynamic-only.')
 		MakeFolderForFile(out)
 		open(out, 'wb').write(rom)
 		print('Saved GBC ROM:', out, '(%i bytes)' %len(rom))
@@ -5216,6 +6156,7 @@ def BuildGbc (world):
 				bufsize = 1,
 			)
 			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
+			_start_gba_update_print_mirror(proc, script_runtime, script_label = 'gbc-py')
 		except FileNotFoundError:
 			print('mgba-qt not found in PATH; open the ROM manually:', rom_path)
 	finally:
@@ -5694,7 +6635,7 @@ SHAPE_TYPES = ['ball', 'halfspace', 'cuboid', 'roundCuboid', 'capsule', 'segment
 RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinematicPositionBased', 'kinematic-position-based', ''), ('kinematicVelocityBased', 'kinematic-velocity-based', '')]
 RIGID_BODY_TYPES = ['dynamic', 'fixed', 'kinematicPositionBased', 'kinematicVelocityBased']
 JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
-SCRIPT_TYPE_ITEMS = [('html-py', 'html-py', ''), ('html-js', 'html-js', ''), ('exe', 'exe', ''), ('unity', 'unity', ''), ('gba-py', 'gba-py', 'Python → Thumb asm for GBA (see Export to GBA)')]
+SCRIPT_TYPE_ITEMS = [('html-py', 'html-py', ''), ('html-js', 'html-js', ''), ('exe', 'exe', ''), ('unity', 'unity', ''), ('gba-py', 'gba-py', 'Python → Thumb asm for GBA (see Export to GBA)'), ('gbc-py', 'gbc-py', 'Python → assembly for GBC (see Export to GBC)')]
 BOUNCINESS_COMBINE_RULE_ITEMS = [('average', 'average', ''), ('minimum', 'min', ''), ('multiply', 'multiply', ''), ('maximum', 'max', '')]
 BOUNCINESS_COMBINE_RULES = ['average', 'minimum', 'multiply', 'maximum']
 
@@ -5706,7 +6647,6 @@ bpy.types.World.exePath = bpy.props.StringProperty(name = 'Export .exe')
 bpy.types.World.gbaPath = bpy.props.StringProperty(name = 'Export .gba', default = TMP_DIR + '/export.gba')
 bpy.types.World.gbcPath = bpy.props.StringProperty(name = 'Export .gbc', default = TMP_DIR + '/export.gbc')
 bpy.types.World.usePhysics = bpy.props.BoolProperty(name = 'Use physics', default = True)
-bpy.types.World.bakedPhysicsFrames = bpy.props.IntProperty(name = 'Baked physics frames', min = 1, default = 120)
 bpy.types.World.zipPath = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = TMP_DIR + '/TestUnityProject')
 bpy.types.World.minifyMethod = bpy.props.EnumProperty(name = 'Minify using library', items = MINIFY_METHOD_ITEMS)
@@ -6256,8 +7196,6 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.prop(ctx.world, 'gbaPath')
 		self.layout.prop(ctx.world, 'gbcPath')
 		self.layout.prop(ctx.world, 'usePhysics')
-		if ctx.world.usePhysics:
-			self.layout.prop(ctx.world, 'bakedPhysicsFrames')
 		self.layout.prop(ctx.world, 'zipPath')
 		self.layout.prop(ctx.world, 'unityProjPath')
 		if usePhysics:
