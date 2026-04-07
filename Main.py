@@ -1,4 +1,4 @@
-import os, re, sys, json, math, time, string, atexit, struct, webbrowser, subprocess, shutil, threading
+import os, re, sys, json, math, time, string, atexit, struct, shutil, threading, subprocess, webbrowser
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
@@ -3919,7 +3919,6 @@ def _start_gba_update_print_mirror (proc, script_runtime):
 	thread.start()
 	_GBA_EMU_PROCS.append((proc, thread))
 
-# Nintendo logo bytes required for GBA boot (same as libgba / ezgba).
 _GBA_NINTENDO_LOGO = bytes([
 	0x24, 0xFF, 0xAE, 0x51, 0x69, 0x9A, 0xA2, 0x21, 0x3D, 0x84, 0x82, 0x0A, 0x84, 0xE4, 0x09, 0xAD, 0x11, 0x24,
 	0x8B, 0x98, 0xC0, 0x81, 0x7F, 0x21, 0xA3, 0x52, 0xBE, 0x19, 0x93, 0x09, 0xCE, 0x20, 0x10, 0x46, 0x4A, 0x4A,
@@ -3931,6 +3930,18 @@ _GBA_NINTENDO_LOGO = bytes([
 	0x03, 0x44, 0x78, 0x00, 0x90, 0xCB, 0x88, 0x11, 0x3A, 0x94, 0x65, 0xC0, 0x7C, 0x63, 0x87, 0xF0, 0x3C, 0xAF,
 	0xD6, 0x25, 0xE4, 0x8B, 0x38, 0x0A, 0xAC, 0x72, 0x21, 0xD4, 0xF8, 0x07,
 ])
+_GBC_NINTENDO_LOGO = bytes([
+	0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B, 0x03, 0x73, 0x00, 0x83,
+	0x00, 0x0C, 0x00, 0x0D, 0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E,
+	0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99, 0xBB, 0xBB, 0x67, 0x63,
+	0x6E, 0x0E, 0xEC, 0xCC, 0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E,
+])
+_GBC_DEFAULT_BG_COLORS = [
+	(224, 248, 208),
+	(136, 192, 112),
+	(52, 104, 86),
+	(8, 24, 32),
+]
 
 def _gba_complement_check (rom : bytearray):
 	chk = 0
@@ -3938,7 +3949,302 @@ def _gba_complement_check (rom : bytearray):
 		chk = (chk - b) & 0xFF
 	rom[0xBD] = (chk - 0x19) & 0xFF
 
+def _gbc_compute_header_checksums (rom : bytearray):
+	header_chk = 0
+	for b in rom[0x134 : 0x14D]:
+		header_chk = (header_chk - b - 1) & 0xFF
+	rom[0x14D] = header_chk
+	global_chk = 0
+	for i, b in enumerate(rom):
+		if i == 0x14E or i == 0x14F:
+			continue
+		global_chk = (global_chk + b) & 0xFFFF
+	rom[0x14E] = (global_chk >> 8) & 0xFF
+	rom[0x14F] = global_chk & 0xFF
+
+def _gbc_tile_to_2bpp (tile_colors_8x8):
+	out = bytearray(16)
+	for y in range(8):
+		lo = 0
+		hi = 0
+		for x in range(8):
+			val = int(tile_colors_8x8[y, x]) & 0x3
+			shift = 7 - x
+			lo |= (val & 0x1) << shift
+			hi |= ((val >> 1) & 0x1) << shift
+		out[y * 2] = lo
+		out[y * 2 + 1] = hi
+	return bytes(out)
+
+def _gbc_quantize_palette4 (pixels_rgb_u8, lock_extremes : bool = True):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBC requires NumPy (included with Blender).')
+	flat = pixels_rgb_u8.astype(np.float32)
+	if flat.shape[0] == 0:
+		palette = np.array(_GBC_DEFAULT_BG_COLORS, dtype = np.uint8)
+		return palette[: 4]
+	unique, counts = np.unique(flat.astype(np.uint8), axis = 0, return_counts = True)
+	weights = counts.astype(np.float32)
+	if unique.shape[0] <= 4:
+		palette = unique.astype(np.float32)
+	else:
+		luma = (unique[:, 0].astype(np.float32) * 0.299 + unique[:, 1].astype(np.float32) * 0.587 + unique[:, 2].astype(np.float32) * 0.114)
+		if lock_extremes:
+			dark_idx = int(np.argmin(luma))
+			bright_idx = int(np.argmax(luma))
+			chosen = [dark_idx]
+			if bright_idx != dark_idx:
+				chosen.append(bright_idx)
+		else:
+			chosen = [int(np.argmax(weights))]
+		while len(chosen) < 4:
+			chosen_arr = unique[np.array(chosen, dtype = np.int32)].astype(np.float32)
+			diff = unique[:, None, :].astype(np.float32) - chosen_arr[None, :, :]
+			min_d2 = (diff * diff).sum(axis = 2).min(axis = 1)
+			score = min_d2 * np.sqrt(np.maximum(1.0, weights))
+			score[np.array(chosen, dtype = np.int32)] = -1.0
+			chosen.append(int(np.argmax(score)))
+		palette = unique[np.array(chosen, dtype = np.int32)].astype(np.float32)
+		u = unique.astype(np.float32)
+		for _ in range(6):
+			diff = u[:, None, :] - palette[None, :, :]
+			assign = np.argmin((diff * diff).sum(axis = 2), axis = 1)
+			for i in range(4):
+				if lock_extremes and i < 2:
+					continue
+				mask = (assign == i)
+				if not np.any(mask):
+					continue
+				w = weights[mask][:, None]
+				palette[i] = (u[mask] * w).sum(axis = 0) / np.maximum(1.0, w.sum())
+	if palette.shape[0] < 4:
+		pad = np.repeat(palette[-1 :], 4 - palette.shape[0], axis = 0)
+		palette = np.concatenate([palette, pad], axis = 0)
+	return np.clip(palette, 0.0, 255.0).astype(np.uint8)
+
+def _gbc_quantize_indices_for_palette (pixels_rgb_u8, palette_u8):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBC requires NumPy (included with Blender).')
+	pix = pixels_rgb_u8.astype(np.float32)
+	pal = palette_u8.astype(np.float32)
+	diff = pix[:, None, :] - pal[None, :, :]
+	d2 = (diff * diff).sum(axis = 2)
+	indices = np.argmin(d2, axis = 1).astype(np.uint8)
+	err = float(np.take_along_axis(d2, indices[:, None], axis = 1).sum())
+	return indices, err
+
+def _gbc_encode_tiles_and_map (rgba_canvas_160x144):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Export GBC requires NumPy (included with Blender).')
+	rgb_u8 = (np.clip(rgba_canvas_160x144[:, :, :3], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+	tile_pixels = []
+	tile_local_palettes = []
+	for ty in range(18):
+		for tx in range(20):
+			pix = rgb_u8[ty * 8 : ty * 8 + 8, tx * 8 : tx * 8 + 8, :].reshape((64, 3))
+			tile_pixels.append(pix)
+			tile_local_palettes.append(_gbc_quantize_palette4(pix, lock_extremes = True))
+	if not tile_pixels:
+		return b'', bytes(32 * 32), bytes(32 * 32), [np.array(_GBC_DEFAULT_BG_COLORS[: 4], dtype = np.uint8)]
+	palette_bank = [tile_local_palettes[0]]
+	while len(palette_bank) < 8:
+		worst_i = -1
+		worst_err = -1.0
+		for i, pix in enumerate(tile_pixels):
+			best_err = None
+			for pal in palette_bank:
+				_, err = _gbc_quantize_indices_for_palette(pix, pal)
+				if best_err is None or err < best_err:
+					best_err = err
+			if best_err is not None and best_err > worst_err:
+				worst_err = best_err
+				worst_i = i
+		if worst_i == -1 or worst_err <= 0.0:
+			break
+		candidate = tile_local_palettes[worst_i]
+		if any(np.array_equal(candidate, p) for p in palette_bank):
+			break
+		palette_bank.append(candidate)
+	for _ in range(2):
+		assignments = []
+		for pix in tile_pixels:
+			best_idx = 0
+			best_err = None
+			for pi, pal in enumerate(palette_bank):
+				_, err = _gbc_quantize_indices_for_palette(pix, pal)
+				if best_err is None or err < best_err:
+					best_err = err
+					best_idx = pi
+			assignments.append(best_idx)
+		for pi in range(len(palette_bank)):
+			group = [tile_pixels[i] for i, a in enumerate(assignments) if a == pi]
+			if not group:
+				continue
+			joined = np.concatenate(group, axis = 0)
+			palette_bank[pi] = _gbc_quantize_palette4(joined, lock_extremes = True)
+	tile_indices = []
+	tile_palette_idx = []
+	for pix in tile_pixels:
+		best_idx = 0
+		best_err = None
+		best_indices = None
+		for pi, pal in enumerate(palette_bank):
+			idxs, err = _gbc_quantize_indices_for_palette(pix, pal)
+			if best_err is None or err < best_err:
+				best_err = err
+				best_idx = pi
+				best_indices = idxs
+		tile_palette_idx.append(best_idx)
+		tile_indices.append(best_indices)
+	tile_matrix = np.stack(tile_indices, axis = 0)
+	unique_tiles, inverse, counts = np.unique(tile_matrix, axis = 0, return_inverse = True, return_counts = True)
+	if unique_tiles.shape[0] <= 256:
+		palette_tiles = unique_tiles
+		unique_to_palette = np.arange(unique_tiles.shape[0], dtype = np.int32)
+	else:
+		top = np.argsort(-counts)[: 256]
+		palette_tiles = unique_tiles[top]
+		dist = np.abs(unique_tiles[:, None, :].astype(np.int16) - palette_tiles[None, :, :].astype(np.int16)).sum(axis = 2)
+		unique_to_palette = np.argmin(dist, axis = 1).astype(np.int32)
+		print('GBC export: reduced unique tiles from', unique_tiles.shape[0], 'to 256.')
+	tilemap_linear = unique_to_palette[inverse].astype(np.uint8)
+	attr_linear = np.array(tile_palette_idx, dtype = np.uint8)
+	tilemap = np.zeros((32, 32), dtype = np.uint8)
+	attrmap = np.zeros((32, 32), dtype = np.uint8)
+	for ty in range(18):
+		row_src_start = ty * 20
+		row_src_end = row_src_start + 20
+		tilemap[ty, :20] = tilemap_linear[row_src_start : row_src_end]
+		attrmap[ty, :20] = attr_linear[row_src_start : row_src_end] & 0x07
+	tile_bytes = bytearray()
+	for tile_flat in palette_tiles:
+		tile_8x8 = tile_flat.reshape((8, 8))
+		tile_bytes.extend(_gbc_tile_to_2bpp(tile_8x8))
+	return bytes(tile_bytes), tilemap.tobytes(), attrmap.tobytes(), palette_bank
+
+def _gbc_build_program (tile_data_addr : int, tile_data_len : int, tilemap_addr : int, tilemap_len : int, attrmap_addr : int, attrmap_len : int, bg_palette_bytes : bytes):
+	code = bytearray()
+	def emit(*vals):
+		code.extend(vals)
+	def ld_a_imm(v):
+		emit(0x3E, int(v) & 0xFF)
+	def ldh_imm_a(reg):
+		emit(0xE0, int(reg) & 0xFF)
+	def ld_hl_imm(v):
+		emit(0x21, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
+	def ld_de_imm(v):
+		emit(0x11, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
+	def ld_bc_imm(v):
+		emit(0x01, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
+	emit(0xF3)  # di
+	emit(0x31, 0xFE, 0xFF)  # ld sp, $FFFE
+	emit(0xAF)  # xor a
+	ldh_imm_a(0x40)  # LCDC off
+	ld_a_imm(0x80)  # BG palette index 0, autoinc
+	ldh_imm_a(0x68)
+	for b in bg_palette_bytes:
+		ld_a_imm(b)
+		ldh_imm_a(0x69)
+	emit(0xAF)  # xor a
+	ldh_imm_a(0x4F)  # VBK = 0
+	ld_hl_imm(tile_data_addr)
+	ld_de_imm(0x8000)
+	ld_bc_imm(tile_data_len)
+	emit(0xCD, 0x00, 0x00)  # call copy_bc (patched)
+	call1_patch = len(code) - 2
+	ld_hl_imm(tilemap_addr)
+	ld_de_imm(0x9800)
+	ld_bc_imm(tilemap_len)
+	emit(0xCD, 0x00, 0x00)  # call copy_bc (patched)
+	call2_patch = len(code) - 2
+	ld_a_imm(0x01)
+	ldh_imm_a(0x4F)  # VBK = 1 (attributes)
+	ld_hl_imm(attrmap_addr)
+	ld_de_imm(0x9800)
+	ld_bc_imm(attrmap_len)
+	emit(0xCD, 0x00, 0x00)  # call copy_bc (patched)
+	call3_patch = len(code) - 2
+	emit(0xAF)  # xor a
+	ldh_imm_a(0x4F)  # VBK = 0
+	emit(0xAF)  # xor a
+	ldh_imm_a(0x42)  # SCY
+	ldh_imm_a(0x43)  # SCX
+	ld_a_imm(0x91)  # LCDC on, BG on
+	ldh_imm_a(0x40)
+	emit(0xFB)  # ei
+	loop_addr = len(code)
+	emit(0x76)  # halt
+	emit(0x18, 0xFD)  # jr loop
+	copy_addr = len(code)
+	emit(0x78)  # ld a,b
+	emit(0xB1)  # or c
+	emit(0xC8)  # ret z
+	emit(0x2A)  # ld a,[hl+]
+	emit(0x12)  # ld [de],a
+	emit(0x13)  # inc de
+	emit(0x0B)  # dec bc
+	emit(0x18, 0xF7)  # jr copy loop
+	copy_abs = 0x150 + copy_addr
+	code[call1_patch] = copy_abs & 0xFF
+	code[call1_patch + 1] = (copy_abs >> 8) & 0xFF
+	code[call2_patch] = copy_abs & 0xFF
+	code[call2_patch + 1] = (copy_abs >> 8) & 0xFF
+	code[call3_patch] = copy_abs & 0xFF
+	code[call3_patch + 1] = (copy_abs >> 8) & 0xFF
+	return bytes(code)
+
+def _gbc_build_rom (canvas_160x144):
+	tile_data, tilemap, attrmap, palette_bank = _gbc_encode_tiles_and_map(canvas_160x144)
+	palette_bytes = bytearray()
+	default_pal = _GBC_DEFAULT_BG_COLORS[: 4]
+	for p_idx in range(8):
+		pal = palette_bank[p_idx] if p_idx < len(palette_bank) else default_pal
+		for r, g, b in pal:
+			c = _gba_pack_rgb555_le(r, g, b)
+			palette_bytes.append(c & 0xFF)
+			palette_bytes.append((c >> 8) & 0xFF)
+	code_template = _gbc_build_program(0, len(tile_data), 0, len(tilemap), 0, len(attrmap), palette_bytes)
+	code_start = 0x150
+	tile_data_addr = code_start + len(code_template)
+	if tile_data_addr & 0xF:
+		tile_data_addr += 0x10 - (tile_data_addr & 0xF)
+	map_addr = tile_data_addr + len(tile_data)
+	attr_addr = map_addr + len(tilemap)
+	code = _gbc_build_program(tile_data_addr, len(tile_data), map_addr, len(tilemap), attr_addr, len(attrmap), palette_bytes)
+	rom_size = 0x8000
+	if attr_addr + len(attrmap) > rom_size:
+		raise RuntimeError('GBC export exceeds 32KB ROM size.')
+	rom = bytearray(rom_size)
+	rom[0x100 : 0x104] = bytes([0x00, 0xC3, 0x50, 0x01])
+	rom[0x104 : 0x134] = _GBC_NINTENDO_LOGO
+	title = b'JS13KGBCEXPORT'
+	rom[0x134 : 0x143] = title[: 15].ljust(15, b'\x00')
+	rom[0x143] = 0xC0  # CGB only
+	rom[0x144 : 0x146] = b'00'
+	rom[0x146] = 0x00
+	rom[0x147] = 0x00
+	rom[0x148] = 0x00
+	rom[0x149] = 0x00
+	rom[0x14A] = 0x01
+	rom[0x14B] = 0x33
+	rom[0x14C] = 0x00
+	rom[code_start : code_start + len(code)] = code
+	rom[tile_data_addr : tile_data_addr + len(tile_data)] = tile_data
+	rom[map_addr : map_addr + len(tilemap)] = tilemap
+	rom[attr_addr : attr_addr + len(attrmap)] = attrmap
+	_gbc_compute_header_checksums(rom)
+	return bytes(rom)
+
 def _gba_pack_rgb555_le (r : int, g : int, b : int):
+	r = int(r)
+	g = int(g)
+	b = int(b)
 	return (r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10)
 
 def _gba_rgba_to_mode3 (rgba):
@@ -3952,7 +4258,6 @@ def _gba_rgba_to_mode3 (rgba):
 			b = int(max(0, min(1, b)) * 255)
 			al = max(0.0, min(1.0, a))
 			if al < 1.0:
-				# unpremultiplied over opaque black
 				r = int(r * al)
 				g = int(g * al)
 				b = int(b * al)
@@ -3975,6 +4280,19 @@ def _gba_nn_resize_rgba (src, tw : int, th : int):
 	ys = np.clip(ys, 0, sh - 1)
 	xs = np.clip(xs, 0, sw - 1)
 	return src[np.ix_(ys, xs)]
+
+def _gba_resize_cover_rgba (src, tw : int, th : int):
+	sw = int(src.shape[1])
+	sh = int(src.shape[0])
+	if sw <= 0 or sh <= 0:
+		return _gba_nn_resize_rgba(src, tw, th)
+	scale = max(float(tw) / float(sw), float(th) / float(sh))
+	rw = max(1, int(round(sw * scale)))
+	rh = max(1, int(round(sh * scale)))
+	resized = _gba_nn_resize_rgba(src, rw, rh)
+	x0 = max(0, (rw - tw) // 2)
+	y0 = max(0, (rh - th) // 2)
+	return resized[y0 : y0 + th, x0 : x0 + tw]
 
 def _gba_rotate_rgba_degrees (src, angle_deg):
 	try:
@@ -4147,7 +4465,7 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list):
 			image_surfaces[owner_name] = override
 	return image_surfaces
 
-def _gba_composite_scene (world, image_empties, image_surfaces = None):
+def _gba_composite_scene (world, image_empties, image_surfaces = None, transform_overrides = None):
 	try:
 		import numpy as np
 	except ImportError:
@@ -4175,32 +4493,361 @@ def _gba_composite_scene (world, image_empties, image_surfaces = None):
 		tw = max(1, int(round(abs(size.x))))
 		th = max(1, int(round(abs(size.y))))
 		scaled = _gba_nn_resize_rgba(pix, tw, th)
-		rot_deg = math.degrees(ob.rotation_euler.z)
-		if abs(ob.rotation_euler.z) > 1e-10:
+		override = None if not transform_overrides else transform_overrides.get(ob.name)
+		if override:
+			rot_deg = float(override.get('rot_deg', 0.0))
+		else:
+			rot_deg = math.degrees(ob.rotation_euler.z)
+		if abs(rot_deg) > 1e-10:
 			scaled = _gba_rotate_rgba_degrees(scaled, rot_deg)
-		pos = GetImagePosition(ob)
+		if override:
+			pos = Vector((float(override.get('x', 0.0)), float(override.get('y', 0.0)), 0.0))
+		else:
+			pos = GetImagePosition(ob)
 		tint = list(ob.tint)
 		_gba_blit_rgba(canvas, scaled, int(pos.x), int(pos.y), tint, ob.color[3])
 	return canvas
 
-def _gba_build_runtime_code_linked (script_runtime : dict, bitmap_rom_offset : int):
+def _gba_try_build_and_install_pyrapier2d ():
+	pyrapier_repo = os.path.join(_thisDir, 'PyRapier2d')
+	local_target = os.path.join(pyrapier_repo, '.pyrapier_site')
+	if not os.path.isfile(os.path.join(pyrapier_repo, 'Cargo.toml')):
+		print('GBA export: PyRapier2d repo missing Cargo.toml at', pyrapier_repo)
+		return False
+	env = os.environ.copy()
+	env['PYO3_USE_ABI3_FORWARD_COMPATIBILITY'] = '1'
+	if sys.platform.startswith('linux'):
+		env['PIP_BREAK_SYSTEM_PACKAGES'] = '1'
+	for cargo_path in [os.path.expanduser('~/.cargo/bin'), '/usr/bin', '/usr/local/bin']:
+		if os.path.isdir(cargo_path) and cargo_path not in env.get('PATH', ''):
+			env['PATH'] = cargo_path + os.pathsep + env.get('PATH', '')
+	python_execs = []
+	for exe in [
+		getattr(sys, 'executable', None),
+		getattr(sys, '_base_executable', None),
+		getattr(getattr(bpy, 'app', None), 'binary_path_python', None) if bpy else None,
+		shutil.which('python3'),
+		shutil.which('python'),
+	]:
+		if exe and exe not in python_execs:
+			python_execs.append(exe)
+	if python_execs == []:
+		print('GBA export: no Python executable found for building PyRapier2d.')
+		return False
+	def _run(exe, args):
+		cmd = [exe] + args
+		try:
+			return subprocess.run(cmd, cwd = pyrapier_repo, env = env, capture_output = True, text = True, check = False), None
+		except Exception as e:
+			return None, e
+	last_err = ''
+	for exe in python_execs:
+		proc, exc = _run(exe, ['-m', 'maturin', 'develop', '--release'])
+		if proc and proc.returncode == 0:
+			print('GBA export: installed PyRapier2d via maturin develop using', exe)
+			return True
+		if exc:
+			last_err = str(exc)
+		elif proc:
+			last_err = (proc.stderr or proc.stdout or '').strip()
+	for exe in python_execs:
+		pip_install_maturin = ['-m', 'pip', 'install', '--user', 'maturin']
+		pip_install_wheel = ['-m', 'pip', 'install', '--user', '--force-reinstall']
+		pip_install_wheel_target = ['-m', 'pip', 'install', '--upgrade', '--force-reinstall', '--target', local_target]
+		if sys.platform.startswith('linux'):
+			pip_install_maturin.append('--break-system-packages')
+			pip_install_wheel.append('--break-system-packages')
+			pip_install_wheel_target.append('--break-system-packages')
+		_run(exe, pip_install_maturin)
+		proc, exc = _run(exe, ['-m', 'maturin', 'build', '--release'])
+		if not proc or proc.returncode != 0:
+			if exc:
+				last_err = str(exc)
+			elif proc:
+				last_err = (proc.stderr or proc.stdout or '').strip()
+			continue
+		wheels_dir = os.path.join(pyrapier_repo, 'target', 'wheels')
+		if not os.path.isdir(wheels_dir):
+			last_err = 'maturin build succeeded but wheels directory was not created'
+			continue
+		wheels = sorted([f for f in os.listdir(wheels_dir) if f.endswith('.whl')], reverse = True)
+		if not wheels:
+			last_err = 'maturin build succeeded but no wheel was produced'
+			continue
+		wheel_path = os.path.join(wheels_dir, wheels[0])
+		proc, exc = _run(exe, pip_install_wheel + [wheel_path])
+		if proc and proc.returncode == 0:
+			print('GBA export: installed PyRapier2d wheel for current Python using', exe)
+			return True
+		proc_target, exc_target = _run(exe, pip_install_wheel_target + [wheel_path])
+		if proc_target and proc_target.returncode == 0:
+			print('GBA export: installed PyRapier2d wheel into local target', local_target, 'using', exe)
+			return True
+		if exc:
+			last_err = str(exc)
+		elif proc:
+			last_err = (proc.stderr or proc.stdout or '').strip()
+		if exc_target:
+			last_err = str(exc_target)
+		elif proc_target:
+			last_err = (proc_target.stderr or proc_target.stdout or '').strip()
+	if last_err:
+		last_err = last_err[: 500]
+		print('GBA export: failed to build/install PyRapier2d:', last_err)
+	else:
+		print('GBA export: failed to build/install PyRapier2d (no error text available).')
+	return False
+
+def _gba_try_import_pyrapier2d ():
+	import importlib
+	import os
+	import site
+	import sys
+	def _import_pyrapier(remove_shadow_paths = False):
+		original = None
+		removed = []
+		local_target = os.path.join(_thisDir, 'PyRapier2d', '.pyrapier_site')
+		added_paths = []
+		if remove_shadow_paths:
+			cwd = os.path.abspath(os.getcwd())
+			for p in list(sys.path):
+				path = p or cwd
+				candidate = os.path.join(path, 'PyRapier2d')
+				if os.path.isdir(candidate) and not os.path.isfile(os.path.join(candidate, '__init__.py')):
+					removed.append(p)
+			if removed:
+				print('GBA export: removing namespace-shadow paths for PyRapier2d import:', removed)
+				original = list(sys.path)
+				sys.path = [p for p in sys.path if p not in removed]
+		for extra in [local_target, site.getusersitepackages()]:
+			if extra and os.path.isdir(extra) and extra not in sys.path:
+				sys.path.insert(0, extra)
+				added_paths.append(extra)
+		try:
+			if 'PyRapier2d' in sys.modules:
+				del sys.modules['PyRapier2d']
+			mod_local = importlib.import_module('PyRapier2d')
+			return mod_local
+		except Exception:
+			return None
+		finally:
+			for p in added_paths:
+				if p in sys.path:
+					sys.path.remove(p)
+			if original is not None:
+				sys.path = original
+	try:
+		mod = importlib.import_module('PyRapier2d')
+		if hasattr(mod, 'Simulation'):
+			return mod
+	except Exception:
+		mod = None
+	mod2 = _import_pyrapier(remove_shadow_paths = True)
+	if mod2 is not None:
+		mod = mod2
+		if hasattr(mod2, 'Simulation'):
+			return mod2
+	if _gba_try_build_and_install_pyrapier2d():
+		mod3 = _import_pyrapier(remove_shadow_paths = True)
+		if mod3 is not None:
+			mod = mod3
+			if hasattr(mod3, 'Simulation'):
+				print('GBA export: PyRapier2d recovered after local build/install.')
+				return mod3
+	mod_file = getattr(mod, '__file__', None) if mod else None
+	mod_path = getattr(mod, '__path__', None) if mod else None
+	if mod_path:
+		print('GBA export: PyRapier2d namespace paths:', list(mod_path))
+	print('GBA export: PyRapier2d import resolved to', mod_file or '<namespace package>', 'without Simulation; skipping Rapier bake.')
+	return None
+
+def _gba_get_collision_groups (ob):
+	membership = 0
+	for i, enabled in enumerate(ob.collisionGroupMembership):
+		if enabled:
+			membership |= (1 << i)
+	filter_mask = 0
+	for i, enabled in enumerate(ob.collisionGroupFilter):
+		if enabled:
+			filter_mask |= (1 << i)
+	return membership, filter_mask
+
+def _gba_get_image_size (ob):
+	size = ob.scale * ob.empty_display_size
+	img_size = Vector(list(ob.data.size) + [0])
+	if img_size.x > img_size.y:
+		size.x *= img_size.x / img_size.y
+	else:
+		size.y *= img_size.y / img_size.x
+	return max(1.0, abs(size.x)), max(1.0, abs(size.y))
+
+def _gba_get_object_size (ob):
+	if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE' and ob.data:
+		return _gba_get_image_size(ob)
+	x_coords = [v[0] for v in ob.bound_box]
+	y_coords = [v[1] for v in ob.bound_box]
+	w = max(1.0, abs(max(x_coords) - min(x_coords)) * abs(ob.scale.x))
+	h = max(1.0, abs(max(y_coords) - min(y_coords)) * abs(ob.scale.y))
+	return w, h
+
+def _gba_get_object_pose (ob):
+	prev_rot_mode = ob.rotation_mode
+	ob.rotation_mode = 'XYZ'
+	rot_deg = math.degrees(ob.rotation_euler.z)
+	if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE':
+		pos = GetImagePosition(ob)
+	else:
+		pos = GetObjectPosition(ob)
+	ob.rotation_mode = prev_rot_mode
+	return [float(pos.x), float(pos.y)], float(rot_deg)
+
+def _gba_add_cuboid_collider_for_object (sim, ob, membership, filter_mask, attach_to = None):
+	pos, rot_deg = _gba_get_object_pose(ob)
+	w, h = _gba_get_object_size(ob)
+	return sim.add_cuboid_collider(
+		ob.colliderEnable,
+		pos,
+		rot_deg + ob.colliderRotOff,
+		membership,
+		filter_mask,
+		[w, h],
+		ob.isSensor,
+		ob.density,
+		ob.bounciness,
+		BOUNCINESS_COMBINE_RULES.index(ob.bouncinessCombineRule),
+		attach_to,
+	)
+
+def _gba_generate_rapier_frames (world, scene_obs, image_empties, image_surfaces, script_runtime):
+	if not getattr(world, 'usePhysics', True):
+		return None
+	py_rapier = _gba_try_import_pyrapier2d()
+	if not py_rapier:
+		print('GBA export: PyRapier2d not available; exporting a single static frame.')
+		return None
+	physics_obs = [ob for ob in scene_obs if ob.exportOb and not ob.hide_get() and (getattr(ob, 'rigidBodyExists', False) or getattr(ob, 'colliderExists', False))]
+	if not physics_obs:
+		return None
+	sim = py_rapier.Simulation()
+	sim.set_length_unit (float(world.unitLen))
+	gravity = [0, 0]
+	if bpy.context.scene.use_gravity:
+		g = list(bpy.context.scene.gravity)
+		gravity = [g[0], g[1]]
+	sim.set_gravity (gravity[0], gravity[1])
+	rigid_bodies = {}
+	for ob in physics_obs:
+		if not getattr(ob, 'rigidBodyExists', False):
+			continue
+		pos, rot_deg = _gba_get_object_pose(ob)
+		_type = RIGID_BODY_TYPES.index(ob.rigidBodyType) if ob.rigidBodyType in RIGID_BODY_TYPES else 0
+		rigid_bodies[ob.name] = sim.add_rigid_body(
+			ob.rigidBodyEnable,
+			_type,
+			pos,
+			rot_deg,
+			ob.gravityScale,
+			ob.dominance,
+			ob.canRot,
+			ob.linearDrag,
+			ob.angDrag,
+			ob.canSleep,
+			ob.continuousCollideDetect,
+		)
+	for ob in physics_obs:
+		membership, filter_mask = _gba_get_collision_groups(ob)
+		attach_targets = []
+		for i in range(MAX_ATTACH_COLLIDER_CNT):
+			if getattr(ob, 'attach%i' %i):
+				attach_ob = getattr(ob, 'attachTo%i' %i)
+				if attach_ob and attach_ob.name in rigid_bodies:
+					attach_targets.append(rigid_bodies[attach_ob.name])
+		if ob.name in rigid_bodies and not attach_targets:
+			attach_targets = [rigid_bodies[ob.name]]
+		if getattr(ob, 'colliderExists', False):
+			for attach_to in (attach_targets or [None]):
+				_gba_add_cuboid_collider_for_object(sim, ob, membership, filter_mask, attach_to = attach_to)
+		elif ob.name in rigid_bodies:
+			for attach_to in attach_targets:
+				_gba_add_cuboid_collider_for_object(sim, ob, membership, filter_mask, attach_to = attach_to)
+	def _rotate2d (x, y, deg):
+		r = math.radians(deg)
+		c = math.cos(r)
+		s = math.sin(r)
+		return (x * c - y * s, x * s + y * c)
+	image_bindings = {}
+	for image_ob in image_empties:
+		controller = image_ob if image_ob.name in rigid_bodies else None
+		if controller is None:
+			parent = image_ob.parent
+			while parent:
+				if parent.name in rigid_bodies:
+					controller = parent
+					break
+				parent = parent.parent
+		if controller is None:
+			continue
+		img_pos0, img_rot0 = _gba_get_object_pose(image_ob)
+		body_pos0, body_rot0 = _gba_get_object_pose(controller)
+		dx = img_pos0[0] - body_pos0[0]
+		dy = img_pos0[1] - body_pos0[1]
+		local_x, local_y = _rotate2d(dx, dy, -body_rot0)
+		image_bindings[image_ob.name] = {
+			'handle' : rigid_bodies[controller.name],
+			'local_x' : local_x,
+			'local_y' : local_y,
+			'rot_off' : img_rot0 - body_rot0,
+		}
+	frame_count = int(max(1, min(360, getattr(world, 'bakedPhysicsFrames', 120))))
+	any_dynamic = any(getattr(ob, 'rigidBodyExists', False) and getattr(ob, 'rigidBodyType', '') == 'dynamic' and getattr(ob, 'rigidBodyEnable', True) for ob in physics_obs)
+	if not any_dynamic:
+		frame_count = 1
+	frames = []
+	debug_first = None
+	debug_last = None
+	for frame in range(frame_count):
+		transform_overrides = {}
+		for ob in image_empties:
+			binding = image_bindings.get(ob.name)
+			if binding:
+				pos = sim.get_rigid_body_position(binding['handle'])
+				rot = sim.get_rigid_body_rotation(binding['handle'])
+				if pos is not None and rot is not None:
+					off_x, off_y = _rotate2d(binding['local_x'], binding['local_y'], rot)
+					transform_overrides[ob.name] = {
+						'x' : pos[0] + off_x,
+						'y' : pos[1] + off_y,
+						'rot_deg' : rot + binding['rot_off'],
+					}
+		canvas = _gba_composite_scene(world, image_empties, image_surfaces = image_surfaces, transform_overrides = transform_overrides)
+		for circle in script_runtime.get('init_draw_circles', []):
+			_gba_draw_circle_rgba (canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
+		for circle in script_runtime.get('update_draw_circles', []):
+			_gba_draw_circle_rgba (canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
+		frames.append(_gba_rgba_to_mode3(canvas))
+		if frame + 1 < frame_count:
+			sim.step ()
+	print('GBA export: baked', len(frames), 'Rapier frame(s) for runtime playback.')
+	return frames
+
+def _gba_build_runtime_code_linked (script_runtime : dict, bitmap_rom_offset : int, frame_count : int = 1):
 	asm_path = script_runtime.get('assembly_path') if script_runtime else None
 	init_symbols = list(script_runtime.get('init_symbols') or []) if script_runtime else []
 	update_symbols = list(script_runtime.get('update_symbols') or []) if script_runtime else []
-	if not asm_path or not os.path.isfile(asm_path):
-		return None
+	frame_count = max(1, int(frame_count))
 	clang = shutil.which('clang')
 	ld_lld = shutil.which('ld.lld')
 	objcopy = shutil.which('llvm-objcopy') or shutil.which('objcopy')
 	if not clang or not ld_lld or not objcopy:
 		print('GBA export: missing clang/ld.lld/objcopy; using fallback runtime (no per-frame gba-py execution).')
 		return None
-	try:
-		script_asm = open(asm_path, 'r', encoding = 'utf-8').read()
-	except Exception as e:
-		print('GBA export: failed to read gba-py assembly for linking:', e)
-		return None
-	# Linked runtime provides a strong print bridge, so strip the weak no-op stub.
+	script_asm = ''
+	if asm_path and os.path.isfile(asm_path):
+		try:
+			script_asm = open(asm_path, 'r', encoding = 'utf-8').read()
+		except Exception as e:
+			print('GBA export: failed to read gba-py assembly for linking:', e)
+			return None
 	script_asm = re.sub(
 		r'\n\t\.weak py2gba_builtin_print\n\t\.thumb_func\npy2gba_builtin_print:\n\tbx\tlr\n',
 		'\n',
@@ -4209,6 +4856,9 @@ def _gba_build_runtime_code_linked (script_runtime : dict, bitmap_rom_offset : i
 	)
 	init_calls = '\n'.join('\tbl\t' + sym for sym in init_symbols) if init_symbols else '\t@ no init script calls'
 	update_calls = '\n'.join('\tbl\t' + sym for sym in update_symbols) if update_symbols else '\t@ no update script calls'
+	frame_base_rom = 0x08000000 + bitmap_rom_offset
+	frame_stride = 240 * 160 * 2
+	frame_end_rom = frame_base_rom + frame_stride * frame_count
 	runtime_asm = f'''.syntax unified
 .cpu arm7tdmi
 .fpu softvfp
@@ -4228,19 +4878,14 @@ gba_thumb_entry:
 \tstrb\tr1, [r0]
 \tmovs\tr1, #4
 \tstrb\tr1, [r0, #1]
-\tldr\tr1, =0x08000000 + {bitmap_rom_offset}
-\tldr\tr2, =0x06000000
-\tldr\tr3, =240 * 160 * 2
-gba_copy_loop:
-\tldr\tr4, [r1]
-\tstr\tr4, [r2]
-\tadds\tr1, #4
-\tadds\tr2, #4
-\tsubs\tr3, #4
-\tbne\tgba_copy_loop
+\tldr\tr6, =0x0203FFFC
+\tldr\tr7, =0x{frame_base_rom:08X}
+\tstr\tr7, [r6]
+\tbl\tpy2gba_blit_frame
 \tbl\tpy2gba_call_init
 gba_main_loop:
 \tbl\tpy2gba_wait_vblank
+\tbl\tpy2gba_blit_frame
 \tbl\tpy2gba_call_update
 \tb\tgba_main_loop
 
@@ -4256,6 +4901,30 @@ py2gba_wait_vblank_start:
 \tcmp\tr0, #160
 \tblo\tpy2gba_wait_vblank_start
 \tbx\tlr
+
+.thumb_func
+py2gba_blit_frame:
+\tpush\t{{r4-r7, lr}}
+\tldr\tr6, =0x0203FFFC
+\tldr\tr1, [r6]
+\tldr\tr2, =0x06000000
+\tldr\tr3, =240 * 160 * 2
+py2gba_blit_copy_loop:
+\tldr\tr4, [r1]
+\tstr\tr4, [r2]
+\tadds\tr1, #4
+\tadds\tr2, #4
+\tsubs\tr3, #4
+\tbne\tpy2gba_blit_copy_loop
+\tldr\tr0, =0x{frame_stride:08X}
+\tadds\tr1, r0
+\tldr\tr0, =0x{frame_end_rom:08X}
+\tcmp\tr1, r0
+\tblo\tpy2gba_blit_store
+\tldr\tr1, =0x{frame_base_rom:08X}
+py2gba_blit_store:
+\tstr\tr1, [r6]
+\tpop\t{{r4-r7, pc}}
 
 .thumb_func
 py2gba_call_init:
@@ -4370,17 +5039,21 @@ py2gba_hex_chars:
 		return None
 	return open(bin_file, 'rb').read()
 
-def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int, script_runtime = None):
+def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int, script_runtime = None, frame_count : int = 1):
 	CODE_START = 0x200
-	code_bytes = _gba_build_runtime_code_linked(script_runtime or {}, bitmap_rom_offset)
+	frame_count = max(1, int(frame_count))
+	code_bytes = _gba_build_runtime_code_linked(script_runtime or {}, bitmap_rom_offset, frame_count = frame_count)
 	if code_bytes:
 		target_bitmap_offset = max(bitmap_rom_offset, CODE_START + len(code_bytes))
 		target_bitmap_offset = (target_bitmap_offset + 3) & ~3
 		if target_bitmap_offset != bitmap_rom_offset:
 			bitmap_rom_offset = target_bitmap_offset
-			code_bytes = _gba_build_runtime_code_linked(script_runtime or {}, bitmap_rom_offset) or code_bytes
+			code_bytes = _gba_build_runtime_code_linked(script_runtime or {}, bitmap_rom_offset, frame_count = frame_count) or code_bytes
 			bitmap_rom_offset = max(bitmap_rom_offset, CODE_START + len(code_bytes))
 			bitmap_rom_offset = (bitmap_rom_offset + 3) & ~3
+	elif frame_count > 1:
+		print('GBA export: missing linked toolchain; falling back to static frame runtime.')
+	print('GBA export: runtime mode =', 'linked' if code_bytes else 'fallback', ', frames =', frame_count, ', pixel_bytes =', len(pixel_bytes))
 	rom_len = bitmap_rom_offset + len(pixel_bytes)
 	rom = bytearray(rom_len)
 	struct.pack_into('<I', rom, 0, 0xEA000000 | (((CODE_START - 8) // 4) & 0xFFFFFF))
@@ -4412,7 +5085,6 @@ def _gba_build_rom_mode3 (pixel_bytes : bytes, bitmap_rom_offset : int, script_r
 			0xEAFFFFFE,
 		]
 		if script_runtime and (script_runtime.get('init_quit') or script_runtime.get('update_quit')):
-			# BIOS SoftReset; this is the built-in fallback execution path for pygame.quit().
 			words[-1] = 0xEF000000
 		pool = CODE_START + len(words) * 4
 		for i, w in enumerate(words):
@@ -4462,13 +5134,19 @@ def BuildGba (world):
 			if pix is not None:
 				image_surfaces[ob.name] = pix
 		_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []))
-		canvas = _gba_composite_scene(world, gba_imgs, image_surfaces = image_surfaces)
-		for circle in script_runtime.get('init_draw_circles', []):
-			_gba_draw_circle_rgba(canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
-		for circle in script_runtime.get('update_draw_circles', []):
-			_gba_draw_circle_rgba(canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
-		pixel_bytes = _gba_rgba_to_mode3(canvas)
-		rom = _gba_build_rom_mode3(pixel_bytes, bitmap_off, script_runtime)
+		rapier_frames = _gba_generate_rapier_frames(world, scene_obs, gba_imgs, image_surfaces, script_runtime)
+		if rapier_frames:
+			frame_count = len(rapier_frames)
+			pixel_bytes = b''.join(rapier_frames)
+		else:
+			frame_count = 1
+			canvas = _gba_composite_scene(world, gba_imgs, image_surfaces = image_surfaces)
+			for circle in script_runtime.get('init_draw_circles', []):
+				_gba_draw_circle_rgba(canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
+			for circle in script_runtime.get('update_draw_circles', []):
+				_gba_draw_circle_rgba(canvas, circle['center'], circle['radius'], circle['color'], circle['width'])
+			pixel_bytes = _gba_rgba_to_mode3(canvas)
+		rom = _gba_build_rom_mode3(pixel_bytes, bitmap_off, script_runtime, frame_count = frame_count)
 		MakeFolderForFile(out)
 		open(out, 'wb').write(rom)
 		print('Saved GBA ROM:', out, '(%i bytes)' %len(rom))
@@ -4482,8 +5160,62 @@ def BuildGba (world):
 				bufsize = 1,
 			)
 			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
-			# Fallback mirror: some mGBA Qt builds do not forward AGBPrint to stdout.
 			_start_gba_update_print_mirror(proc, script_runtime)
+		except FileNotFoundError:
+			print('mgba-qt not found in PATH; open the ROM manually:', rom_path)
+	finally:
+		PostBuild ()
+
+def BuildGbc (world):
+	PreBuild ()
+	try:
+		try:
+			import numpy
+		except ImportError:
+			raise RuntimeError('GBC export needs NumPy.')
+		scene_obs = list(bpy.context.scene.collection.all_objects)
+		gbc_imgs = []
+		for ob in scene_obs:
+			if not ob.exportOb or ob.hide_get():
+				continue
+			if ob.type != 'EMPTY' or ob.empty_display_type != 'IMAGE' or not ob.data or not ob.data.filepath:
+				continue
+			gbc_imgs.append(ob)
+		if not gbc_imgs:
+			print('GBC export: no image empties with Export object enabled; wrote blank screen.')
+		gbc_imgs.sort(key = lambda o: o.location.z)
+		for ob in gbc_imgs:
+			img_path = os.path.join(TMP_DIR, GetFileName(ob.data.filepath))
+			prev_rot = ob.rotation_mode
+			ob.rotation_mode = 'XYZ'
+			ob.data.save(filepath = img_path)
+			ob.rotation_mode = prev_rot
+		out = os.path.expanduser(world.gbcPath).replace('\\', '/')
+		if not out:
+			out = TMP_DIR + '/' + bpy.path.basename(bpy.data.filepath).replace('.blend', '') + '.gbc'
+		elif not out.lower().endswith('.gbc'):
+			out += '.gbc'
+		image_surfaces = {}
+		for ob in gbc_imgs:
+			pix = _gba_load_saved_image_rgba(ob)
+			if pix is not None:
+				image_surfaces[ob.name] = pix
+		canvas_gba_space = _gba_composite_scene(world, gbc_imgs, image_surfaces = image_surfaces)
+		canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
+		rom = _gbc_build_rom(canvas_gbc)
+		MakeFolderForFile(out)
+		open(out, 'wb').write(rom)
+		print('Saved GBC ROM:', out, '(%i bytes)' %len(rom))
+		rom_path = os.path.abspath(out)
+		try:
+			proc = subprocess.Popen(
+				['mgba-qt', '-d', '--log-level', '255', '-C', 'logToStdout=true', rom_path],
+				stdout = subprocess.PIPE,
+				stderr = subprocess.STDOUT,
+				text = True,
+				bufsize = 1,
+			)
+			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
 		except FileNotFoundError:
 			print('mgba-qt not found in PATH; open the ROM manually:', rom_path)
 	finally:
@@ -4972,6 +5704,9 @@ bpy.types.World.importMap = bpy.props.StringProperty(name = 'Import map')
 bpy.types.World.htmlPath = bpy.props.StringProperty(name = 'Export .html')
 bpy.types.World.exePath = bpy.props.StringProperty(name = 'Export .exe')
 bpy.types.World.gbaPath = bpy.props.StringProperty(name = 'Export .gba', default = TMP_DIR + '/export.gba')
+bpy.types.World.gbcPath = bpy.props.StringProperty(name = 'Export .gbc', default = TMP_DIR + '/export.gbc')
+bpy.types.World.usePhysics = bpy.props.BoolProperty(name = 'Use physics', default = True)
+bpy.types.World.bakedPhysicsFrames = bpy.props.IntProperty(name = 'Baked physics frames', min = 1, default = 120)
 bpy.types.World.zipPath = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = TMP_DIR + '/TestUnityProject')
 bpy.types.World.minifyMethod = bpy.props.EnumProperty(name = 'Minify using library', items = MINIFY_METHOD_ITEMS)
@@ -5487,6 +6222,24 @@ class GbaExport (bpy.types.Operator):
 		return {'FINISHED'}
 
 @bpy.utils.register_class
+class GbcExport (bpy.types.Operator):
+	bl_idname = 'world.gbc_export'
+	bl_label = 'Export to GBC (.gbc)'
+	bl_description = 'Build a Game Boy Color ROM from image empties; open the .gbc in mGBA'
+
+	@classmethod
+	def poll (cls, ctx):
+		return True
+
+	def execute (self, ctx):
+		try:
+			BuildGbc (ctx.world)
+		except Exception as e:
+			self.report({'ERROR'}, str(e))
+			return {'CANCELLED'}
+		return {'FINISHED'}
+
+@bpy.utils.register_class
 class WorldPanel (bpy.types.Panel):
 	bl_idname = 'WORLD_PT_World_Panel'
 	bl_label = 'Export'
@@ -5501,6 +6254,10 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.prop(ctx.world, 'htmlPath')
 		self.layout.prop(ctx.world, 'exePath')
 		self.layout.prop(ctx.world, 'gbaPath')
+		self.layout.prop(ctx.world, 'gbcPath')
+		self.layout.prop(ctx.world, 'usePhysics')
+		if ctx.world.usePhysics:
+			self.layout.prop(ctx.world, 'bakedPhysicsFrames')
 		self.layout.prop(ctx.world, 'zipPath')
 		self.layout.prop(ctx.world, 'unityProjPath')
 		if usePhysics:
@@ -5517,6 +6274,7 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.operator('world.exe_export', icon = 'CONSOLE')
 		self.layout.operator('world.unity_export', icon = 'CONSOLE')
 		self.layout.operator('world.gba_export', icon = 'CONSOLE')
+		self.layout.operator('world.gbc_export', icon = 'CONSOLE')
 
 @bpy.utils.register_class
 class JS13KBPanel (bpy.types.Panel):
