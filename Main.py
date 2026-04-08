@@ -4734,7 +4734,7 @@ def _gbc_palette4_from_rgba (rgba):
 		return _GBC_DEFAULT_BG_COLORS[: 4]
 	return _gbc_quantize_palette4(pix, lock_extremes = True)
 
-def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, grav_step_x : int = 0, grav_step_y : int = 1):
+def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1):
 	code = bytearray()
 	def emit(*vals):
 		code.extend(vals)
@@ -4760,11 +4760,14 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	init_y = max(0, min(143, int(init_y)))
 	grav_step_x = max(-32, min(32, int(grav_step_x)))
 	grav_step_y = max(-32, min(32, int(grav_step_y)))
+	collider_count = max(0, min(31, int(collider_count)))
 	sprite_tile_count = max(1, min(16, int(sprite_tile_count)))
 	sprite_tiles_w = max(1, min(4, int(sprite_tiles_w)))
 	sprite_tiles_h = max(1, min(4, int(sprite_tiles_h)))
 	if sprite_tiles_w * sprite_tiles_h > sprite_tile_count:
 		sprite_tiles_h = max(1, sprite_tile_count // sprite_tiles_w)
+	sprite_w_px = max(8, min(32, sprite_tiles_w * 8))
+	sprite_h_px = max(8, min(32, sprite_tiles_h * 8))
 	max_x = max(0, min(159, 160 - sprite_tiles_w * 8))
 	offscreen_bottom_y = max(145, min(252, 144 + sprite_tiles_h * 8))
 	y_addr = 0xC110
@@ -4902,6 +4905,71 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 	emit(0x80)  # add a,b
 	emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	# Runtime collider pass: resolve downward contacts against authored collider AABBs.
+	if collider_count > 0:
+		emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
+		emit(0xB7)  # or a
+		jr_skip_collider_pass = jr(0x28)  # jr z, no collider step
+		emit(0xCB, 0x7F)  # bit 7,a
+		jr_skip_collider_neg = jr(0x20)  # jr nz, no collider step
+		ld_hl_imm(collider_data_addr)
+		emit(0x0E, collider_count & 0xFF)  # ld c, collider_count
+		collider_loop_addr = len(code)
+		emit(0x79)  # ld a,c
+		emit(0xB7)  # or a
+		jr_collider_done_zero = jr(0x28)  # jr z, done
+		emit(0x2A)  # ld a,(hl+) ; collider x
+		emit(0x57)  # ld d,a
+		emit(0x2A)  # ld a,(hl+) ; collider y
+		emit(0x5F)  # ld e,a
+		emit(0x2A)  # ld a,(hl+) ; collider w
+		emit(0x47)  # ld b,a
+		emit(0x23)  # inc hl ; skip collider h (reserved for phase-2)
+		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)  # ld a,(x)
+		emit(0xC6, sprite_w_px & 0xFF)  # add a, sprite_w
+		emit(0xBA)  # cp d
+		jr_collider_next_x_before = jr(0x38)  # jr c, next
+		jr_collider_next_x_touch = jr(0x28)  # jr z, next
+		emit(0x7A)  # ld a,d
+		emit(0x80)  # add a,b ; a = collider_right
+		emit(0x47)  # ld b,a
+		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)  # ld a,(x)
+		emit(0xB8)  # cp b
+		jr_collider_next_x_after = jr(0x30)  # jr nc, next
+		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # ld a,(y)
+		emit(0xBB)  # cp e
+		jr_collider_next_y_below_top = jr(0x30)  # jr nc, next
+		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # ld a,(y)
+		emit(0xC6, sprite_h_px & 0xFF)  # add a, sprite_h
+		emit(0xBB)  # cp e
+		jr_collider_next_y_above_top = jr(0x38)  # jr c, next
+		# Hit: snap sprite on top of collider and clear fall velocity.
+		emit(0x7B)  # ld a,e
+		emit(0xD6, sprite_h_px & 0xFF)  # sub sprite_h
+		jr_store_hit_y = jr(0x30)  # jr nc, store_y
+		emit(0xAF)  # xor a
+		store_hit_y_addr = len(code)
+		emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+		emit(0xAF)  # xor a
+		emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+		emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
+		jr_collider_done_hit = jr(0x18)  # jr done
+		collider_next_addr = len(code)
+		patch_jr(jr_collider_next_x_before, collider_next_addr)
+		patch_jr(jr_collider_next_x_touch, collider_next_addr)
+		patch_jr(jr_collider_next_x_after, collider_next_addr)
+		patch_jr(jr_collider_next_y_below_top, collider_next_addr)
+		patch_jr(jr_collider_next_y_above_top, collider_next_addr)
+		emit(0x0D)  # dec c
+		jr_collider_loop = jr(0x18)  # jr collider_loop
+		collider_done_addr = len(code)
+		patch_jr(jr_collider_done_zero, collider_done_addr)
+		patch_jr(jr_collider_done_hit, collider_done_addr)
+		patch_jr(jr_collider_loop, collider_loop_addr)
+		patch_jr(jr_store_hit_y, store_hit_y_addr)
+		collider_skip_addr = len(code)
+		patch_jr(jr_skip_collider_pass, collider_skip_addr)
+		patch_jr(jr_skip_collider_neg, collider_skip_addr)
 	# Despawn once below visible screen range to prevent wrap-around reappearance.
 	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 	emit(0xFE, offscreen_bottom_y & 0xFF)
@@ -4974,7 +5042,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	patch_call(call_copy_bg_attr_patch, copy_addr)
 	return bytes(code)
 
-def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette4, grav_step_x : int = 0, grav_step_y : int = 1):
+def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette4, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1):
 	tile_data_len = 384 * 16
 	tilemap_len = 32 * 32
 	attrmap_len = 32 * 32
@@ -4988,16 +5056,30 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	obj_bank = [obj_palette4] + [_GBC_DEFAULT_BG_COLORS[: 4] for _ in range(7)]
 	obj_palette_bytes = _gbc_palette_bytes_from_palette_bank(obj_bank)
 	bg_payload = tile_data + tilemap + attrmap
+	collider_rects = list(collider_rects or [])
+	if len(collider_rects) > 31:
+		print('GBC export: clamping runtime colliders to 31 entries (from', len(collider_rects), ').')
+		collider_rects = collider_rects[: 31]
+	collider_payload = bytearray()
+	for x, y, w, h in collider_rects:
+		collider_payload.extend([
+			max(0, min(255, int(x))),
+			max(0, min(255, int(y))),
+			max(1, min(255, int(w))),
+			max(1, min(255, int(h))),
+		])
 	code_start = 0x150
 	rom_size = 0x8000
 	sprite_tile_count = max(1, min(16, int((len(sprite_tile_bytes) if sprite_tile_bytes else 0) // 16)))
-	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, grav_step_x = grav_step_x, grav_step_y = grav_step_y)
+	collider_count = len(collider_payload) // 4
+	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y)
 	bg_data_addr = code_start + len(probe)
 	if bg_data_addr & 0xF:
 		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
 	sprite_data_addr = bg_data_addr + len(bg_payload)
-	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, grav_step_x = grav_step_x, grav_step_y = grav_step_y)
-	total_need = sprite_data_addr + sprite_tile_count * 16
+	collider_data_addr = sprite_data_addr + sprite_tile_count * 16
+	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y)
+	total_need = collider_data_addr + len(collider_payload)
 	if total_need > rom_size:
 		raise RuntimeError('GBC dynamic physics export exceeds 32KB ROM size.')
 	rom = bytearray(rom_size)
@@ -5020,8 +5102,10 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	if len(sprite_payload) < sprite_tile_count * 16:
 		sprite_payload = sprite_payload + b'\x00' * (sprite_tile_count * 16 - len(sprite_payload))
 	rom[sprite_data_addr : sprite_data_addr + sprite_tile_count * 16] = sprite_payload[: sprite_tile_count * 16]
+	if collider_payload:
+		rom[collider_data_addr : collider_data_addr + len(collider_payload)] = bytes(collider_payload)
 	_gbc_compute_header_checksums(rom)
-	print('GBC export: runtime mode = dynamic physics phase1 (single sprite).')
+	print('GBC export: runtime mode = dynamic physics phase1 (single sprite), runtime colliders =', collider_count)
 	return bytes(rom)
 
 def _gbc_build_rom (canvas_160x144):
@@ -5162,6 +5246,57 @@ def _gba_to_gbc_cover_point (x : float, y : float):
 def _gba_to_gbc_cover_len (v : float):
 	scale, _, _ = _gba_cover_transform(240, 160, 160, 144)
 	return max(1, int(round(float(v) * scale)))
+
+def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None):
+	rects = []
+	for ob in scene_obs or []:
+		if not getattr(ob, 'exportOb', False) or ob.hide_get():
+			continue
+		if ignored_name and ob.name == ignored_name:
+			continue
+		if not getattr(ob, 'colliderExists', False):
+			continue
+		if not getattr(ob, 'colliderEnable', True):
+			continue
+		if getattr(ob, 'isSensor', False):
+			continue
+		shape = str(getattr(ob, 'colliderShapeType', ''))
+		cx = float(ob.location.x) + float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[0])
+		cy = -float(ob.location.y) - float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[1])
+		w = 0.0
+		h = 0.0
+		if shape in ('cuboid', 'roundCuboid'):
+			size = getattr(ob, 'colliderSize', (0.0, 0.0))
+			w = float(size[0])
+			h = float(size[1])
+		elif shape == 'ball':
+			r = float(getattr(ob, 'colliderRadius', 0.0))
+			w = r * 2.0
+			h = r * 2.0
+		elif shape == 'capsule':
+			r = float(getattr(ob, 'colliderCapsuleRadius', 0.0))
+			ch = float(getattr(ob, 'colliderCapsuleHeight', 0.0))
+			if bool(getattr(ob, 'colliderIsVertical', True)):
+				w = r * 2.0
+				h = ch + r * 2.0
+			else:
+				w = ch + r * 2.0
+				h = r * 2.0
+		else:
+			continue
+		if w <= 0.0 or h <= 0.0:
+			continue
+		cx_gbc, cy_gbc = _gba_to_gbc_cover_point(cx, cy)
+		w_gbc = _gba_to_gbc_cover_len(w)
+		h_gbc = _gba_to_gbc_cover_len(h)
+		left = int(round(cx_gbc - w_gbc * 0.5))
+		top = int(round(cy_gbc - h_gbc * 0.5))
+		left = max(0, min(255, left))
+		top = max(0, min(255, top))
+		w_gbc = max(1, min(255 - left, int(w_gbc)))
+		h_gbc = max(1, min(255 - top, int(h_gbc)))
+		rects.append((left, top, w_gbc, h_gbc))
+	return rects
 
 def _gba_apply_tint_opacity_to_rgba (rgba, tint_rgb, opacity : float):
 	if rgba is None:
@@ -6207,7 +6342,8 @@ def BuildGbc (world):
 				grav_step_y = 1 if effective_down > 0 else -1
 			grav_step_x = max(-32, min(32, grav_step_x))
 			grav_step_y = max(-32, min(32, grav_step_y))
-			rom = _gbc_build_dynamic_physics_rom(canvas_gbc, sprite_tile, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bank, sprite_pal, grav_step_x = grav_step_x, grav_step_y = grav_step_y)
+			collider_rects = _gbc_collect_runtime_colliders(scene_obs, ignored_name = sprite_ob.name)
+			rom = _gbc_build_dynamic_physics_rom(canvas_gbc, sprite_tile, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bank, sprite_pal, collider_rects = collider_rects, grav_step_x = grav_step_x, grav_step_y = grav_step_y)
 		else:
 			_gba_apply_script_surface_ops(
 				image_surfaces,
