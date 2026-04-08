@@ -1773,6 +1773,11 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 def _gba_draw_circle_from_script (canvas, circle : dict, frame : int = None, start_time : float = None):
 	if not isinstance(circle, dict):
 		return
+	cond = circle.get('condition')
+	if cond is not None and cond != '':
+		cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
+		if cond_val is None or abs(float(cond_val)) <= 1e-9:
+			return
 	center = circle.get('center', [0, 0])
 	if not isinstance(center, (list, tuple)) or len(center) < 2:
 		return
@@ -1862,53 +1867,222 @@ def _serialize_script_expr (node):
 	except Exception:
 		return '<expr:0>'
 
+def _literal_truthy_from_ast_node (node):
+	'''Return True/False for literal truthy tests, or None when dynamic/unknown.'''
+	try:
+		val = ast.literal_eval(node)
+	except Exception:
+		return None
+	if isinstance(val, bool):
+		return val
+	if isinstance(val, (int, float)):
+		return bool(val)
+	return None
+
+def _is_in_statically_dead_if_branch (node, parent_map):
+	'''Check whether node is in a compile-time dead branch of `if` statement.'''
+	child = node
+	parent = parent_map.get(child)
+	while parent is not None:
+		if isinstance(parent, ast.If):
+			truth = _literal_truthy_from_ast_node(parent.test)
+			if truth is False and child in parent.body:
+				return True
+			if truth is True and child in parent.orelse:
+				return True
+		child = parent
+		parent = parent_map.get(child)
+	return False
+
+def _walk_statically_reachable_stmts (stmts):
+	'''Yield statements on branches that are compile-time reachable.'''
+	for stmt in list(stmts or []):
+		yield stmt
+		if isinstance(stmt, ast.If):
+			truth = _literal_truthy_from_ast_node(stmt.test)
+			if truth is True:
+				for inner in _walk_statically_reachable_stmts(stmt.body):
+					yield inner
+			elif truth is False:
+				for inner in _walk_statically_reachable_stmts(stmt.orelse):
+					yield inner
+
 def _extract_dynamic_draw_circles_from_script (code : str, is_init : bool):
-	circles = []
 	try:
 		tree = ast.parse(code or '')
 	except Exception:
-		return circles
-	for node in ast.walk(tree):
-		if not isinstance(node, ast.Call) or not _is_pygame_draw_circle_call(node):
-			continue
-		if len(node.args) < 4:
-			continue
-		target = node.args[0]
-		target_type = None
-		if _is_display_get_surface_call(target):
-			target_type = 'display_surface'
-		elif _is_this_surface_member(target):
-			target_type = 'this_surface'
-		if not target_type:
-			continue
-		color_node = node.args[1]
-		center_node = node.args[2]
-		radius_node = node.args[3]
-		width_node = node.args[4] if len(node.args) >= 5 else ast.Constant(value = 0)
-		if not (
-			_has_dynamic_runtime_expr(color_node)
-			or _has_dynamic_runtime_expr(center_node)
-			or _has_dynamic_runtime_expr(radius_node)
-			or _has_dynamic_runtime_expr(width_node)
-		):
-			continue
-		circle = {
-			'color' : _serialize_script_expr(color_node),
-			'center' : _serialize_script_expr(center_node),
-			'radius' : _serialize_script_expr(radius_node),
-			'width' : _serialize_script_expr(width_node),
-			'is_init' : bool(is_init),
-			'target_type' : target_type,
-		}
-		circles.append(circle)
+		return []
+	return _extract_dynamic_draw_circles_from_stmts(getattr(tree, 'body', []), is_init, parent_condition = None)
+
+def _extract_dynamic_draw_circles_from_stmts (stmts, is_init : bool, parent_condition = None):
+	circles = []
+	for stmt in list(stmts or []):
+		if isinstance(stmt, ast.Expr):
+			node = stmt.value
+			if not isinstance(node, ast.Call) or not _is_pygame_draw_circle_call(node):
+				pass
+			elif len(node.args) < 4:
+				pass
+			else:
+				target = node.args[0]
+				target_type = None
+				if _is_display_get_surface_call(target):
+					target_type = 'display_surface'
+				elif _is_this_surface_member(target):
+					target_type = 'this_surface'
+				if target_type:
+					color_node = node.args[1]
+					center_node = node.args[2]
+					radius_node = node.args[3]
+					width_node = node.args[4] if len(node.args) >= 5 else ast.Constant(value = 0)
+					if (
+						_has_dynamic_runtime_expr(color_node)
+						or _has_dynamic_runtime_expr(center_node)
+						or _has_dynamic_runtime_expr(radius_node)
+						or _has_dynamic_runtime_expr(width_node)
+					):
+						circle = {
+							'color' : _serialize_script_expr(color_node),
+							'center' : _serialize_script_expr(center_node),
+							'radius' : _serialize_script_expr(radius_node),
+							'width' : _serialize_script_expr(width_node),
+							'is_init' : bool(is_init),
+							'target_type' : target_type,
+						}
+						if parent_condition is not None:
+							circle['condition'] = parent_condition
+						circles.append(circle)
+		if isinstance(stmt, ast.If):
+			truth = _literal_truthy_from_ast_node(stmt.test)
+			if truth is True:
+				circles.extend(_extract_dynamic_draw_circles_from_stmts(stmt.body, is_init, parent_condition))
+				continue
+			if truth is False:
+				circles.extend(_extract_dynamic_draw_circles_from_stmts(stmt.orelse, is_init, parent_condition))
+				continue
+			test_expr = _serialize_script_expr(stmt.test)
+			body_cond = _combine_expr_conditions(parent_condition, test_expr)
+			else_cond = _combine_expr_conditions(parent_condition, _negate_expr_condition(test_expr))
+			circles.extend(_extract_dynamic_draw_circles_from_stmts(stmt.body, is_init, body_cond))
+			circles.extend(_extract_dynamic_draw_circles_from_stmts(stmt.orelse, is_init, else_cond))
 	return circles
+
+def _is_print_call (call_node):
+	return isinstance(call_node, ast.Call) and isinstance(call_node.func, ast.Name) and call_node.func.id == 'print'
+
+def _serialize_print_call_text (call_node):
+	if not _is_print_call(call_node):
+		return None
+	sep = ' '
+	end = '\n'
+	for kw in list(call_node.keywords or []):
+		if kw.arg == 'sep':
+			val = _serialize_script_expr(kw.value)
+			if isinstance(val, str):
+				sep = val
+			elif isinstance(val, (int, float, bool)):
+				sep = str(val)
+		elif kw.arg == 'end':
+			val = _serialize_script_expr(kw.value)
+			if isinstance(val, str):
+				end = val
+			elif isinstance(val, (int, float, bool)):
+				end = str(val)
+	parts = []
+	for arg in list(call_node.args or []):
+		val = _serialize_script_expr(arg)
+		if isinstance(val, str):
+			parts.append(val)
+		elif isinstance(val, (int, float, bool)):
+			parts.append(str(val))
+		else:
+			parts.append(str(val))
+	return sep.join(parts) + end
+
+def _unwrap_expr_placeholder (expr):
+	if not isinstance(expr, str):
+		return str(expr)
+	m = re.fullmatch(r'(?i)<expr:\s*(.*?)\s*>', expr.strip())
+	return m.group(1).strip() if m else expr.strip()
+
+def _combine_expr_conditions (lhs, rhs):
+	if lhs is None:
+		return rhs
+	if rhs is None:
+		return lhs
+	lhs_s = _unwrap_expr_placeholder(lhs)
+	rhs_s = _unwrap_expr_placeholder(rhs)
+	return '<expr:(' + lhs_s + ') and (' + rhs_s + ')>'
+
+def _negate_expr_condition (expr):
+	if expr is None:
+		return None
+	expr_s = _unwrap_expr_placeholder(expr)
+	return '<expr:not (' + expr_s + ')>'
+
+def _extract_print_calls_from_stmts (stmts, is_init : bool, owner_name : str, parent_condition = None):
+	prints = []
+	for stmt in list(stmts or []):
+		if isinstance(stmt, ast.Expr) and _is_print_call(stmt.value):
+			text = _serialize_print_call_text(stmt.value)
+			if text is None:
+				continue
+			info = {
+				'owner_name' : owner_name or '__world__',
+				'is_init' : bool(is_init),
+				'text' : text,
+			}
+			if parent_condition is not None:
+				info['condition'] = parent_condition
+			prints.append(info)
+			continue
+		if isinstance(stmt, ast.If):
+			truth = _literal_truthy_from_ast_node(stmt.test)
+			if truth is True:
+				prints.extend(_extract_print_calls_from_stmts(stmt.body, is_init, owner_name, parent_condition))
+				continue
+			if truth is False:
+				prints.extend(_extract_print_calls_from_stmts(stmt.orelse, is_init, owner_name, parent_condition))
+				continue
+			test_expr = _serialize_script_expr(stmt.test)
+			body_cond = _combine_expr_conditions(parent_condition, test_expr)
+			else_cond = _combine_expr_conditions(parent_condition, _negate_expr_condition(test_expr))
+			prints.extend(_extract_print_calls_from_stmts(stmt.body, is_init, owner_name, body_cond))
+			prints.extend(_extract_print_calls_from_stmts(stmt.orelse, is_init, owner_name, else_cond))
+	return prints
+
+def _extract_print_calls_from_script (code : str, is_init : bool, owner_name : str):
+	try:
+		tree = ast.parse(code or '')
+	except Exception:
+		return []
+	return _extract_print_calls_from_stmts(getattr(tree, 'body', []), is_init, owner_name, parent_condition = None)
 
 def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries : list):
 	if not isinstance(script_runtime, dict):
 		script_runtime = {}
-	init_draw = list(script_runtime.get('init_draw_circles') or [])
-	update_draw = list(script_runtime.get('update_draw_circles') or [])
-	surface_ops = list(script_runtime.get('surface_ops') or [])
+	# Rebuild dynamic circle overlays from source scripts so dead branches
+	# (for example `if False:`) do not leak into baked fallback rendering.
+	init_draw = []
+	update_draw = []
+	surface_ops = []
+	for op in list(script_runtime.get('surface_ops') or []):
+		if isinstance(op, dict) and op.get('op') == 'draw_circle_surface_member':
+			continue
+		surface_ops.append(op)
+	print_calls = []
+	existing_print_keys = set()
+	for info in list(script_runtime.get('print_calls') or []):
+		if not isinstance(info, dict):
+			continue
+		key = (
+			bool(info.get('is_init')),
+			str(info.get('owner_name') or '__world__'),
+			str(info.get('text', '')),
+			str(info.get('condition') or ''),
+		)
+		existing_print_keys.add(key)
+		print_calls.append(info)
 	for entry in script_entries or []:
 		code = entry.get('code', '')
 		is_init = bool(entry.get('is_init'))
@@ -1932,12 +2106,25 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 					'radius' : circle.get('radius') or 0.0,
 					'color' : circle.get('color') or [255, 255, 255, 255],
 					'width' : circle.get('width') or 0.0,
+					'condition' : circle.get('condition'),
 				})
 			else:
 				continue
+		for info in _extract_print_calls_from_script(code, is_init, owner_name):
+			key = (
+				bool(info.get('is_init')),
+				str(info.get('owner_name') or '__world__'),
+				str(info.get('text', '')),
+				str(info.get('condition') or ''),
+			)
+			if key in existing_print_keys:
+				continue
+			existing_print_keys.add(key)
+			print_calls.append(info)
 	script_runtime['init_draw_circles'] = init_draw
 	script_runtime['update_draw_circles'] = update_draw
 	script_runtime['surface_ops'] = surface_ops
+	script_runtime['print_calls'] = print_calls
 	return script_runtime
 
 def _normalize_gb_script_code (code : str, is_init : bool):
@@ -4289,16 +4476,28 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 	def _runner():
 		frame = 0
 		init_printed = False
+		def _should_emit (info, frame):
+			cond = info.get('condition')
+			if cond is None or cond == '':
+				return True
+			val = _eval_runtime_expr_value(cond, frame = frame)
+			if val is None:
+				return False
+			return abs(float(val)) > 1e-9
 		while proc.poll() is None:
 			frame += 1
 			if not init_printed:
 				for info in init_calls:
+					if not _should_emit(info, frame):
+						continue
 					owner = info.get('owner_name') or '__world__'
 					text = str(info.get('text', '')).rstrip('\n')
 					text = _resolve_runtime_print_exprs(text, frame = frame)
 					print(f"[{script_label}:init:runtime] {owner} {text}")
 				init_printed = True
 			for info in update_calls:
+				if not _should_emit(info, frame):
+					continue
 				owner = info.get('owner_name') or '__world__'
 				text = str(info.get('text', '')).rstrip('\n')
 				text = _resolve_runtime_print_exprs(text, frame = frame)
@@ -5484,6 +5683,7 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list, fr
 					'radius' : op.get('radius') or 0.0,
 					'color' : op.get('color') or [255, 255, 255, 255],
 					'width' : op.get('width') or 0.0,
+					'condition' : op.get('condition'),
 				},
 				frame = frame,
 				start_time = start_time,
