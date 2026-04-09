@@ -1908,6 +1908,7 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 				'abs' : abs,
 				'max' : max,
 				'min' : min,
+				'keys' : key_state,
 				'js13k_get_pressed' : (lambda : key_state),
 			},
 		)
@@ -2005,7 +2006,7 @@ def _has_dynamic_runtime_expr (node):
 
 def _serialize_script_expr (node):
 	if isinstance(node, ast.Constant):
-		if isinstance(node.value, (int, float)):
+		if isinstance(node.value, (int, float, bool, str)) or node.value is None:
 			return node.value
 	if isinstance(node, (ast.Tuple, ast.List)):
 		return [_serialize_script_expr(e) for e in node.elts]
@@ -2274,10 +2275,24 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	script_runtime['print_calls'] = print_calls
 	return script_runtime
 
-def _normalize_gb_script_code (code : str, is_init : bool):
+def _gbc_script_physics_prelude ():
+	return (
+		'__js13k_runtime_globals = globals()\n'
+		'rigidbodies = __js13k_runtime_globals.get("rigidBodiesIds", {})\n'
+		'colliders = __js13k_runtime_globals.get("collidersIds", {})\n'
+		'physics = __js13k_runtime_globals.get("sim", None)\n'
+		'PyRapier2d = __js13k_runtime_globals.get("PyRapier2d", None)\n'
+		'get_rigidbody = rigidbodies.get\n'
+		'get_collider = colliders.get\n'
+	)
+
+def _normalize_gb_script_code (code : str, is_init : bool, script_type : str = ''):
 	if not code:
 		return code
 	code2 = code
+	prefix = ''
+	if script_type == 'gbc-py':
+		prefix += _gbc_script_physics_prelude()
 	uses_ticks = bool(re.search(r'pygame\s*\.\s*time\s*\.\s*get_ticks\s*\(\s*\)', code2, flags = re.IGNORECASE))
 	if uses_ticks:
 		code2 = re.sub(
@@ -2287,7 +2302,7 @@ def _normalize_gb_script_code (code : str, is_init : bool):
 			flags = re.IGNORECASE,
 		)
 		if is_init:
-			prefix = (
+			prefix += (
 				'global __js13k_ticks\n'
 				'__js13k_ticks = 0\n'
 				'def js13k_get_ticks():\n'
@@ -2295,7 +2310,7 @@ def _normalize_gb_script_code (code : str, is_init : bool):
 			)
 		else:
 			# Keep a monotonic millisecond-ish counter for update scripts.
-			prefix = (
+			prefix += (
 				'global __js13k_ticks\n'
 				'try:\n'
 				'    __js13k_ticks += 16\n'
@@ -2304,6 +2319,7 @@ def _normalize_gb_script_code (code : str, is_init : bool):
 				'def js13k_get_ticks():\n'
 				'    return __js13k_ticks\n'
 			)
+	if prefix:
 		code2 = prefix + code2
 	return code2
 
@@ -2320,7 +2336,7 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
 			if _type == 'gba-py':
-				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init))
+				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type)
 				script_entries.append({
 					'code' : scriptTxt,
 					'is_init' : is_init,
@@ -2337,7 +2353,7 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
 			if _type == 'gba-py':
-				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init))
+				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type)
 				script_entries.append({
 					'code' : scriptTxt,
 					'is_init' : is_init,
@@ -2364,7 +2380,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
 			if _type == 'gbc-py':
-				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init))
+				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type)
 				script_entries.append({
 					'code' : scriptTxt,
 					'is_init' : is_init,
@@ -2381,7 +2397,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
 			if _type == 'gbc-py':
-				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init))
+				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type)
 				script_entries.append({
 					'code' : scriptTxt,
 					'is_init' : is_init,
@@ -4581,6 +4597,7 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 					'abs' : abs,
 					'max' : max,
 					'min' : min,
+					'keys' : key_state,
 					'js13k_get_pressed' : (lambda : key_state),
 				},
 			)
@@ -5119,7 +5136,6 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		sprite_tiles_h = max(1, sprite_tile_count // sprite_tiles_w)
 	sprite_w_px = max(8, min(32, sprite_tiles_w * 8))
 	sprite_h_px = max(8, min(32, sprite_tiles_h * 8))
-	max_x = max(0, min(159, 160 - sprite_tiles_w * 8))
 	offscreen_bottom_y = max(145, min(252, 144 + sprite_tiles_h * 8))
 	y_addr = 0xC110
 	vy_addr = 0xC111
@@ -5226,15 +5242,37 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # (vx)=a
 		x_no_v_addr = len(code)
 		patch_jr(jr_x_no_v, x_no_v_addr)
+	# D-pad left/right drive horizontal velocity in phase1 runtime.
+	# JOYP (FF00) low bits are active-low; with directions selected:
+	# bit0=Right, bit1=Left.
+	ld_a_imm(0x20)   # select d-pad group
+	ldh_imm_a(0x00)  # JOYP
+	emit(0xF0, 0x00)  # ldh a,(JOYP)
+	emit(0xE6, 0x03)  # and 0b00000011 (right/left bits)
+	emit(0xFE, 0x01)  # cp left-only pattern
+	jr_not_left = jr(0x20)  # jr nz, check_right
+	ld_a_imm(0xFF)  # -1
+	emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+	jr_done_lr = jr(0x18)  # jr done_lr
+	check_right_addr = len(code)
+	patch_jr(jr_not_left, check_right_addr)
+	emit(0xFE, 0x02)  # cp right-only pattern
+	jr_not_right = jr(0x20)  # jr nz, zero_lr
+	ld_a_imm(0x01)
+	emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+	jr_after_right = jr(0x18)  # jr done_lr
+	zero_lr_addr = len(code)
+	patch_jr(jr_not_right, zero_lr_addr)
+	emit(0xAF)  # xor a -> 0
+	emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+	done_lr_addr = len(code)
+	patch_jr(jr_done_lr, done_lr_addr)
+	patch_jr(jr_after_right, done_lr_addr)
 	emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 	emit(0x47)  # ld b,a (vx)
 	# x += vx
 	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
 	emit(0x80)  # add a,b
-	emit(0xFE, max_x & 0xFF)
-	jr_store_x = jr(0x38)  # jr c, store_x
-	ld_a_imm(max_x)
-	store_x_addr = len(code)
 	emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
 	if grav_step_y != 0:
 		grav_mag_y = max(1, min(32, abs(int(grav_step_y))))
@@ -5321,7 +5359,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		collider_skip_addr = len(code)
 		patch_jr(jr_skip_collider_pass, collider_skip_addr)
 		patch_jr(jr_skip_collider_neg, collider_skip_addr)
-	# Despawn once below visible screen range to prevent wrap-around reappearance.
+	# Despawn only once below visible screen range.
+	# Horizontal exits stay reversible (player can move back onscreen).
 	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 	emit(0xFE, offscreen_bottom_y & 0xFF)
 	jr_not_despawn = jr(0x38)  # jr c, keep_visible
@@ -5383,7 +5422,6 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		code[pos] = abs_addr & 0xFF
 		code[pos + 1] = (abs_addr >> 8) & 0xFF
 	patch_jr(jr_loop, main_loop_addr)
-	patch_jr(jr_store_x, store_x_addr)
 	patch_call(call_copy_bg_patch, copy_bg_addr)
 	patch_call(call_copy_sprite_patch, copy_addr)
 	patch_call(call_wait_patch, wait_vblank_addr)
