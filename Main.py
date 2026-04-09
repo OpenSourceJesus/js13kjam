@@ -1,20 +1,21 @@
 import os, re, io, ast, sys, json, math, time, string, atexit, struct, shutil, contextlib, threading, subprocess, webbrowser
+import ctypes, ctypes.util
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
 Util_SCRIPTS_PATH = os.path.join(_thisDir, 'Util')
 sys.path.append(Util_SCRIPTS_PATH)
-PY2GBA_PATH = os.path.join(_thisDir, 'Py2Gba')
-if os.path.isdir(PY2GBA_PATH) and PY2GBA_PATH not in sys.path:
-	sys.path.insert(0, PY2GBA_PATH)
+PY2GB_PATH = os.path.join(_thisDir, 'Py2Gb')
+if os.path.isdir(PY2GB_PATH) and PY2GB_PATH not in sys.path:
+	sys.path.insert(0, PY2GB_PATH)
 from MathUtil import *
 from SystemUtil import *
 try:
-	from py2gba.blender_export import export_gba_py_assembly as _py2gba_export_gba_py_assembly
-	from py2gba.blender_export import py2gba_asm as _py2gba_py2gba_asm
+	from py2gba.blender_export import export_gba_py_assembly as _py2gb_export_gba_py_assembly
+	from py2gba.blender_export import py2gba_asm as _py2gb_py2gb_asm
 except Exception:
-	_py2gba_export_gba_py_assembly = None
-	_py2gba_py2gba_asm = None
+	_py2gb_export_gba_py_assembly = None
+	_py2gb_py2gb_asm = None
 
 isLinux = False
 POTRACE_PATH = 'potrace-1.16.'
@@ -1662,10 +1663,10 @@ def Py2Js (pyCode, txtBlock = None):
 	jsCode = re.sub(r'([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\.items\s*\(\)', r'Object.entries(\1)', jsCode)
 	return jsCode
 
-def Py2GbaAsm (pyCode, txtBlock = None, symbol_base : str = 'gba_export', kind : str = 'update'):
+def Py2GbAsm (pyCode, txtBlock = None, symbol_base : str = 'gba_export', kind : str = 'update'):
 	'''Transpile Python to ARM Thumb assembly for GBA (via py2gba package). kind is "init" or "update".'''
-	if _py2gba_py2gba_asm:
-		return _py2gba_py2gba_asm(
+	if _py2gb_py2gb_asm:
+		return _py2gb_py2gb_asm(
 			pyCode,
 			tmp_dir = TMP_DIR,
 			repo_root_dir = _thisDir,
@@ -1674,6 +1675,9 @@ def Py2GbaAsm (pyCode, txtBlock = None, symbol_base : str = 'gba_export', kind :
 			kind = kind,
 		)
 	return ''
+
+# Backward-compatible alias for older callers.
+Py2GbaAsm = Py2GbAsm
 
 def _gba_draw_circle_rgba (canvas, center_xy, radius, color_rgba, width = 0.0):
 	try:
@@ -1731,6 +1735,146 @@ def _replace_runtime_ticks_calls (expr : str, ticks : int):
 		flags = re.IGNORECASE,
 	)
 
+_RUNTIME_KEY_INDEX = {
+	'LEFT' : 0,
+	'RIGHT' : 1,
+	'DOWN' : 2,
+	'UP' : 3,
+	'A' : 4,
+	'B' : 5,
+	'START' : 6,
+	'SELECT' : 7,
+}
+
+_RUNTIME_GB_BUTTON_ORDER = ('LEFT', 'RIGHT', 'DOWN', 'UP', 'A', 'B', 'START', 'SELECT')
+_RUNTIME_GB_BUTTON_KEYSYM_DEFAULTS = {
+	'LEFT' : 'Left',
+	'RIGHT' : 'Right',
+	'DOWN' : 'Down',
+	'UP' : 'Up',
+	'A' : 'x',
+	'B' : 'z',
+	'START' : 'Return',
+	'SELECT' : 'BackSpace',
+}
+_RUNTIME_X11 = {
+	'tried' : False,
+	'ok' : False,
+	'lib' : None,
+	'display' : None,
+	'keycode_cache' : {},
+}
+
+def _runtime_button_keysym_map ():
+	'''Return GB button -> X11 keysym mapping, with optional env overrides.
+
+	Env format:
+	JS13K_MGBA_KEYMAP="A=x,B=z,START=Return,SELECT=BackSpace,LEFT=Left,RIGHT=Right,DOWN=Down,UP=Up"
+	'''
+	mapping = dict(_RUNTIME_GB_BUTTON_KEYSYM_DEFAULTS)
+	raw = os.environ.get('JS13K_MGBA_KEYMAP', '')
+	if not raw:
+		return mapping
+	for part in str(raw).split(','):
+		part = part.strip()
+		if '=' not in part:
+			continue
+		name, keysym = part.split('=', 1)
+		name = name.strip().upper()
+		keysym = keysym.strip()
+		if name in mapping and keysym != '':
+			mapping[name] = keysym
+	return mapping
+
+def _runtime_try_init_x11 ():
+	state = _RUNTIME_X11
+	if state['tried']:
+		return bool(state['ok'])
+	state['tried'] = True
+	if not isLinux:
+		return False
+	if not os.environ.get('DISPLAY'):
+		return False
+	try:
+		lib_name = ctypes.util.find_library('X11') or 'libX11.so.6'
+		lib = ctypes.CDLL(lib_name)
+		lib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+		lib.XOpenDisplay.restype = ctypes.c_void_p
+		lib.XCloseDisplay.argtypes = [ctypes.c_void_p]
+		lib.XCloseDisplay.restype = ctypes.c_int
+		lib.XQueryKeymap.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+		lib.XQueryKeymap.restype = ctypes.c_int
+		lib.XStringToKeysym.argtypes = [ctypes.c_char_p]
+		lib.XStringToKeysym.restype = ctypes.c_ulong
+		lib.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+		lib.XKeysymToKeycode.restype = ctypes.c_uint
+		display = lib.XOpenDisplay(None)
+		if not display:
+			return False
+		state['lib'] = lib
+		state['display'] = display
+		state['ok'] = True
+		return True
+	except Exception:
+		return False
+
+def _runtime_x11_key_pressed (keysym_name : str):
+	if not _runtime_try_init_x11():
+		return False
+	state = _RUNTIME_X11
+	lib = state['lib']
+	display = state['display']
+	try:
+		keymap = ctypes.create_string_buffer(32)
+		lib.XQueryKeymap(display, keymap)
+		cache = state['keycode_cache']
+		keysym_name = str(keysym_name)
+		keycode = cache.get(keysym_name)
+		if keycode is None:
+			keysym = lib.XStringToKeysym(keysym_name.encode('utf-8'))
+			if keysym == 0:
+				cache[keysym_name] = 0
+				return False
+			keycode = int(lib.XKeysymToKeycode(display, keysym))
+			cache[keysym_name] = keycode
+		if keycode <= 0:
+			return False
+		return bool(keymap.raw[keycode // 8] & (1 << (keycode % 8)))
+	except Exception:
+		return False
+
+def _replace_runtime_key_calls (expr : str):
+	'''Normalize supported pygame key API calls/constants to js13k runtime forms.'''
+	if not isinstance(expr, str):
+		return expr
+	out = re.sub(
+		r'pygame\s*\.\s*key\s*\.\s*get_pressed\s*\(\s*\)',
+		'js13k_get_pressed()',
+		expr,
+		flags = re.IGNORECASE,
+	)
+	for name, idx in _RUNTIME_KEY_INDEX.items():
+		out = re.sub(
+			r'pygame\s*\.\s*K_' + name + r'\b',
+			str(idx),
+			out,
+			flags = re.IGNORECASE,
+		)
+	return out
+
+def _runtime_key_state_snapshot ():
+	'''Return GB button state for expression evaluation/log mirroring.
+
+	Order: LEFT, RIGHT, DOWN, UP, A, B, START, SELECT.
+	Uses global X11 key state on Linux (works while mGBA has focus). Falls back
+	to all-False when unavailable.
+	'''
+	btn_map = _runtime_button_keysym_map()
+	out = []
+	for btn in _RUNTIME_GB_BUTTON_ORDER:
+		out.append(bool(_runtime_x11_key_pressed(btn_map.get(btn, ''))))
+	return tuple(out)
+
 def _eval_runtime_expr_value (value, frame : int = None, start_time : float = None):
 	if isinstance(value, (int, float)):
 		return float(value)
@@ -1747,10 +1891,12 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 	if match:
 		expr = match.group(1).strip()
 	expr = _replace_runtime_ticks_calls(expr, ticks)
+	expr = _replace_runtime_key_calls(expr)
 	try:
 		return float(expr)
 	except Exception:
 		pass
+	key_state = _runtime_key_state_snapshot()
 	try:
 		val = eval(
 			expr,
@@ -1762,6 +1908,7 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 				'abs' : abs,
 				'max' : max,
 				'min' : min,
+				'js13k_get_pressed' : (lambda : key_state),
 			},
 		)
 		if isinstance(val, (int, float, bool)):
@@ -2199,8 +2346,8 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 					'symbol_hint' : ob.name + '_' + getattr(script, 'name', 'script'),
 				})
 	exportType = prev_export
-	if _py2gba_export_gba_py_assembly:
-		runtime = _run_py2gba_export_with_resolved_logs(_py2gba_export_gba_py_assembly, script_entries, gba_out_path)
+	if _py2gb_export_gba_py_assembly:
+		runtime = _run_py2gba_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gba_out_path)
 		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
 	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
 
@@ -2243,8 +2390,8 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 					'symbol_hint' : ob.name + '_' + getattr(script, 'name', 'script'),
 				})
 	exportType = prev_export
-	if _py2gba_export_gba_py_assembly:
-		runtime = _run_py2gba_export_with_resolved_logs(_py2gba_export_gba_py_assembly, script_entries, gbc_out_path)
+	if _py2gb_export_gba_py_assembly:
+		runtime = _run_py2gba_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gbc_out_path)
 		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
 	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
 
@@ -4418,12 +4565,14 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 		expr = m.group(1).strip()
 		# Replace supported runtime function calls with numeric values first.
 		expr_with_ticks = _replace_runtime_ticks_calls(expr, ticks)
+		expr_eval = _replace_runtime_key_calls(expr_with_ticks)
 		# Fast path: plain integer after replacement.
-		if re.fullmatch(r'[+-]?\d+', expr_with_ticks):
-			return expr_with_ticks
+		if re.fullmatch(r'[+-]?\d+', expr_eval):
+			return expr_eval
+		key_state = _runtime_key_state_snapshot()
 		try:
 			val = eval(
-				expr_with_ticks,
+				expr_eval,
 				{'__builtins__' : {}},
 				{
 					'int' : int,
@@ -4432,6 +4581,7 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 					'abs' : abs,
 					'max' : max,
 					'min' : min,
+					'js13k_get_pressed' : (lambda : key_state),
 				},
 			)
 			if isinstance(val, (int, float, bool, str)):
@@ -4439,15 +4589,17 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 			return str(val)
 		except Exception:
 			# Fallback: at least substitute ticks call in the placeholder.
-			return expr_with_ticks
+			return expr_eval
 	text = re.sub(r'<expr:\s*([^<>]*)\s*>', _eval_expr, text, flags = re.IGNORECASE)
 	# Last-resort cleanup if any expression wrapper still leaks through.
 	if '<expr:' in text.lower():
 		text = re.sub(r'(?i)<expr:\s*', '', text)
 		text = text.replace('>', '')
 		text = _replace_runtime_ticks_calls(text, ticks)
+		text = _replace_runtime_key_calls(text)
 	else:
 		text = _replace_runtime_ticks_calls(text, ticks)
+		text = _replace_runtime_key_calls(text)
 	return text
 
 def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
@@ -6418,7 +6570,7 @@ def BuildGba (world):
 			if _gb_runtime_is_stubbed(script_runtime):
 				raise RuntimeError(
 					'GBA dynamic physics requires a full py2gba compiler/runtime; the current py2gba backend is a pygame stub. '
-					'Install/use full Py2Gba toolchain to execute real update logic on-device.'
+					'Install/use full Py2Gb toolchain to execute real update logic on-device.'
 				)
 		frame_count = 1
 		_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = 1, include_init = True, include_update = False)

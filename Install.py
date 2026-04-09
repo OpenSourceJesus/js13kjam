@@ -18,7 +18,7 @@ def PipInstall (*packages):
 		Run ([sys.executable, '-m', 'pip', 'install', pkg] + PIP_EXTRA_ARGS)
 
 # Clone repos
-for repo in ('Py2Js', 'Py2Gba', 'tinifyjs', 'PyRapier2d', 'blender-curve-to-svg'):
+for repo in ('Py2Js', 'Py2Gb', 'tinifyjs', 'PyRapier2d', 'blender-curve-to-svg'):
 	if not os.path.isdir(os.path.join(_thisDir, repo)):
 		Run (f'git clone https://github.com/OpenSourceJesus/{repo} --depth=1')
 
@@ -101,12 +101,12 @@ else:
 	print('Py2Js repo not found. Run: git clone https://github.com/OpenSourceJesus/Py2Js --depth=1')
 	sys.exit(1)
 
-# Py2Gba (Python to GBA asm placeholder transpiler)
-py2gbaDir = os.path.join(_thisDir, 'Py2Gba')
-if os.path.isdir(py2gbaDir):
-	Run ([sys.executable, '-m', 'pip', 'install', '-e', py2gbaDir] + PIP_EXTRA_ARGS)
+# Py2Gb (Python to GBA asm placeholder transpiler)
+py2gbDir = os.path.join(_thisDir, 'Py2Gb')
+if os.path.isdir(py2gbDir):
+	Run ([sys.executable, '-m', 'pip', 'install', '-e', py2gbDir] + PIP_EXTRA_ARGS)
 else:
-	print('Py2Gba repo not found. Run: git clone https://github.com/OpenSourceJesus/Py2Gba --depth=1')
+	print('Py2Gb repo not found. Run: git clone https://github.com/OpenSourceJesus/Py2Gb --depth=1')
 	sys.exit(1)
 
 import tinifyjs.Install
