@@ -5880,7 +5880,7 @@ def _gbc_palette4_from_rgba (rgba):
 		return _GBC_DEFAULT_BG_COLORS[: 4]
 	return _gbc_quantize_palette4(pix, lock_extremes = True)
 
-def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0):
+def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, control_mode : str = 'none'):
 	code = bytearray()
 	def emit(*vals):
 		code.extend(vals)
@@ -6022,7 +6022,54 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # (vx)=a
 		x_no_v_addr = len(code)
 		patch_jr(jr_x_no_v, x_no_v_addr)
-	# Left/right d-pad input intentionally does not drive horizontal velocity.
+	control_mode = str(control_mode or 'none')
+	if control_mode == 'dpad_lr':
+		# Sample d-pad each frame and map right/left to +/-1 horizontal velocity.
+		# Match common gbc-py movement scripts: neither/both pressed => vx = 0.
+		ld_a_imm(0x20)  # P1: select direction keys (P14 low, P15 high)
+		ldh_imm_a(0x00)
+		emit(0xF0, 0x00)  # ldh a,(rP1)
+		emit(0xE6, 0x03)  # and $03 (bit0=right, bit1=left; active low)
+		emit(0xFE, 0x02)  # cp $02 (right only)
+		jr_not_right = jr(0x20)  # jr nz, maybe_left
+		ld_a_imm(0x01)
+		emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+		jr_after_lr = jr(0x18)  # jr after_lr
+		maybe_left_addr = len(code)
+		patch_jr(jr_not_right, maybe_left_addr)
+		emit(0xFE, 0x01)  # cp $01 (left only)
+		jr_not_left = jr(0x20)  # jr nz, set_vx_zero
+		ld_a_imm(0xFF)  # -1
+		emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+		jr_after_left = jr(0x18)  # jr after_lr
+		set_vx_zero_addr = len(code)
+		patch_jr(jr_not_left, set_vx_zero_addr)
+		ld_a_imm(0x00)
+		emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+		after_lr_addr = len(code)
+		patch_jr(jr_after_lr, after_lr_addr)
+		patch_jr(jr_after_left, after_lr_addr)
+	elif control_mode == 'vx_from_vy' or control_mode.startswith('vx_from_vy_mul_'):
+		# Script pattern: set_linear_velocity(body, [get_linear_velocity(body)[1] * N, ...]).
+		# Script-space Y is negated internal vy, so vx follows (-N * internal_vy).
+		scale = _decode_vx_from_vy_mode_scale(control_mode)
+		if scale is None:
+			scale = 1
+		emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
+		if scale > 0:
+			emit(0x2F)  # cpl
+			emit(0x3C)  # inc a  -> two's complement negate
+		n = abs(int(scale))
+		if n == 2:
+			emit(0x87)  # add a,a
+		elif n == 3:
+			emit(0x47)  # ld b,a
+			emit(0x87)  # add a,a
+			emit(0x80)  # add a,b
+		elif n >= 4:
+			emit(0x87)  # add a,a
+			emit(0x87)  # add a,a
+		emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 	emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 	emit(0x47)  # ld b,a (vx)
 	# x += vx
@@ -6186,7 +6233,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	patch_call(call_copy_bg_attr_patch, copy_addr)
 	return bytes(code)
 
-def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette4, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0):
+def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette4, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, control_mode : str = 'none'):
 	tile_data_len = 384 * 16
 	tilemap_len = 32 * 32
 	attrmap_len = 32 * 32
@@ -6216,13 +6263,13 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	rom_size = 0x8000
 	sprite_tile_count = max(1, min(16, int((len(sprite_tile_bytes) if sprite_tile_bytes else 0) // 16)))
 	collider_count = len(collider_payload) // 4
-	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy)
+	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, control_mode = control_mode)
 	bg_data_addr = code_start + len(probe)
 	if bg_data_addr & 0xF:
 		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
 	sprite_data_addr = bg_data_addr + len(bg_payload)
 	collider_data_addr = sprite_data_addr + sprite_tile_count * 16
-	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy)
+	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, control_mode = control_mode)
 	total_need = collider_data_addr + len(collider_payload)
 	if total_need > rom_size:
 		raise RuntimeError('GBC dynamic physics export exceeds 32KB ROM size.')
@@ -6443,7 +6490,7 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None):
 	return rects
 
 class _GbcPhase1MirrorSim:
-	def __init__ (self, x : int, y : int, vx : int, vy : int, grav_step_x : int, grav_step_y : int, sprite_w_px : int, sprite_h_px : int, collider_rects, offscreen_bottom_y : int):
+	def __init__ (self, x : int, y : int, vx : int, vy : int, grav_step_x : int, grav_step_y : int, sprite_w_px : int, sprite_h_px : int, collider_rects, offscreen_bottom_y : int, control_mode : str = 'none'):
 		self.x = max(0, min(255, int(x)))
 		self.y = max(0, min(255, int(y)))
 		self.vx = max(-127, min(127, int(vx)))
@@ -6456,6 +6503,7 @@ class _GbcPhase1MirrorSim:
 		self.sprite_h_px = max(8, min(32, int(sprite_h_px)))
 		self.collider_rects = list(collider_rects or [])
 		self.offscreen_bottom_y = max(145, min(252, int(offscreen_bottom_y)))
+		self.control_mode = str(control_mode or 'none')
 		self.dead = False
 	def _step_gravity_axis (self, step, acc, vel):
 		if step == 0:
@@ -6483,6 +6531,9 @@ class _GbcPhase1MirrorSim:
 		if self.dead:
 			return
 		self.gacc_x, self.vx = self._step_gravity_axis(self.grav_step_x, self.gacc_x, self.vx)
+		scale = _decode_vx_from_vy_mode_scale(self.control_mode)
+		if scale is not None:
+			self.vx = max(-127, min(127, int((-int(scale)) * int(self.vy))))
 		self.x = (int(self.x) + int(self.vx)) & 0xFF
 		# Keep resting bodies stable on top of colliders instead of re-accelerating each frame.
 		if self.vy >= 0 and self._is_supported():
@@ -6542,7 +6593,7 @@ class _GbcPhase1MirrorSim:
 	def get_angular_velocity (self, _rigidBody):
 		return 0.0
 
-def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects):
+def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects, control_mode : str = 'none'):
 	if sprite_ob is None:
 		return {}
 	sprite_w_px = max(8, min(32, int(sprite_tiles_w) * 8))
@@ -6559,6 +6610,7 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 		sprite_h_px = sprite_h_px,
 		collider_rects = collider_rects,
 		offscreen_bottom_y = offscreen_bottom_y,
+		control_mode = control_mode,
 	)
 	handle = str(GetVarNameForObject(sprite_ob))
 	rigid_bodies_named = {}
@@ -6744,6 +6796,212 @@ def _extract_gbc_phase1_init_velocity (world, sprite_ob):
 		if match is not None:
 			return match
 	return (0, 0)
+
+def _ast_subscript_int_index (node):
+	if not isinstance(node, ast.Subscript):
+		return None
+	slc = node.slice
+	if isinstance(slc, ast.Constant) and isinstance(slc.value, int):
+		return int(slc.value)
+	if hasattr(ast, 'Index') and isinstance(slc, ast.Index) and isinstance(slc.value, ast.Constant) and isinstance(slc.value.value, int):
+		return int(slc.value.value)
+	return None
+
+def _is_same_rigidbody_ref (node, target_kind, target_value, aliases):
+	rb_kind, rb_value = _extract_rigidbody_name_expr(node)
+	if rb_kind == 'name_ref' and rb_value in aliases:
+		rb_kind, rb_value = aliases.get(rb_value, (rb_kind, rb_value))
+	return (rb_kind == target_kind) and (rb_value == target_value)
+
+def _is_get_linear_velocity_y_for_body (node, target_kind, target_value, aliases):
+	if _ast_subscript_int_index(node) != 1:
+		return False
+	base = node.value if isinstance(node, ast.Subscript) else None
+	if not isinstance(base, ast.Call):
+		return False
+	func = base.func
+	if not (
+		isinstance(func, ast.Attribute)
+		and func.attr == 'get_linear_velocity'
+		and isinstance(func.value, ast.Name)
+		and func.value.id in ('sim', 'physics')
+		and len(base.args or []) >= 1
+	):
+		return False
+	return _is_same_rigidbody_ref(base.args[0], target_kind, target_value, aliases)
+
+def _extract_get_linear_velocity_y_scale (node, target_kind, target_value, aliases):
+	if _is_get_linear_velocity_y_for_body(node, target_kind, target_value, aliases):
+		return 1.0
+	if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+		inner = _extract_get_linear_velocity_y_scale(node.operand, target_kind, target_value, aliases)
+		if inner is not None:
+			return -float(inner)
+	if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+		left_scale = _extract_get_linear_velocity_y_scale(node.left, target_kind, target_value, aliases)
+		right_scale = _extract_get_linear_velocity_y_scale(node.right, target_kind, target_value, aliases)
+		left_num = _ast_numeric_literal(node.left)
+		right_num = _ast_numeric_literal(node.right)
+		if left_scale is not None and right_num is not None:
+			return float(left_scale) * float(right_num)
+		if right_scale is not None and left_num is not None:
+			return float(right_scale) * float(left_num)
+	return None
+
+def _encode_vx_from_vy_mode (scale):
+	if scale is None:
+		return None
+	try:
+		s = float(scale)
+	except Exception:
+		return None
+	n = int(round(s))
+	if abs(s - float(n)) > 1e-6:
+		return None
+	n = max(-4, min(4, n))
+	if n == 0:
+		return None
+	return 'vx_from_vy_mul_' + str(n)
+
+def _decode_vx_from_vy_mode_scale (control_mode : str):
+	mode = str(control_mode or '')
+	if mode == 'vx_from_vy':
+		return 1
+	prefix = 'vx_from_vy_mul_'
+	if not mode.startswith(prefix):
+		return None
+	try:
+		n = int(mode[len(prefix) :])
+	except Exception:
+		return None
+	if n == 0:
+		return None
+	return max(-4, min(4, n))
+
+def _extract_gbc_phase1_control_mode_from_code (code : str, target_keys : set):
+	try:
+		tree = ast.parse(code or '')
+	except Exception:
+		return None
+	target_keys = set([str(k) for k in (target_keys or set()) if isinstance(k, str) and k])
+	if not target_keys:
+		return None
+	aliases = {}
+	vel_expr_aliases = {}
+	has_lr_key_tokens = ('pygame.K_LEFT' in str(code or '')) and ('pygame.K_RIGHT' in str(code or ''))
+	for stmt in _walk_statically_reachable_stmts(getattr(tree, 'body', [])):
+		if isinstance(stmt, ast.Assign):
+			rb_kind = None
+			rb_value = None
+			if stmt.value is not None:
+				rb_kind, rb_value = _extract_rigidbody_name_expr(stmt.value)
+			for target in list(stmt.targets or []):
+				if isinstance(target, ast.Name):
+					if rb_kind in ('name_ref', 'key'):
+						aliases[target.id] = (rb_kind, rb_value)
+					else:
+						aliases.pop(target.id, None)
+					if isinstance(stmt.value, (ast.List, ast.Tuple)) and len(stmt.value.elts) >= 2:
+						vel_expr_aliases[target.id] = stmt.value
+					else:
+						vel_expr_aliases.pop(target.id, None)
+			continue
+		if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+			rb_kind = None
+			rb_value = None
+			if stmt.value is not None:
+				rb_kind, rb_value = _extract_rigidbody_name_expr(stmt.value)
+			if rb_kind in ('name_ref', 'key'):
+				aliases[stmt.target.id] = (rb_kind, rb_value)
+			else:
+				aliases.pop(stmt.target.id, None)
+			if isinstance(stmt.value, (ast.List, ast.Tuple)) and len(stmt.value.elts) >= 2:
+				vel_expr_aliases[stmt.target.id] = stmt.value
+			else:
+				vel_expr_aliases.pop(stmt.target.id, None)
+			continue
+		if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+			aliases.pop(stmt.target.id, None)
+			vel_expr_aliases.pop(stmt.target.id, None)
+			continue
+		if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+			call = stmt.value
+			func = call.func
+			if not (isinstance(func, ast.Attribute) and func.attr == 'set_linear_velocity'):
+				continue
+			if not (isinstance(func.value, ast.Name) and func.value.id in ('sim', 'physics')):
+				continue
+			if len(call.args or []) < 2:
+				continue
+			rb_kind, rb_value = _extract_rigidbody_name_expr(call.args[0])
+			if rb_kind == 'name_ref' and rb_value in aliases:
+				rb_kind, rb_value = aliases[rb_value]
+			if rb_kind != 'key' or not isinstance(rb_value, str) or rb_value not in target_keys:
+				continue
+			vel = call.args[1]
+			if isinstance(vel, ast.Name):
+				vel = vel_expr_aliases.get(vel.id, vel)
+			# Pattern: set_linear_velocity(body, [sim.get_linear_velocity(body)[1], ...])
+			if isinstance(vel, (ast.List, ast.Tuple)) and len(vel.elts) >= 2:
+				s0 = _extract_get_linear_velocity_y_scale(vel.elts[0], rb_kind, rb_value, aliases)
+				if s0 is not None:
+					mode = _encode_vx_from_vy_mode(s0)
+					if mode is not None:
+						return mode
+			# Heuristic for common key-driven scripts that write velocity each frame.
+			if has_lr_key_tokens:
+				return 'dpad_lr'
+	return None
+
+def _extract_gbc_phase1_control_mode (world, sprite_ob):
+	if sprite_ob is None:
+		return 'none'
+	target_keys = set()
+	sprite_name = str(getattr(sprite_ob, 'name', '') or '')
+	if sprite_name:
+		target_keys.add(sprite_name)
+		target_keys.add('_' + sprite_name)
+	try:
+		sprite_var = GetVarNameForObject(sprite_ob)
+		if isinstance(sprite_var, str) and sprite_var:
+			target_keys.add(sprite_var)
+			target_keys.add('_' + sprite_var)
+	except Exception:
+		pass
+	if not target_keys:
+		return 'none'
+	init_codes = []
+	update_codes = []
+	if world is not None:
+		for scriptInfo in list(GetScripts(world) or []):
+			scriptTxt = scriptInfo[0]
+			isInit = bool(scriptInfo[1])
+			_type = scriptInfo[2]
+			if _type != 'gbc-py':
+				continue
+			if isInit:
+				init_codes.append(scriptTxt)
+			else:
+				update_codes.append(scriptTxt)
+	for ob in list(getattr(bpy.data, 'objects', []) or []):
+		if not getattr(ob, 'exportOb', False) or ob.hide_get():
+			continue
+		for scriptInfo in list(GetScripts(ob) or []):
+			scriptTxt = scriptInfo[0]
+			isInit = bool(scriptInfo[1])
+			_type = scriptInfo[2]
+			if _type != 'gbc-py':
+				continue
+			if isInit:
+				init_codes.append(scriptTxt)
+			else:
+				update_codes.append(scriptTxt)
+	# Update scripts describe runtime control behavior; prioritize them first.
+	for code in update_codes + init_codes:
+		mode = _extract_gbc_phase1_control_mode_from_code(code, target_keys)
+		if isinstance(mode, str) and mode:
+			return mode
+	return 'none'
 
 def _gba_apply_tint_opacity_to_rgba (rgba, tint_rgb, opacity : float):
 	if rgba is None:
@@ -7871,6 +8129,7 @@ def BuildGbc (world):
 			init_pos = GetImagePosition(sprite_ob)
 			init_x, init_y = _gba_to_gbc_cover_point(float(init_pos.x), float(init_pos.y))
 			init_vx, init_vy = _extract_gbc_phase1_init_velocity(world, sprite_ob)
+			control_mode = _extract_gbc_phase1_control_mode(world, sprite_ob)
 			init_vx = max(-127, min(127, int(init_vx)))
 			init_vy = max(-127, min(127, int(init_vy)))
 			gravity_x = 0.0
@@ -7896,7 +8155,9 @@ def BuildGbc (world):
 				print('GBC export: phase1 seeded sprite velocity from gbc-py script =', [init_vx, init_vy])
 			else:
 				print('GBC export: phase1 found no constant gbc-py set_linear_velocity seed for sprite; defaulting to [0, 0].')
-			rom = _gbc_build_dynamic_physics_rom(canvas_gbc, sprite_tile, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bank, sprite_pal, collider_rects = collider_rects, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy)
+			if control_mode != 'none':
+				print('GBC export: phase1 velocity control mode =', control_mode)
+			rom = _gbc_build_dynamic_physics_rom(canvas_gbc, sprite_tile, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bank, sprite_pal, collider_rects = collider_rects, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, control_mode = control_mode)
 		else:
 			_gba_apply_script_surface_ops(
 				image_surfaces,
@@ -7940,6 +8201,7 @@ def BuildGbc (world):
 					grav_step_x,
 					grav_step_y,
 					collider_rects,
+					control_mode = control_mode if has_physics else 'none',
 				)
 			else:
 				runtime_print_env = _build_runtime_print_physics_env(world, scene_obs)
