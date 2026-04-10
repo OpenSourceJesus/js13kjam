@@ -2015,13 +2015,22 @@ def _serialize_script_expr (node):
 	except Exception:
 		return '<expr:0>'
 
+def _is_simple_const_value (value):
+	if isinstance(value, (int, float, bool, str)) or value is None:
+		return True
+	if isinstance(value, (list, tuple)):
+		return all(_is_simple_const_value(v) for v in value)
+	if isinstance(value, dict):
+		return all(_is_simple_const_value(k) and _is_simple_const_value(v) for k, v in value.items())
+	return False
+
 def _extract_simple_const_value (node):
 	'''Return a simple compile-time constant, or None when unknown/unsupported.'''
 	try:
 		val = ast.literal_eval(node)
 	except Exception:
 		return None
-	if isinstance(val, (int, float, bool, str)) or val is None:
+	if _is_simple_const_value(val):
 		return val
 	return None
 
@@ -2193,7 +2202,11 @@ def _serialize_print_call_text (call_node, const_env = None, expr_env = None, rb
 		class _InlineNameTransformer(ast.NodeTransformer):
 			def visit_Name (self, n):
 				if n.id in const_env:
-					return ast.copy_location(ast.Constant(value = const_env[n.id]), n)
+					try:
+						repl = ast.parse(repr(const_env[n.id]), mode = 'eval').body
+						return ast.copy_location(repl, n)
+					except Exception:
+						return n
 				if n.id in expr_env:
 					repl = _expr_env_value_to_ast(expr_env[n.id])
 					if repl is not None:
@@ -2301,16 +2314,234 @@ def _collect_assigned_names_from_stmts (stmts):
 			for target in list(stmt.targets or []):
 				if isinstance(target, ast.Name):
 					assigned.add(target.id)
+				else:
+					mutated_name = _mutated_container_name_from_target(target)
+					if mutated_name:
+						assigned.add(mutated_name)
 		elif isinstance(stmt, ast.AnnAssign):
 			if isinstance(stmt.target, ast.Name):
 				assigned.add(stmt.target.id)
+			else:
+				mutated_name = _mutated_container_name_from_target(stmt.target)
+				if mutated_name:
+					assigned.add(mutated_name)
 		elif isinstance(stmt, ast.AugAssign):
 			if isinstance(stmt.target, ast.Name):
 				assigned.add(stmt.target.id)
+			else:
+				mutated_name = _mutated_container_name_from_target(stmt.target)
+				if mutated_name:
+					assigned.add(mutated_name)
 		elif isinstance(stmt, ast.If):
 			assigned.update(_collect_assigned_names_from_stmts(stmt.body))
 			assigned.update(_collect_assigned_names_from_stmts(stmt.orelse))
 	return assigned
+
+def _mutated_container_name_from_target (target):
+	'''Return base name for in-place container updates like `x[i] = ...`.'''
+	node = target
+	while isinstance(node, ast.Subscript):
+		node = node.value
+	if isinstance(node, ast.Name):
+		return node.id
+	return None
+
+def _apply_simple_container_mutation (target, value_node, const_env, expr_env, rb_alias):
+	'''Apply simple subscript writes to known literal containers in-place env.'''
+	if not isinstance(target, ast.Subscript):
+		return False
+	base_name = _mutated_container_name_from_target(target)
+	if not base_name or base_name not in const_env:
+		return False
+	base_val = const_env.get(base_name)
+	if not isinstance(base_val, (list, tuple, dict)):
+		return False
+	try:
+		index_val = ast.literal_eval(target.slice)
+	except Exception:
+		return False
+	assign_val = _extract_simple_const_value(value_node)
+	if assign_val is None:
+		return False
+	if isinstance(base_val, list):
+		if not isinstance(index_val, int):
+			return False
+		idx = int(index_val)
+		if idx < 0:
+			idx += len(base_val)
+		if idx < 0 or idx >= len(base_val):
+			return False
+		new_val = list(base_val)
+		new_val[idx] = assign_val
+		const_env[base_name] = new_val
+	elif isinstance(base_val, tuple):
+		if not isinstance(index_val, int):
+			return False
+		idx = int(index_val)
+		tmp = list(base_val)
+		if idx < 0:
+			idx += len(tmp)
+		if idx < 0 or idx >= len(tmp):
+			return False
+		tmp[idx] = assign_val
+		const_env[base_name] = tuple(tmp)
+	elif isinstance(base_val, dict):
+		new_val = dict(base_val)
+		new_val[index_val] = assign_val
+		const_env[base_name] = new_val
+	else:
+		return False
+	expr_env.pop(base_name, None)
+	rb_alias.pop(base_name, None)
+	return True
+
+def _apply_simple_container_aug_mutation (target, op, value_node, const_env, expr_env, rb_alias):
+	'''Apply simple subscript aug-assign writes like `x[i] += v` for literals.'''
+	if not isinstance(target, ast.Subscript):
+		return False
+	base_name = _mutated_container_name_from_target(target)
+	if not base_name or base_name not in const_env:
+		return False
+	base_val = const_env.get(base_name)
+	if not isinstance(base_val, (list, tuple, dict)):
+		return False
+	try:
+		index_val = ast.literal_eval(target.slice)
+	except Exception:
+		return False
+	assign_val = _extract_simple_const_value(value_node)
+	if assign_val is None:
+		return False
+	def _apply_aug (_old, _op, _rhs):
+		if isinstance(_op, ast.Add):
+			return _old + _rhs
+		if isinstance(_op, ast.Sub):
+			return _old - _rhs
+		if isinstance(_op, ast.Mult):
+			return _old * _rhs
+		if isinstance(_op, ast.Div):
+			return _old / _rhs
+		if isinstance(_op, ast.FloorDiv):
+			return _old // _rhs
+		if isinstance(_op, ast.Mod):
+			return _old % _rhs
+		if isinstance(_op, ast.Pow):
+			return _old ** _rhs
+		if isinstance(_op, ast.LShift):
+			return _old << _rhs
+		if isinstance(_op, ast.RShift):
+			return _old >> _rhs
+		if isinstance(_op, ast.BitAnd):
+			return _old & _rhs
+		if isinstance(_op, ast.BitOr):
+			return _old | _rhs
+		if isinstance(_op, ast.BitXor):
+			return _old ^ _rhs
+		raise ValueError('unsupported augassign operator')
+	try:
+		if isinstance(base_val, list):
+			if not isinstance(index_val, int):
+				return False
+			idx = int(index_val)
+			if idx < 0:
+				idx += len(base_val)
+			if idx < 0 or idx >= len(base_val):
+				return False
+			old_item = base_val[idx]
+			new_item = _apply_aug(old_item, op, assign_val)
+			new_val = list(base_val)
+			new_val[idx] = new_item
+			const_env[base_name] = new_val
+		elif isinstance(base_val, tuple):
+			if not isinstance(index_val, int):
+				return False
+			tmp = list(base_val)
+			idx = int(index_val)
+			if idx < 0:
+				idx += len(tmp)
+			if idx < 0 or idx >= len(tmp):
+				return False
+			old_item = tmp[idx]
+			tmp[idx] = _apply_aug(old_item, op, assign_val)
+			const_env[base_name] = tuple(tmp)
+		elif isinstance(base_val, dict):
+			old_item = base_val.get(index_val)
+			new_item = _apply_aug(old_item, op, assign_val)
+			new_val = dict(base_val)
+			new_val[index_val] = new_item
+			const_env[base_name] = new_val
+		else:
+			return False
+	except Exception:
+		return False
+	expr_env.pop(base_name, None)
+	rb_alias.pop(base_name, None)
+	return True
+
+def _compose_expr_text_for_name (_name, const_env, expr_env):
+	if _name in const_env and _is_simple_const_value(const_env.get(_name)):
+		return repr(const_env.get(_name))
+	if _name in expr_env:
+		v = expr_env.get(_name)
+		if isinstance(v, str):
+			return _unwrap_expr_placeholder(v)
+		if _is_simple_const_value(v):
+			return repr(v)
+	return None
+
+def _apply_symbolic_container_mutation (target, value_node, const_env, expr_env, rb_alias, aug_op = None):
+	'''Fallback: represent subscript mutation as runtime expression transform.'''
+	if not isinstance(target, ast.Subscript):
+		return False
+	base_name = _mutated_container_name_from_target(target)
+	if not base_name:
+		return False
+	base_expr = _compose_expr_text_for_name(base_name, const_env, expr_env)
+	if base_expr is None:
+		return False
+	try:
+		index_val = ast.literal_eval(target.slice)
+	except Exception:
+		return False
+	if not isinstance(index_val, int):
+		return False
+	rhs_ser = _serialize_script_expr(value_node)
+	if isinstance(rhs_ser, str):
+		rhs_expr = _unwrap_expr_placeholder(rhs_ser)
+	else:
+		rhs_expr = repr(rhs_ser)
+	op_name = 'set'
+	if aug_op is not None:
+		if isinstance(aug_op, ast.Add):
+			op_name = 'add'
+		elif isinstance(aug_op, ast.Sub):
+			op_name = 'sub'
+		elif isinstance(aug_op, ast.Mult):
+			op_name = 'mul'
+		elif isinstance(aug_op, ast.Div):
+			op_name = 'div'
+		elif isinstance(aug_op, ast.FloorDiv):
+			op_name = 'floordiv'
+		elif isinstance(aug_op, ast.Mod):
+			op_name = 'mod'
+		elif isinstance(aug_op, ast.Pow):
+			op_name = 'pow'
+		elif isinstance(aug_op, ast.LShift):
+			op_name = 'lshift'
+		elif isinstance(aug_op, ast.RShift):
+			op_name = 'rshift'
+		elif isinstance(aug_op, ast.BitAnd):
+			op_name = 'and'
+		elif isinstance(aug_op, ast.BitOr):
+			op_name = 'or'
+		elif isinstance(aug_op, ast.BitXor):
+			op_name = 'xor'
+		else:
+			return False
+	expr_env[base_name] = '<expr:js13k_vec_update((' + base_expr + '), ' + str(index_val) + ', (' + rhs_expr + '), ' + repr(op_name) + ')>'
+	const_env.pop(base_name, None)
+	rb_alias.pop(base_name, None)
+	return True
 
 def _extract_print_calls_from_stmts (stmts, is_init : bool, owner_name : str, parent_condition = None, const_env = None, expr_env = None, rb_alias = None, vel_env = None):
 	prints = []
@@ -2371,6 +2602,15 @@ def _extract_print_calls_from_stmts (stmts, is_init : bool, owner_name : str, pa
 						rb_alias[target.id] = rb_value
 					else:
 						rb_alias.pop(target.id, None)
+				else:
+					mutated_name = _mutated_container_name_from_target(target)
+					if mutated_name:
+						if not _apply_simple_container_mutation(target, stmt.value, const_env, expr_env, rb_alias):
+							if _apply_symbolic_container_mutation(target, stmt.value, const_env, expr_env, rb_alias, aug_op = None):
+								continue
+							const_env.pop(mutated_name, None)
+							expr_env.pop(mutated_name, None)
+							rb_alias.pop(mutated_name, None)
 			continue
 		if isinstance(stmt, ast.AnnAssign):
 			if isinstance(stmt.target, ast.Name):
@@ -2392,11 +2632,22 @@ def _extract_print_calls_from_stmts (stmts, is_init : bool, owner_name : str, pa
 					rb_alias[stmt.target.id] = rb_value
 				else:
 					rb_alias.pop(stmt.target.id, None)
+			else:
+				mutated_name = _mutated_container_name_from_target(stmt.target)
+				if mutated_name:
+					const_env.pop(mutated_name, None)
+					expr_env.pop(mutated_name, None)
+					rb_alias.pop(mutated_name, None)
 			continue
-		if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
-			const_env.pop(stmt.target.id, None)
-			expr_env.pop(stmt.target.id, None)
-			rb_alias.pop(stmt.target.id, None)
+		if isinstance(stmt, ast.AugAssign):
+			mutated_name = stmt.target.id if isinstance(stmt.target, ast.Name) else _mutated_container_name_from_target(stmt.target)
+			if mutated_name:
+				if not _apply_simple_container_aug_mutation(stmt.target, stmt.op, stmt.value, const_env, expr_env, rb_alias):
+					if _apply_symbolic_container_mutation(stmt.target, stmt.value, const_env, expr_env, rb_alias, aug_op = stmt.op):
+						continue
+					const_env.pop(mutated_name, None)
+					expr_env.pop(mutated_name, None)
+					rb_alias.pop(mutated_name, None)
 			continue
 		if isinstance(stmt, ast.If):
 			truth = _literal_truthy_from_ast_node(stmt.test)
@@ -2409,14 +2660,39 @@ def _extract_print_calls_from_stmts (stmts, is_init : bool, owner_name : str, pa
 			test_expr = _serialize_script_expr(stmt.test)
 			body_cond = _combine_expr_conditions(parent_condition, test_expr)
 			else_cond = _combine_expr_conditions(parent_condition, _negate_expr_condition(test_expr))
-			prints.extend(_extract_print_calls_from_stmts(stmt.body, is_init, owner_name, body_cond, dict(const_env), dict(expr_env), dict(rb_alias), dict(vel_env)))
-			prints.extend(_extract_print_calls_from_stmts(stmt.orelse, is_init, owner_name, else_cond, dict(const_env), dict(expr_env), dict(rb_alias), dict(vel_env)))
+			body_const_env = dict(const_env)
+			body_expr_env = dict(expr_env)
+			body_rb_alias = dict(rb_alias)
+			body_vel_env = dict(vel_env)
+			else_const_env = dict(const_env)
+			else_expr_env = dict(expr_env)
+			else_rb_alias = dict(rb_alias)
+			else_vel_env = dict(vel_env)
+			prints.extend(_extract_print_calls_from_stmts(stmt.body, is_init, owner_name, body_cond, body_const_env, body_expr_env, body_rb_alias, body_vel_env))
+			prints.extend(_extract_print_calls_from_stmts(stmt.orelse, is_init, owner_name, else_cond, else_const_env, else_expr_env, else_rb_alias, else_vel_env))
 			# Dynamic branch flow only invalidates names assigned in either branch.
 			assigned_names = _collect_assigned_names_from_stmts(stmt.body)
 			assigned_names.update(_collect_assigned_names_from_stmts(stmt.orelse))
+			test_expr_src = _unwrap_expr_placeholder(test_expr)
+			def _env_name_to_expr_text (_name, _const_env, _expr_env):
+				if _name in _const_env and _is_simple_const_value(_const_env.get(_name)):
+					return repr(_const_env.get(_name))
+				if _name in _expr_env:
+					v = _expr_env.get(_name)
+					if isinstance(v, str):
+						return _unwrap_expr_placeholder(v)
+					if _is_simple_const_value(v):
+						return repr(v)
+				return None
 			for assigned_name in assigned_names:
-				const_env.pop(assigned_name, None)
-				expr_env.pop(assigned_name, None)
+				body_expr_text = _env_name_to_expr_text(assigned_name, body_const_env, body_expr_env)
+				else_expr_text = _env_name_to_expr_text(assigned_name, else_const_env, else_expr_env)
+				if body_expr_text is not None and else_expr_text is not None:
+					const_env.pop(assigned_name, None)
+					expr_env[assigned_name] = '<expr:(' + body_expr_text + ') if (' + test_expr_src + ') else (' + else_expr_text + ')>'
+				else:
+					const_env.pop(assigned_name, None)
+					expr_env.pop(assigned_name, None)
 				rb_alias.pop(assigned_name, None)
 	return prints
 
@@ -2452,23 +2728,16 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		if isinstance(op, dict) and op.get('op') == 'draw_circle_surface_member':
 			continue
 		surface_ops.append(op)
+	existing_print_calls = [info for info in list(script_runtime.get('print_calls') or []) if isinstance(info, dict)]
 	print_calls = []
-	existing_print_keys = set()
-	for info in list(script_runtime.get('print_calls') or []):
-		if not isinstance(info, dict):
-			continue
-		key = (
-			bool(info.get('is_init')),
-			str(info.get('owner_name') or '__world__'),
-			str(info.get('text', '')),
-			str(info.get('condition') or ''),
-		)
-		existing_print_keys.add(key)
-		print_calls.append(info)
+	extracted_print_pairs = set()
+	extracted_print_keys = set()
 	entries = list(script_entries or [])
 	# Match runtime semantics: init scripts run before update scripts.
 	entries.sort(key = lambda e: (0 if bool((e or {}).get('is_init')) else 1))
 	print_env_by_owner = {}
+	print_const_env_by_owner = {}
+	print_expr_env_by_owner = {}
 	for entry in entries:
 		code = entry.get('code', '')
 		is_init = bool(entry.get('is_init'))
@@ -2513,20 +2782,49 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			rb_alias = env['rb_alias'],
 			vel_env = env['vel_env'],
 		):
+			pair = (
+				bool(info.get('is_init')),
+				str(info.get('owner_name') or '__world__'),
+			)
+			extracted_print_pairs.add(pair)
 			key = (
 				bool(info.get('is_init')),
 				str(info.get('owner_name') or '__world__'),
 				str(info.get('text', '')),
 				str(info.get('condition') or ''),
 			)
-			if key in existing_print_keys:
+			if key in extracted_print_keys:
 				continue
-			existing_print_keys.add(key)
+			extracted_print_keys.add(key)
 			print_calls.append(info)
+		# Persist per-owner compile-time constants for runtime print evaluation.
+		print_const_env_by_owner[owner_name] = dict(env.get('const_env', {}))
+		print_expr_env_by_owner[owner_name] = dict(env.get('expr_env', {}))
+	# Prefer parser-rebuilt print metadata for script owner/phase pairs we handled,
+	# while preserving backend-provided print calls for any untouched pairs.
+	for info in existing_print_calls:
+		pair = (
+			bool(info.get('is_init')),
+			str(info.get('owner_name') or '__world__'),
+		)
+		if pair in extracted_print_pairs:
+			continue
+		key = (
+			bool(info.get('is_init')),
+			str(info.get('owner_name') or '__world__'),
+			str(info.get('text', '')),
+			str(info.get('condition') or ''),
+		)
+		if key in extracted_print_keys:
+			continue
+		extracted_print_keys.add(key)
+		print_calls.append(info)
 	script_runtime['init_draw_circles'] = init_draw
 	script_runtime['update_draw_circles'] = update_draw
 	script_runtime['surface_ops'] = surface_ops
 	script_runtime['print_calls'] = print_calls
+	script_runtime['print_const_env_by_owner'] = print_const_env_by_owner
+	script_runtime['print_expr_env_by_owner'] = print_expr_env_by_owner
 	return script_runtime
 
 def _gbc_script_physics_prelude ():
@@ -5299,13 +5597,44 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				'physics' : sim_runtime,
 				'get_rigidbody' : (lambda name : _lookup_runtime_handle(rigid_bodies_named, name)),
 				'get_collider' : (lambda name : _lookup_runtime_handle(colliders_named, name)),
+				'js13k_vec_update' : (lambda seq, idx, rhs, op = 'set': (
+					(lambda _lst: (
+						_lst.__setitem__(
+							(int(idx) if int(idx) >= 0 else int(idx) + len(_lst)),
+							(
+								rhs if op == 'set' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] + rhs) if op == 'add' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] - rhs) if op == 'sub' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] * rhs) if op == 'mul' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] / rhs) if op == 'div' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] // rhs) if op == 'floordiv' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] % rhs) if op == 'mod' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] ** rhs) if op == 'pow' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] << rhs) if op == 'lshift' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] >> rhs) if op == 'rshift' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] & rhs) if op == 'and' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] | rhs) if op == 'or' else
+								(_lst[int(idx) if int(idx) >= 0 else int(idx) + len(_lst)] ^ rhs) if op == 'xor' else
+								rhs
+							)
+						),
+						_lst
+					)[1]
+					)(list(seq if isinstance(seq, (list, tuple)) else []))
+				)),
 			})
 			for k, v in const_env.items():
-				if re.fullmatch(r'[A-Za-z_]\w*', str(k)) and (isinstance(v, (int, float, bool, str)) or v is None):
+				if re.fullmatch(r'[A-Za-z_]\w*', str(k)) and _is_simple_const_value(v):
 					eval_locals[str(k)] = v
 			for k, v in extra_env.items():
 				name = str(k)
 				if re.fullmatch(r'[A-Za-z_]\w*', name) and not name.startswith('__'):
+					# Keep runtime key-state helpers authoritative for print eval.
+					if name == 'keys':
+						if not isinstance(v, (list, tuple)):
+							continue
+					if name == 'js13k_get_pressed' and not callable(v):
+						continue
 					eval_locals[name] = v
 			for name in ('attributes', 'pivots', 'instanceToTemplate', 'liveObjectNames'):
 				if name in runtime_globals:
@@ -5315,6 +5644,9 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				{'__builtins__' : {}},
 				eval_locals,
 			)
+			if val is None and re.fullmatch(r'[A-Za-z_]\w*', expr_eval) and expr_eval not in eval_locals:
+				# Unresolved simple names should not silently become "None".
+				return expr_eval
 			if isinstance(val, (int, float, bool, str)):
 				return str(val)
 			return str(val)
@@ -5332,7 +5664,7 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				runtime_globals = __import__('builtins').globals()
 				if name in runtime_globals:
 					return str(runtime_globals[name])
-			if strict:
+			if strict and not re.fullmatch(r'[A-Za-z_]\w*', expr_eval):
 				raise RuntimeError(f"Invalid script print expression: {expr!r}")
 			# Keep runtime print mirroring non-fatal for dynamic/unavailable symbols.
 			return expr_eval
@@ -5369,6 +5701,8 @@ def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
 
 def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = 'gba-py', strict_print_exprs : bool = False, runtime_env = None, mirror_step = None):
 	print_calls = list((script_runtime or {}).get('print_calls') or [])
+	print_const_env_by_owner = dict((script_runtime or {}).get('print_const_env_by_owner') or {})
+	print_expr_env_by_owner = dict((script_runtime or {}).get('print_expr_env_by_owner') or {})
 	init_calls = [p for p in print_calls if p.get('is_init')]
 	update_calls = [p for p in print_calls if not p.get('is_init')]
 	if not init_calls and not update_calls:
@@ -5402,6 +5736,41 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					if k not in env:
 						env[k] = v
 			return env
+		def _const_env_for_owner (owner):
+			env = {}
+			world_consts = print_const_env_by_owner.get('__world__')
+			if isinstance(world_consts, dict):
+				env.update(world_consts)
+			owner_consts = print_const_env_by_owner.get(owner)
+			if isinstance(owner_consts, dict):
+				env.update(owner_consts)
+			return env
+		def _expr_env_for_owner (owner):
+			env = {}
+			world_expr = print_expr_env_by_owner.get('__world__')
+			if isinstance(world_expr, dict):
+				env.update(world_expr)
+			owner_expr = print_expr_env_by_owner.get(owner)
+			if isinstance(owner_expr, dict):
+				env.update(owner_expr)
+			return env
+		def _expand_text_placeholders (text, owner):
+			txt = str(text)
+			expr_env = _expr_env_for_owner(owner)
+			def _replace_name_expr (m):
+				name = m.group(1)
+				if name not in expr_env:
+					return m.group(0)
+				val = expr_env.get(name)
+				if isinstance(val, str):
+					inner = re.fullmatch(r'(?i)<expr:\s*(.*?)\s*>', val.strip())
+					if inner:
+						return '<expr:' + inner.group(1).strip() + '>'
+					return '<expr:' + val + '>'
+				if _is_simple_const_value(val):
+					return '<expr:' + repr(val) + '>'
+				return m.group(0)
+			return re.sub(r'(?i)<expr:\s*([A-Za-z_]\w*)\s*>', _replace_name_expr, txt)
 		def _should_emit (info, frame):
 			cond = info.get('condition')
 			if cond is None or cond == '':
@@ -5428,10 +5797,11 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					if not _should_emit(info, frame):
 						continue
 					owner = info.get('owner_name') or '__world__'
-					text = str(info.get('text', '')).rstrip('\n')
+					text = _expand_text_placeholders(str(info.get('text', '')), owner).rstrip('\n')
 					text = _resolve_runtime_print_exprs(
 						text,
 						frame = frame,
+						const_env = _const_env_for_owner(owner),
 						extra_env = _eval_env_for_owner(owner),
 						strict = strict_print_exprs,
 					)
@@ -5441,10 +5811,11 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				if not _should_emit(info, frame):
 					continue
 				owner = info.get('owner_name') or '__world__'
-				text = str(info.get('text', '')).rstrip('\n')
+				text = _expand_text_placeholders(str(info.get('text', '')), owner).rstrip('\n')
 				text = _resolve_runtime_print_exprs(
 					text,
 					frame = frame,
+					const_env = _const_env_for_owner(owner),
 					extra_env = _eval_env_for_owner(owner),
 					strict = strict_print_exprs,
 				)
