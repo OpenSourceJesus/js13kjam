@@ -2198,6 +2198,12 @@ def _serialize_print_call_text (call_node, const_env = None, expr_env = None, rb
 					repl = _expr_env_value_to_ast(expr_env[n.id])
 					if repl is not None:
 						return ast.copy_location(repl, n)
+				if n.id in rb_alias and isinstance(rb_alias.get(n.id), str):
+					try:
+						repl = ast.parse('get_rigidbody(' + repr(rb_alias.get(n.id)) + ')', mode = 'eval').body
+						return ast.copy_location(repl, n)
+					except Exception:
+						pass
 				return n
 		try:
 			new_node = _InlineNameTransformer().visit(copy.deepcopy(node))
@@ -2205,11 +2211,12 @@ def _serialize_print_call_text (call_node, const_env = None, expr_env = None, rb
 		except Exception:
 			return node
 	def _serialize_print_arg (node):
+		if isinstance(node, ast.Name) and node.id in rb_alias and isinstance(rb_alias.get(node.id), str):
+			return '<expr:get_rigidbody(' + repr(rb_alias.get(node.id)) + ')>'
 		if isinstance(node, ast.Call):
 			func = node.func
 			if (
 				isinstance(func, ast.Attribute)
-				and func.attr == 'get_linear_velocity'
 				and isinstance(func.value, ast.Name)
 				and func.value.id in ('sim', 'physics')
 				and len(node.args or []) >= 1
@@ -2218,8 +2225,26 @@ def _serialize_print_call_text (call_node, const_env = None, expr_env = None, rb
 				if rb_kind == 'name_ref' and rb_value in rb_alias:
 					rb_kind = 'key'
 					rb_value = rb_alias.get(rb_value)
-				if rb_kind == 'key' and isinstance(rb_value, str) and rb_value in vel_env:
-					return list(vel_env[rb_value])
+				if rb_kind == 'key' and isinstance(rb_value, str):
+					call_name = str(func.attr)
+					# Emit a runtime handle lookup so alias vars (e.g. body) don't need
+					# to be present in mirror-eval locals for velocity/position reads.
+					if call_name in (
+						'get_linear_velocity',
+						'get_rigid_body_position',
+						'get_rigid_body_rotation',
+						'get_angular_velocity',
+						'get_rigid_body_enabled',
+						'get_gravity_scale',
+					):
+						arg_exprs = ['get_rigidbody(' + repr(rb_value) + ')']
+						for extra_arg in list(node.args[1:] or []):
+							extra_ser = _serialize_script_expr(_inline_name_refs(extra_arg))
+							if isinstance(extra_ser, str) and extra_ser.startswith('<expr:') and extra_ser.endswith('>'):
+								arg_exprs.append(extra_ser[6:-1])
+							else:
+								arg_exprs.append(repr(extra_ser))
+						return '<expr:' + func.value.id + '.' + call_name + '(' + ', '.join(arg_exprs) + ')>'
 		inlined = _inline_name_refs(node)
 		return _serialize_script_expr(inlined)
 	sep = ' '
@@ -2395,12 +2420,25 @@ def _extract_print_calls_from_stmts (stmts, is_init : bool, owner_name : str, pa
 				rb_alias.pop(assigned_name, None)
 	return prints
 
-def _extract_print_calls_from_script (code : str, is_init : bool, owner_name : str):
+def _extract_print_calls_from_script (code : str, is_init : bool, owner_name : str, const_env = None, expr_env = None, rb_alias = None, vel_env = None):
 	try:
 		tree = ast.parse(code or '')
 	except Exception:
 		return []
-	return _extract_print_calls_from_stmts(getattr(tree, 'body', []), is_init, owner_name, parent_condition = None, const_env = {}, expr_env = {})
+	const_env = const_env if isinstance(const_env, dict) else {}
+	expr_env = expr_env if isinstance(expr_env, dict) else {}
+	rb_alias = rb_alias if isinstance(rb_alias, dict) else {}
+	vel_env = vel_env if isinstance(vel_env, dict) else {}
+	return _extract_print_calls_from_stmts(
+		getattr(tree, 'body', []),
+		is_init,
+		owner_name,
+		parent_condition = None,
+		const_env = const_env,
+		expr_env = expr_env,
+		rb_alias = rb_alias,
+		vel_env = vel_env,
+	)
 
 def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries : list):
 	if not isinstance(script_runtime, dict):
@@ -2427,10 +2465,22 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		)
 		existing_print_keys.add(key)
 		print_calls.append(info)
-	for entry in script_entries or []:
+	entries = list(script_entries or [])
+	# Match runtime semantics: init scripts run before update scripts.
+	entries.sort(key = lambda e: (0 if bool((e or {}).get('is_init')) else 1))
+	print_env_by_owner = {}
+	for entry in entries:
 		code = entry.get('code', '')
 		is_init = bool(entry.get('is_init'))
 		owner_name = entry.get('owner_name') or '__world__'
+		if owner_name not in print_env_by_owner:
+			print_env_by_owner[owner_name] = {
+				'const_env' : {},
+				'expr_env' : {},
+				'rb_alias' : {},
+				'vel_env' : {},
+			}
+		env = print_env_by_owner[owner_name]
 		extracted = _extract_dynamic_draw_circles_from_script(code, is_init)
 		for circle in extracted:
 			target_type = circle.get('target_type')
@@ -2454,7 +2504,15 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 				})
 			else:
 				continue
-		for info in _extract_print_calls_from_script(code, is_init, owner_name):
+		for info in _extract_print_calls_from_script(
+			code,
+			is_init,
+			owner_name,
+			const_env = env['const_env'],
+			expr_env = env['expr_env'],
+			rb_alias = env['rb_alias'],
+			vel_env = env['vel_env'],
+		):
 			key = (
 				bool(info.get('is_init')),
 				str(info.get('owner_name') or '__world__'),
@@ -2476,30 +2534,56 @@ def _gbc_script_physics_prelude ():
 		'try:\n'
 		'    rigidBodiesRaw = rigidBodiesIds\n'
 		'except:\n'
-		'    rigidBodiesRaw = {}\n'
+		'    try:\n'
+		'        rigidBodiesRaw = rigidBodies\n'
+		'    except:\n'
+		'        rigidBodiesRaw = {}\n'
 		'try:\n'
 		'    collidersRaw = collidersIds\n'
 		'except:\n'
-		'    collidersRaw = {}\n'
+		'    try:\n'
+		'        collidersRaw = colliders\n'
+		'    except:\n'
+		'        collidersRaw = {}\n'
 		'rigidBodies = {}\n'
 		'colliders = {}\n'
 		'for k, v in (list(rigidBodiesRaw.items()) if isinstance(rigidBodiesRaw, dict) else []):\n'
-		'    rigidBodies[k] = v\n'
+		'    if not ((k in rigidBodies) and (rigidBodies.get(k) is not None) and (v is None)):\n'
+		'        rigidBodies[k] = v\n'
 		'    if isinstance(k, str) and k.startswith("_") and len(k) > 1:\n'
-		'        rigidBodies.setdefault(k[1:], v)\n'
+		'        k2 = k[1:]\n'
+		'        if (k2 not in rigidBodies) or (rigidBodies.get(k2) is None):\n'
+		'            rigidBodies[k2] = v\n'
 		'for k, v in (list(collidersRaw.items()) if isinstance(collidersRaw, dict) else []):\n'
-		'    colliders[k] = v\n'
+		'    if not ((k in colliders) and (colliders.get(k) is not None) and (v is None)):\n'
+		'        colliders[k] = v\n'
 		'    if isinstance(k, str) and k.startswith("_") and len(k) > 1:\n'
-		'        colliders.setdefault(k[1:], v)\n'
+		'        k2 = k[1:]\n'
+		'        if (k2 not in colliders) or (colliders.get(k2) is None):\n'
+		'            colliders[k2] = v\n'
 		'def _gbc_lookup_handle(_dict, _name):\n'
 		'    if not isinstance(_dict, dict):\n'
 		'        return None\n'
 		'    if _name in _dict:\n'
-		'        return _dict[_name]\n'
+		'        direct_exact = _dict[_name]\n'
+		'        if direct_exact is not None:\n'
+		'            return direct_exact\n'
 		'    if isinstance(_name, str):\n'
 		'        if _name.startswith("_"):\n'
-		'            return _dict.get(_name[1:])\n'
-		'        return _dict.get("_" + _name)\n'
+		'            direct = _dict.get(_name[1:])\n'
+		'            if direct is not None:\n'
+		'                return direct\n'
+		'        else:\n'
+		'            direct = _dict.get("_" + _name)\n'
+		'            if direct is not None:\n'
+		'                return direct\n'
+		'        name_norm = _name.lstrip("_").lower()\n'
+		'        for k, v in list(_dict.items()):\n'
+		'            if not isinstance(k, str):\n'
+		'                continue\n'
+		'            k_norm = k.lstrip("_").lower()\n'
+		'            if k_norm == name_norm or k_norm.endswith("_" + name_norm) or k_norm.endswith(name_norm):\n'
+		'                return v\n'
 		'    return None\n'
 		'class _GbcPhysicsSimCompat:\n'
 		'    def __init__(self):\n'
@@ -2560,6 +2644,90 @@ def _gbc_script_physics_prelude ():
 		'    sim = _GbcPhysicsSimCompat()\n'
 		'if not hasattr(sim, "set_linear_velocity"):\n'
 		'    sim = _GbcPhysicsSimCompat()\n'
+		'def _js13k_gbc_resolve_rb_handle(_rb):\n'
+		'    try:\n'
+		'        if isinstance(_rb, str):\n'
+		'            h = _gbc_lookup_handle(rigidBodies, _rb)\n'
+		'            if h is not None:\n'
+		'                return h\n'
+		'    except:\n'
+		'        pass\n'
+		'    return _rb\n'
+		'if hasattr(sim, "get_rigid_body_position") and not getattr(sim, "_js13k_gbc_get_rbpos_safe", False):\n'
+		'    _js13k_gbc_orig_get_rigid_body_position = sim.get_rigid_body_position\n'
+		'    def _js13k_gbc_get_rigid_body_position_safe(rigidBody):\n'
+		'        rb_resolved = _js13k_gbc_resolve_rb_handle(rigidBody)\n'
+		'        pos = None\n'
+		'        try:\n'
+		'            pos = _js13k_gbc_orig_get_rigid_body_position(rb_resolved)\n'
+		'        except:\n'
+		'            pos = None\n'
+		'        if (pos is None) and (rb_resolved is not rigidBody):\n'
+		'            try:\n'
+		'                pos = _js13k_gbc_orig_get_rigid_body_position(rigidBody)\n'
+		'            except:\n'
+		'                pos = None\n'
+		'        try:\n'
+		'            return [float(pos[0]), float(pos[1])]\n'
+		'        except:\n'
+		'            return [0.0, 0.0]\n'
+		'    sim.get_rigid_body_position = _js13k_gbc_get_rigid_body_position_safe\n'
+		'    sim._js13k_gbc_get_rbpos_safe = True\n'
+		'if hasattr(sim, "set_linear_velocity") and not getattr(sim, "_js13k_gbc_flip_linvel_y", False):\n'
+		'    _js13k_gbc_orig_set_linear_velocity = sim.set_linear_velocity\n'
+		'    def _js13k_gbc_set_linear_velocity_flipy(rigidBody, vel, wakeUp = True):\n'
+		'        try:\n'
+		'            vx = vel[0]\n'
+		'            vy = -vel[1]\n'
+		'            vel2 = [vx, vy]\n'
+		'        except:\n'
+		'            vel2 = vel\n'
+		'        return _js13k_gbc_orig_set_linear_velocity(rigidBody, vel2, wakeUp)\n'
+		'    sim.set_linear_velocity = _js13k_gbc_set_linear_velocity_flipy\n'
+		'    sim._js13k_gbc_flip_linvel_y = True\n'
+		'if hasattr(sim, "get_linear_velocity") and hasattr(sim, "get_rigid_body_position") and not getattr(sim, "_js13k_gbc_get_linvel_safe", False):\n'
+		'    _js13k_gbc_orig_get_linear_velocity = sim.get_linear_velocity\n'
+		'    _js13k_gbc_prev_linvel_pos = {}\n'
+		'    _js13k_gbc_prev_linvel_t = {}\n'
+		'    def _js13k_gbc_get_linear_velocity_safe(rigidBody):\n'
+		'        rigidBody = _js13k_gbc_resolve_rb_handle(rigidBody)\n'
+		'        key = str(rigidBody)\n'
+		'        vel = None\n'
+		'        try:\n'
+		'            vel = _js13k_gbc_orig_get_linear_velocity(rigidBody)\n'
+		'        except:\n'
+		'            vel = None\n'
+		'        vx = 0.0\n'
+		'        vy = 0.0\n'
+		'        has_nonzero_vel = False\n'
+		'        try:\n'
+		'            vx = float(vel[0])\n'
+		'            vy = float(vel[1])\n'
+		'            has_nonzero_vel = (abs(vx) > 1e-6) or (abs(vy) > 1e-6)\n'
+		'        except:\n'
+		'            pass\n'
+		'        try:\n'
+		'            pos = sim.get_rigid_body_position(rigidBody)\n'
+		'            px = float(pos[0])\n'
+		'            py = float(pos[1])\n'
+		'            try:\n'
+		'                t_now = float(pygame.time.get_ticks()) * 0.001\n'
+		'            except:\n'
+		'                t_now = None\n'
+		'            prev_pos = _js13k_gbc_prev_linvel_pos.get(key)\n'
+		'            prev_t = _js13k_gbc_prev_linvel_t.get(key)\n'
+		'            _js13k_gbc_prev_linvel_pos[key] = [px, py]\n'
+		'            _js13k_gbc_prev_linvel_t[key] = t_now\n'
+		'            if (not has_nonzero_vel) and (prev_pos is not None) and (t_now is not None) and (prev_t is not None):\n'
+		'                dt = t_now - prev_t\n'
+		'                if dt > 1e-6:\n'
+		'                    vx = (px - float(prev_pos[0])) / dt\n'
+		'                    vy = (py - float(prev_pos[1])) / dt\n'
+		'        except:\n'
+		'            pass\n'
+		'        return [vx, vy]\n'
+		'    sim.get_linear_velocity = _js13k_gbc_get_linear_velocity_safe\n'
+		'    sim._js13k_gbc_get_linvel_safe = True\n'
 		'rigidbodies = rigidBodies\n'
 		'physics = sim\n'
 		'try:\n'
@@ -5031,30 +5199,35 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 		key_state = _runtime_key_state_snapshot()
 		try:
 			runtime_globals = __import__('builtins').globals()
-			rigid_bodies_runtime = runtime_globals.get('rigidBodiesIds', runtime_globals.get('rigidBodies', {}))
+			rigid_bodies_runtime = extra_env.get('rigidBodiesIds', extra_env.get('rigidBodies', runtime_globals.get('rigidBodiesIds', runtime_globals.get('rigidBodies', {}))))
 			if not isinstance(rigid_bodies_runtime, dict):
 				rigid_bodies_runtime = {}
-			colliders_runtime = runtime_globals.get('collidersIds', runtime_globals.get('colliders', {}))
+			colliders_runtime = extra_env.get('collidersIds', extra_env.get('colliders', runtime_globals.get('collidersIds', runtime_globals.get('colliders', {}))))
 			if not isinstance(colliders_runtime, dict):
 				colliders_runtime = {}
-			# GBA/GBC print mirror can run without live Python physics state.
-			# In that case, synthesize a name->id map from exported Blender objects
-			# so lookups like rigidBodies.get("Player") still reflect scene bindings.
-			if not rigid_bodies_runtime:
-				try:
-					bpy_mod = runtime_globals.get('bpy')
-					if bpy_mod is not None and hasattr(bpy_mod, 'data') and hasattr(bpy_mod.data, 'objects'):
-						synth = {}
-						for ob in list(getattr(bpy_mod.data, 'objects', []) or []):
-							if not bool(getattr(ob, 'exportOb', False)):
-								continue
-							if not bool(getattr(ob, 'rigidBodyExists', False)):
-								continue
-							key = GetVarNameForObject(ob)
-							synth[key] = key
-						rigid_bodies_runtime = synth
-				except Exception:
-					pass
+			# GBA/GBC print mirror can run with partial runtime state.
+			# Always augment with exported object names to make get_rigidbody lookups
+			# robust against naming differences between script and runtime bindings.
+			try:
+				bpy_mod = runtime_globals.get('bpy')
+				if bpy_mod is not None and hasattr(bpy_mod, 'data') and hasattr(bpy_mod.data, 'objects'):
+					synth = {}
+					for ob in list(getattr(bpy_mod.data, 'objects', []) or []):
+						if not bool(getattr(ob, 'exportOb', False)):
+							continue
+						if not bool(getattr(ob, 'rigidBodyExists', False)):
+							continue
+						key = str(GetVarNameForObject(ob))
+						if key:
+							synth.setdefault(key, key)
+						name_key = str(getattr(ob, 'name', '') or '')
+						if name_key:
+							synth.setdefault(name_key, key if key else name_key)
+							synth.setdefault('_' + name_key, key if key else name_key)
+					for k, v in synth.items():
+						rigid_bodies_runtime.setdefault(k, v)
+			except Exception:
+				pass
 			rigid_bodies_named = dict(rigid_bodies_runtime)
 			for k, v in list(rigid_bodies_runtime.items()):
 				if isinstance(k, str) and k.startswith('_') and len(k) > 1:
@@ -5063,7 +5236,7 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 			for k, v in list(colliders_runtime.items()):
 				if isinstance(k, str) and k.startswith('_') and len(k) > 1:
 					colliders_named.setdefault(k[1:], v)
-			sim_runtime = runtime_globals.get('sim', runtime_globals.get('physics', None))
+			sim_runtime = extra_env.get('sim', extra_env.get('physics', runtime_globals.get('sim', runtime_globals.get('physics', None))))
 			if sim_runtime is None:
 				all_script_locals = runtime_globals.get('scriptLocals', {})
 				if isinstance(all_script_locals, dict):
@@ -5073,17 +5246,31 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 							if _candidate is not None:
 								sim_runtime = _candidate
 								break
-			if sim_runtime is None or not hasattr(sim_runtime, 'set_linear_velocity'):
+			if sim_runtime is None or not hasattr(sim_runtime, 'get_linear_velocity'):
 				sim_runtime = compat_sim
 			def _lookup_runtime_handle (_dict, _name):
 				if not isinstance(_dict, dict):
 					return None
 				if _name in _dict:
-					return _dict[_name]
+					direct_exact = _dict[_name]
+					if direct_exact is not None:
+						return direct_exact
 				if isinstance(_name, str):
 					if _name.startswith('_'):
-						return _dict.get(_name[1:])
-					return _dict.get('_' + _name)
+						direct = _dict.get(_name[1:])
+						if direct is not None:
+							return direct
+					else:
+						direct = _dict.get('_' + _name)
+						if direct is not None:
+							return direct
+					name_norm = _name.lstrip('_').lower()
+					for k, v in list(_dict.items()):
+						if not isinstance(k, str):
+							continue
+						k_norm = k.lstrip('_').lower()
+						if k_norm == name_norm or k_norm.endswith('_' + name_norm) or k_norm.endswith(name_norm):
+							return v
 				return None
 			class _EvalLocals(dict):
 				def __missing__ (self, key):
@@ -5091,6 +5278,13 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 			eval_locals = _EvalLocals({
 				'int' : int,
 				'float' : float,
+				'type' : type,
+				'str' : str,
+				'repr' : repr,
+				'len' : len,
+				'list' : list,
+				'tuple' : tuple,
+				'dict' : dict,
 				'round' : round,
 				'abs' : abs,
 				'max' : max,
@@ -5173,18 +5367,41 @@ def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
 	thread.start()
 	_GBA_EMU_PROCS.append((proc, thread))
 
-def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = 'gba-py', strict_print_exprs : bool = False):
+def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = 'gba-py', strict_print_exprs : bool = False, runtime_env = None, mirror_step = None):
 	print_calls = list((script_runtime or {}).get('print_calls') or [])
 	init_calls = [p for p in print_calls if p.get('is_init')]
 	update_calls = [p for p in print_calls if not p.get('is_init')]
 	if not init_calls and not update_calls:
 		return
+	runtime_env = runtime_env if isinstance(runtime_env, dict) else {}
 	def _runner():
 		frame = 0
 		init_printed = False
 		per_script_locals = __import__('builtins').globals().get('scriptLocals', {})
 		if not isinstance(per_script_locals, dict):
 			per_script_locals = {}
+		shared_scope_env = {}
+		for scope in per_script_locals.values():
+			if isinstance(scope, dict):
+				for k, v in scope.items():
+					# Keep the first-seen binding to preserve stable handles/state.
+					if k not in shared_scope_env:
+						shared_scope_env[k] = v
+		def _eval_env_for_owner(owner):
+			owner_scope = per_script_locals.get(owner, {})
+			if not isinstance(owner_scope, dict):
+				owner_scope = {}
+			env = dict(shared_scope_env)
+			env.update(owner_scope)
+			if runtime_env:
+				# Mirror/runtime physics bindings must win over per-script locals.
+				for k in ('sim', 'physics', 'rigidBodies', 'rigidBodiesIds', 'colliders', 'collidersIds'):
+					if k in runtime_env:
+						env[k] = runtime_env[k]
+				for k, v in runtime_env.items():
+					if k not in env:
+						env[k] = v
+			return env
 		def _should_emit (info, frame):
 			cond = info.get('condition')
 			if cond is None or cond == '':
@@ -5193,8 +5410,19 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			if val is None:
 				return False
 			return abs(float(val)) > 1e-9
+		try:
+			_probe_env = _eval_env_for_owner('__world__')
+			_probe_sim = _probe_env.get('sim', _probe_env.get('physics'))
+			print(f"[{script_label}:mirror] sim={type(_probe_sim).__name__}")
+		except Exception:
+			pass
 		while proc.poll() is None:
 			frame += 1
+			if callable(mirror_step) and frame > 1:
+				try:
+					mirror_step()
+				except Exception:
+					pass
 			if not init_printed:
 				for info in init_calls:
 					if not _should_emit(info, frame):
@@ -5204,7 +5432,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					text = _resolve_runtime_print_exprs(
 						text,
 						frame = frame,
-						extra_env = per_script_locals.get(owner, {}),
+						extra_env = _eval_env_for_owner(owner),
 						strict = strict_print_exprs,
 					)
 					print(f"[{script_label}:init:runtime] {owner} {text}")
@@ -5217,7 +5445,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				text = _resolve_runtime_print_exprs(
 					text,
 					frame = frame,
-					extra_env = per_script_locals.get(owner, {}),
+					extra_env = _eval_env_for_owner(owner),
 					strict = strict_print_exprs,
 				)
 				print(f"[{script_label}:update:runtime] {owner} [f={frame}] {text}")
@@ -6214,6 +6442,138 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None):
 		rects.append((left, top, w_gbc, h_gbc))
 	return rects
 
+class _GbcPhase1MirrorSim:
+	def __init__ (self, x : int, y : int, vx : int, vy : int, grav_step_x : int, grav_step_y : int, sprite_w_px : int, sprite_h_px : int, collider_rects, offscreen_bottom_y : int):
+		self.x = max(0, min(255, int(x)))
+		self.y = max(0, min(255, int(y)))
+		self.vx = max(-127, min(127, int(vx)))
+		self.vy = max(-127, min(127, int(vy)))
+		self.gacc_x = 0
+		self.gacc_y = 0
+		self.grav_step_x = max(-32, min(32, int(grav_step_x)))
+		self.grav_step_y = max(-32, min(32, int(grav_step_y)))
+		self.sprite_w_px = max(8, min(32, int(sprite_w_px)))
+		self.sprite_h_px = max(8, min(32, int(sprite_h_px)))
+		self.collider_rects = list(collider_rects or [])
+		self.offscreen_bottom_y = max(145, min(252, int(offscreen_bottom_y)))
+		self.dead = False
+	def _step_gravity_axis (self, step, acc, vel):
+		if step == 0:
+			return acc, vel
+		mag = max(1, min(32, abs(int(step))))
+		acc = int(acc) + mag
+		if acc >= 16:
+			acc -= 16
+			vel += 1 if step > 0 else -1
+		vel = max(-127, min(127, int(vel)))
+		return int(acc), int(vel)
+	def _is_supported (self):
+		feet_y = int(self.y) + int(self.sprite_h_px)
+		for cx, cy, cw, _ch in self.collider_rects:
+			if feet_y != int(cy):
+				continue
+			right = int(cx) + int(cw)
+			if (int(self.x) + int(self.sprite_w_px)) <= int(cx):
+				continue
+			if int(self.x) >= right:
+				continue
+			return True
+		return False
+	def step (self):
+		if self.dead:
+			return
+		self.gacc_x, self.vx = self._step_gravity_axis(self.grav_step_x, self.gacc_x, self.vx)
+		self.x = (int(self.x) + int(self.vx)) & 0xFF
+		# Keep resting bodies stable on top of colliders instead of re-accelerating each frame.
+		if self.vy >= 0 and self._is_supported():
+			self.vy = 0
+			self.gacc_y = 0
+		else:
+			self.gacc_y, self.vy = self._step_gravity_axis(self.grav_step_y, self.gacc_y, self.vy)
+			self.y = (int(self.y) + int(self.vy)) & 0xFF
+		# Match phase1 runtime: only resolve downward contacts.
+		if self.vy > 0:
+			for cx, cy, cw, _ch in self.collider_rects:
+				right = int(cx) + int(cw)
+				if (self.x + self.sprite_w_px) <= int(cx):
+					continue
+				if self.x >= right:
+					continue
+				if self.y >= int(cy):
+					continue
+				if (self.y + self.sprite_h_px) < int(cy):
+					continue
+				self.y = max(0, int(cy) - self.sprite_h_px)
+				self.vy = 0
+				self.gacc_y = 0
+				break
+		if self.y >= self.offscreen_bottom_y:
+			self.dead = True
+	def set_linear_velocity (self, _rigidBody, vel, wakeUp = True):
+		try:
+			# Mirror script-facing convention (Y-up) while internal phase1 state is Y-down.
+			self.vx = max(-127, min(127, int(round(float(vel[0])))))
+			self.vy = max(-127, min(127, int(round(-float(vel[1])))))
+		except Exception:
+			pass
+	def get_linear_velocity (self, _rigidBody):
+		# Include fractional gravity accumulator so reads are not stuck at 0 between integer steps.
+		vx_f = float(self.vx)
+		vy_f = float(self.vy)
+		if self.grav_step_x != 0:
+			vx_f += (1.0 if self.grav_step_x > 0 else -1.0) * (float(self.gacc_x) / 16.0)
+		if self.grav_step_y != 0:
+			vy_f += (1.0 if self.grav_step_y > 0 else -1.0) * (float(self.gacc_y) / 16.0)
+		return [vx_f, -vy_f]
+	def set_rigid_body_position (self, _rigidBody, pos, wakeUp = True):
+		try:
+			self.x = max(0, min(255, int(round(float(pos[0])))))
+			self.y = max(0, min(255, int(round(-float(pos[1])))))
+		except Exception:
+			pass
+	def get_rigid_body_position (self, _rigidBody):
+		return [float(self.x), -float(self.y)]
+	def set_rigid_body_rotation (self, _rigidBody, rot, wakeUp = True):
+		return None
+	def get_rigid_body_rotation (self, _rigidBody):
+		return 0.0
+	def set_angular_velocity (self, _rigidBody, angVel, wakeUp = True):
+		return None
+	def get_angular_velocity (self, _rigidBody):
+		return 0.0
+
+def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects):
+	if sprite_ob is None:
+		return {}
+	sprite_w_px = max(8, min(32, int(sprite_tiles_w) * 8))
+	sprite_h_px = max(8, min(32, int(sprite_tiles_h) * 8))
+	offscreen_bottom_y = max(145, min(252, 144 + int(sprite_tiles_h) * 8))
+	sim = _GbcPhase1MirrorSim(
+		x = init_x,
+		y = init_y,
+		vx = init_vx,
+		vy = init_vy,
+		grav_step_x = grav_step_x,
+		grav_step_y = grav_step_y,
+		sprite_w_px = sprite_w_px,
+		sprite_h_px = sprite_h_px,
+		collider_rects = collider_rects,
+		offscreen_bottom_y = offscreen_bottom_y,
+	)
+	handle = str(GetVarNameForObject(sprite_ob))
+	rigid_bodies_named = {}
+	for key in [handle, '_' + handle, str(sprite_ob.name), '_' + str(sprite_ob.name)]:
+		if key:
+			rigid_bodies_named[key] = handle
+	return {
+		'sim' : sim,
+		'physics' : sim,
+		'rigidBodies' : rigid_bodies_named,
+		'rigidBodiesIds' : rigid_bodies_named,
+		'colliders' : {},
+		'collidersIds' : {},
+	}
+
 def _ast_numeric_literal (node):
 	try:
 		v = ast.literal_eval(node)
@@ -6222,6 +6582,15 @@ def _ast_numeric_literal (node):
 	if isinstance(v, (int, float)):
 		return float(v)
 	return None
+
+def _ast_numeric_vec2_literal (node):
+	if not isinstance(node, (ast.List, ast.Tuple)) or len(node.elts) < 2:
+		return None
+	vx = _ast_numeric_literal(node.elts[0])
+	vy = _ast_numeric_literal(node.elts[1])
+	if vx is None or vy is None:
+		return None
+	return [float(vx), float(vy)]
 
 def _extract_rigidbody_name_expr (node):
 	if isinstance(node, ast.Name):
@@ -6252,18 +6621,43 @@ def _extract_gbc_phase1_init_velocity_from_code (code : str, target_keys : set):
 	if not target_keys:
 		return None
 	aliases = {}
+	vel_aliases = {}
 	for stmt in _walk_statically_reachable_stmts(getattr(tree, 'body', [])):
 		if isinstance(stmt, ast.Assign):
 			rb_kind = None
 			rb_value = None
 			if stmt.value is not None:
 				rb_kind, rb_value = _extract_rigidbody_name_expr(stmt.value)
+			vel_value = _ast_numeric_vec2_literal(stmt.value) if stmt.value is not None else None
 			for target in list(stmt.targets or []):
 				if isinstance(target, ast.Name):
 					if rb_kind in ('name_ref', 'key'):
 						aliases[target.id] = (rb_kind, rb_value)
 					else:
 						aliases.pop(target.id, None)
+					if vel_value is not None:
+						vel_aliases[target.id] = [float(vel_value[0]), float(vel_value[1])]
+					else:
+						vel_aliases.pop(target.id, None)
+			continue
+		if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+			rb_kind = None
+			rb_value = None
+			if stmt.value is not None:
+				rb_kind, rb_value = _extract_rigidbody_name_expr(stmt.value)
+			if rb_kind in ('name_ref', 'key'):
+				aliases[stmt.target.id] = (rb_kind, rb_value)
+			else:
+				aliases.pop(stmt.target.id, None)
+			vel_value = _ast_numeric_vec2_literal(stmt.value) if stmt.value is not None else None
+			if vel_value is not None:
+				vel_aliases[stmt.target.id] = [float(vel_value[0]), float(vel_value[1])]
+			else:
+				vel_aliases.pop(stmt.target.id, None)
+			continue
+		if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+			aliases.pop(stmt.target.id, None)
+			vel_aliases.pop(stmt.target.id, None)
 			continue
 		if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
 			call = stmt.value
@@ -6282,13 +6676,20 @@ def _extract_gbc_phase1_init_velocity_from_code (code : str, target_keys : set):
 			if rb_value not in target_keys:
 				continue
 			vel = call.args[1]
-			if not isinstance(vel, (ast.List, ast.Tuple)) or len(vel.elts) < 2:
-				continue
-			vx = _ast_numeric_literal(vel.elts[0])
-			vy = _ast_numeric_literal(vel.elts[1])
+			if isinstance(vel, ast.Name) and vel.id in vel_aliases:
+				vx = float(vel_aliases[vel.id][0])
+				vy = float(vel_aliases[vel.id][1])
+			else:
+				vel_value = _ast_numeric_vec2_literal(vel)
+				if vel_value is None:
+					continue
+				vx = float(vel_value[0])
+				vy = float(vel_value[1])
 			if vx is None or vy is None:
 				continue
-			return (int(round(vx)), int(round(vy)))
+			# gbc-py scripts use screen-space Y where positive is down, so
+			# set_linear_velocity input Y is flipped before simulation.
+			return (int(round(vx)), int(round(-vy)))
 	return None
 
 def _extract_gbc_phase1_init_velocity (world, sprite_ob):
@@ -6747,6 +7148,93 @@ def _gba_try_import_pyrapier2d ():
 		print('GBA export: PyRapier2d namespace paths:', list(mod_path))
 	print('GBA export: PyRapier2d import resolved to', mod_file or '<namespace package>', 'without Simulation; skipping Rapier bake.')
 	return None
+
+def _build_runtime_print_physics_env (world, scene_obs):
+	if not bool(getattr(world, 'usePhysics', True)):
+		return {}
+	py_rapier = _gba_try_import_pyrapier2d()
+	if not py_rapier:
+		return {}
+	physics_obs = [ob for ob in (scene_obs or []) if ob.exportOb and not ob.hide_get() and (getattr(ob, 'rigidBodyExists', False) or getattr(ob, 'colliderExists', False))]
+	if not physics_obs:
+		return {}
+	try:
+		sim = py_rapier.Simulation()
+		sim.set_length_unit(float(world.unitLen))
+		gravity = [0.0, 0.0]
+		if bpy.context.scene.use_gravity:
+			g = list(bpy.context.scene.gravity)
+			gravity = [float(g[0]), float(g[1])]
+		sim.set_gravity(gravity[0], gravity[1])
+	except Exception:
+		return {}
+	rigid_bodies_by_name = {}
+	rigid_bodies_named = {}
+	colliders_named = {}
+	for ob in physics_obs:
+		if not getattr(ob, 'rigidBodyExists', False):
+			continue
+		try:
+			pos, rot_deg = _gba_get_object_pose(ob)
+			_type = RIGID_BODY_TYPES.index(ob.rigidBodyType) if ob.rigidBodyType in RIGID_BODY_TYPES else 0
+			handle = sim.add_rigid_body(
+				ob.rigidBodyEnable,
+				_type,
+				pos,
+				rot_deg,
+				ob.gravityScale,
+				ob.dominance,
+				ob.canRot,
+				ob.linearDrag,
+				ob.angDrag,
+				ob.canSleep,
+				ob.continuousCollideDetect,
+			)
+		except Exception:
+			continue
+		rigid_bodies_by_name[ob.name] = handle
+		for key in [ob.name, '_' + ob.name]:
+			rigid_bodies_named.setdefault(key, handle)
+		try:
+			var_name = GetVarNameForObject(ob)
+		except Exception:
+			var_name = ''
+		if isinstance(var_name, str) and var_name:
+			for key in [var_name, '_' + var_name]:
+				rigid_bodies_named.setdefault(key, handle)
+	for ob in physics_obs:
+		membership, filter_mask = _gba_get_collision_groups(ob)
+		attach_targets = []
+		for i in range(MAX_ATTACH_COLLIDER_CNT):
+			if getattr(ob, 'attach%i' %i):
+				attach_ob = getattr(ob, 'attachTo%i' %i)
+				if attach_ob and attach_ob.name in rigid_bodies_by_name:
+					attach_targets.append(rigid_bodies_by_name[attach_ob.name])
+		if ob.name in rigid_bodies_by_name and not attach_targets:
+			attach_targets = [rigid_bodies_by_name[ob.name]]
+		if not getattr(ob, 'colliderExists', False):
+			continue
+		targets = attach_targets or [None]
+		for idx, attach_to in enumerate(targets):
+			try:
+				collider_handle = _gba_add_cuboid_collider_for_object(sim, ob, membership, filter_mask, attach_to = attach_to)
+			except Exception:
+				continue
+			if idx == 0:
+				colliders_named.setdefault(ob.name, collider_handle)
+				colliders_named.setdefault('_' + ob.name, collider_handle)
+			else:
+				key = ob.name + str(idx)
+				colliders_named.setdefault(key, collider_handle)
+				colliders_named.setdefault('_' + key, collider_handle)
+	return {
+		'sim' : sim,
+		'physics' : sim,
+		'rigidBodies' : rigid_bodies_named,
+		'rigidBodiesIds' : rigid_bodies_named,
+		'colliders' : colliders_named,
+		'collidersIds' : colliders_named,
+	}
 
 def _gba_get_collision_groups (ob):
 	membership = 0
@@ -7286,7 +7774,18 @@ def BuildGba (world):
 				bufsize = 1,
 			)
 			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
-			_start_gba_update_print_mirror(proc, script_runtime, strict_print_exprs = False)
+			runtime_print_env = _build_runtime_print_physics_env(world, scene_obs)
+			mirror_step = None
+			sim_runtime = runtime_print_env.get('sim')
+			if sim_runtime is not None and hasattr(sim_runtime, 'step'):
+				mirror_step = sim_runtime.step
+			_start_gba_update_print_mirror(
+				proc,
+				script_runtime,
+				strict_print_exprs = False,
+				runtime_env = runtime_print_env,
+				mirror_step = mirror_step,
+			)
 		except FileNotFoundError:
 			print('mgba-qt not found in PATH; open the ROM manually:', rom_path)
 	finally:
@@ -7429,7 +7928,33 @@ def BuildGbc (world):
 				bufsize = 1,
 			)
 			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
-			_start_gba_update_print_mirror(proc, script_runtime, script_label = 'gbc-py', strict_print_exprs = True)
+			if has_physics:
+				runtime_print_env = _build_gbc_phase1_print_env(
+					sprite_ob,
+					sprite_tiles_w,
+					sprite_tiles_h,
+					init_x,
+					init_y,
+					init_vx,
+					init_vy,
+					grav_step_x,
+					grav_step_y,
+					collider_rects,
+				)
+			else:
+				runtime_print_env = _build_runtime_print_physics_env(world, scene_obs)
+			mirror_step = None
+			sim_runtime = runtime_print_env.get('sim')
+			if sim_runtime is not None and hasattr(sim_runtime, 'step'):
+				mirror_step = sim_runtime.step
+			_start_gba_update_print_mirror(
+				proc,
+				script_runtime,
+				script_label = 'gbc-py',
+				strict_print_exprs = True,
+				runtime_env = runtime_print_env,
+				mirror_step = mirror_step,
+			)
 		except FileNotFoundError:
 			print('mgba-qt not found in PATH; open the ROM manually:', rom_path)
 	finally:
