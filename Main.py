@@ -5421,6 +5421,7 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 	'''Resolve <expr:...> print placeholders to runtime values.'''
 	if not isinstance(text, str):
 		text = str(text)
+	had_expr_placeholder = ('<expr:' in text.lower())
 	const_env = const_env if isinstance(const_env, dict) else {}
 	extra_env = extra_env if isinstance(extra_env, dict) else {}
 	if frame is not None:
@@ -5486,8 +5487,25 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				return (lambda *args, **kwargs: None)
 			return (lambda *args, **kwargs: 0)
 	compat_sim = _RuntimePrintSimCompat()
-	def _eval_expr (m):
-		expr = m.group(1).strip()
+	def _eval_expr_text (expr):
+		expr = str(expr).strip()
+		def _coerce_numeric_like_in_containers (_val):
+			if isinstance(_val, list):
+				return [_coerce_numeric_like_in_containers(v) for v in _val]
+			if isinstance(_val, tuple):
+				return tuple(_coerce_numeric_like_in_containers(v) for v in _val)
+			if isinstance(_val, dict):
+				return {k : _coerce_numeric_like_in_containers(v) for k, v in _val.items()}
+			if isinstance(_val, str):
+				txt = _val.strip()
+				if re.fullmatch(r'[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?', txt):
+					try:
+						if re.fullmatch(r'[+-]?\d+', txt):
+							return int(txt)
+						return float(txt)
+					except Exception:
+						return _val
+			return _val
 		# Replace supported runtime function calls with numeric values first.
 		expr_with_ticks = _replace_runtime_ticks_calls(expr, ticks)
 		expr_eval = _replace_runtime_key_calls(expr_with_ticks)
@@ -5649,6 +5667,8 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				return expr_eval
 			if isinstance(val, (int, float, bool, str)):
 				return str(val)
+			if isinstance(val, (list, tuple, dict)):
+				return str(_coerce_numeric_like_in_containers(val))
 			return str(val)
 		except Exception:
 			# Best-effort lookup for simple names from script locals/global runtime state.
@@ -5668,7 +5688,104 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				raise RuntimeError(f"Invalid script print expression: {expr!r}")
 			# Keep runtime print mirroring non-fatal for dynamic/unavailable symbols.
 			return expr_eval
-	text = re.sub(r'<expr:\s*([^<>]*)\s*>', _eval_expr, text, flags = re.IGNORECASE)
+	def _replace_runtime_expr_placeholders (_text):
+		src = str(_text)
+		src_lower = src.lower()
+		out = []
+		i = 0
+		while True:
+			start = src_lower.find('<expr:', i)
+			if start < 0:
+				out.append(src[i:])
+				break
+			out.append(src[i:start])
+			j = start + len('<expr:')
+			k = j
+			paren_depth = 0
+			bracket_depth = 0
+			brace_depth = 0
+			in_quote = None
+			escape = False
+			close_idx = -1
+			while k < len(src):
+				ch = src[k]
+				if in_quote is not None:
+					if escape:
+						escape = False
+					elif ch == '\\':
+						escape = True
+					elif ch == in_quote:
+						in_quote = None
+				else:
+					if ch == "'" or ch == '"':
+						in_quote = ch
+					elif ch == '(':
+						paren_depth += 1
+					elif ch == ')' and paren_depth > 0:
+						paren_depth -= 1
+					elif ch == '[':
+						bracket_depth += 1
+					elif ch == ']' and bracket_depth > 0:
+						bracket_depth -= 1
+					elif ch == '{':
+						brace_depth += 1
+					elif ch == '}' and brace_depth > 0:
+						brace_depth -= 1
+					elif ch == '>' and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
+						close_idx = k
+						break
+				k += 1
+			if close_idx < 0:
+				# Leave unmatched placeholder text intact for strict-mode error handling.
+				out.append(src[start:])
+				break
+			expr = src[j:close_idx].strip()
+			out.append(_eval_expr_text(expr))
+			i = close_idx + 1
+		return ''.join(out)
+	def _replace_simple_runtime_expr_placeholders (_text):
+		return re.sub(
+			r'(?i)<expr:\s*([^>]*)\s*>',
+			(lambda m: _eval_expr_text(m.group(1))),
+			str(_text),
+		)
+	def _normalize_runtime_print_text (_text):
+		txt = str(_text)
+		src = txt.strip()
+		if src == '':
+			return txt
+		def _coerce_numeric_like (_val):
+			if isinstance(_val, list):
+				return [_coerce_numeric_like(v) for v in _val]
+			if isinstance(_val, tuple):
+				return tuple(_coerce_numeric_like(v) for v in _val)
+			if isinstance(_val, dict):
+				return {k : _coerce_numeric_like(v) for k, v in _val.items()}
+			if isinstance(_val, str):
+				num = _val.strip()
+				if re.fullmatch(r'[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?', num):
+					try:
+						if re.fullmatch(r'[+-]?\d+', num):
+							return int(num)
+						return float(num)
+					except Exception:
+						return _val
+			return _val
+		try:
+			val = ast.literal_eval(src)
+		except Exception:
+			return txt
+		val = _coerce_numeric_like(val)
+		if isinstance(val, str):
+			return val
+		return str(val)
+	_prev = None
+	while text != _prev:
+		_prev = text
+		text = _replace_runtime_expr_placeholders(text)
+	# Fallback for any residual simple placeholders (e.g. quoted '<expr:...>').
+	if '<expr:' in text.lower():
+		text = _replace_simple_runtime_expr_placeholders(text)
 	# Last-resort cleanup if any expression wrapper still leaks through.
 	if '<expr:' in text.lower():
 		if strict:
@@ -5680,6 +5797,8 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 	else:
 		text = _replace_runtime_ticks_calls(text, ticks)
 		text = _replace_runtime_key_calls(text)
+	if had_expr_placeholder:
+		text = _normalize_runtime_print_text(text)
 	return text
 
 def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
@@ -6394,7 +6513,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		x_no_v_addr = len(code)
 		patch_jr(jr_x_no_v, x_no_v_addr)
 	control_mode = str(control_mode or 'none')
-	if control_mode == 'dpad_lr':
+	if control_mode == 'dpad_lr' or control_mode == 'dpad_lr_a_jump':
 		# Sample d-pad each frame and map right/left to +/-1 horizontal velocity.
 		# Match common gbc-py movement scripts: neither/both pressed => vx = 0.
 		ld_a_imm(0x20)  # P1: select direction keys (P14 low, P15 high)
@@ -6420,6 +6539,20 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		after_lr_addr = len(code)
 		patch_jr(jr_after_lr, after_lr_addr)
 		patch_jr(jr_after_left, after_lr_addr)
+		if control_mode == 'dpad_lr_a_jump':
+			# Map A button to a script-space +1 Y impulse (internal Y-down velocity = -1).
+			ld_a_imm(0x10)  # P1: select action buttons (P15 low, P14 high)
+			ldh_imm_a(0x00)
+			emit(0xF0, 0x00)  # ldh a,(rP1)
+			emit(0xE6, 0x01)  # and $01 (bit0=A; active low)
+			emit(0xFE, 0x00)  # cp $00 (A pressed)
+			jr_not_a = jr(0x20)  # jr nz, no_jump
+			ld_a_imm(0xFF)  # -1
+			emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+			ld_a_imm(0x00)
+			emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
+			no_jump_addr = len(code)
+			patch_jr(jr_not_a, no_jump_addr)
 	elif control_mode == 'vx_from_vy' or control_mode.startswith('vx_from_vy_mul_'):
 		# Script pattern: set_linear_velocity(body, [get_linear_velocity(body)[1] * N, ...]).
 		# Script-space Y is negated internal vy, so vx follows (-N * internal_vy).
@@ -6902,9 +7035,26 @@ class _GbcPhase1MirrorSim:
 		if self.dead:
 			return
 		self.gacc_x, self.vx = self._step_gravity_axis(self.grav_step_x, self.gacc_x, self.vx)
-		scale = _decode_vx_from_vy_mode_scale(self.control_mode)
-		if scale is not None:
-			self.vx = max(-127, min(127, int((-int(scale)) * int(self.vy))))
+		if self.control_mode in ('dpad_lr', 'dpad_lr_a_jump'):
+			keys = _runtime_key_state_snapshot()
+			right_pressed = bool(len(keys) > _RUNTIME_KEY_INDEX['RIGHT'] and keys[_RUNTIME_KEY_INDEX['RIGHT']])
+			left_pressed = bool(len(keys) > _RUNTIME_KEY_INDEX['LEFT'] and keys[_RUNTIME_KEY_INDEX['LEFT']])
+			if right_pressed and (not left_pressed):
+				self.vx = 1
+			elif left_pressed and (not right_pressed):
+				self.vx = -1
+			else:
+				self.vx = 0
+			if self.control_mode == 'dpad_lr_a_jump':
+				a_pressed = bool(len(keys) > _RUNTIME_KEY_INDEX['A'] and keys[_RUNTIME_KEY_INDEX['A']])
+				if a_pressed:
+					# Match phase1 runtime impulse: script-space +1 Y => internal -1.
+					self.vy = -1
+					self.gacc_y = 0
+		else:
+			scale = _decode_vx_from_vy_mode_scale(self.control_mode)
+			if scale is not None:
+				self.vx = max(-127, min(127, int((-int(scale)) * int(self.vy))))
 		self.x = (int(self.x) + int(self.vx)) & 0xFF
 		# Keep resting bodies stable on top of colliders instead of re-accelerating each frame.
 		if self.vy >= 0 and self._is_supported():
@@ -7260,6 +7410,7 @@ def _extract_gbc_phase1_control_mode_from_code (code : str, target_keys : set):
 	aliases = {}
 	vel_expr_aliases = {}
 	has_lr_key_tokens = ('pygame.K_LEFT' in str(code or '')) and ('pygame.K_RIGHT' in str(code or ''))
+	has_a_key_token = ('pygame.K_A' in str(code or ''))
 	for stmt in _walk_statically_reachable_stmts(getattr(tree, 'body', [])):
 		if isinstance(stmt, ast.Assign):
 			rb_kind = None
@@ -7321,6 +7472,8 @@ def _extract_gbc_phase1_control_mode_from_code (code : str, target_keys : set):
 						return mode
 			# Heuristic for common key-driven scripts that write velocity each frame.
 			if has_lr_key_tokens:
+				if has_a_key_token:
+					return 'dpad_lr_a_jump'
 				return 'dpad_lr'
 	return None
 
@@ -7534,6 +7687,45 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list, fr
 			src = owner_members.get(src_owner, {}).get(src_member) if src_member else None
 			if src is not None:
 				members[member] = src
+		elif _type == 'transform_surface_member' and member:
+			src_owner = op.get('src_owner_name') or owner_name
+			src_member = op.get('src_member')
+			src = owner_members.get(src_owner, {}).get(src_member) if src_member else None
+			if src is None:
+				continue
+			method = str(op.get('method') or '').strip().lower()
+			transformed = src.copy()
+			if method in ('scale', 'smoothscale'):
+				size = op.get('size') or [src.shape[1], src.shape[0]]
+				w_val = _eval_runtime_expr_value(size[0], frame = frame, start_time = start_time) if len(size) > 0 else src.shape[1]
+				h_val = _eval_runtime_expr_value(size[1], frame = frame, start_time = start_time) if len(size) > 1 else src.shape[0]
+				try:
+					w = max(1, int(round(float(w_val))))
+				except Exception:
+					w = src.shape[1]
+				try:
+					h = max(1, int(round(float(h_val))))
+				except Exception:
+					h = src.shape[0]
+				transformed = _gba_nn_resize_rgba(src, w, h)
+			elif method == 'rotozoom':
+				angle_val = _eval_runtime_expr_value(op.get('angle', 0.0), frame = frame, start_time = start_time)
+				scale_val = _eval_runtime_expr_value(op.get('scale', 1.0), frame = frame, start_time = start_time)
+				try:
+					angle_deg = float(0.0 if angle_val is None else angle_val)
+				except Exception:
+					angle_deg = 0.0
+				try:
+					scale_factor = float(1.0 if scale_val is None else scale_val)
+				except Exception:
+					scale_factor = 1.0
+				if abs(angle_deg) > 1e-10:
+					transformed = _gba_rotate_rgba_degrees(transformed, angle_deg)
+				if abs(scale_factor - 1.0) > 1e-10:
+					tw = max(1, int(round(transformed.shape[1] * abs(scale_factor))))
+					th = max(1, int(round(transformed.shape[0] * abs(scale_factor))))
+					transformed = _gba_nn_resize_rgba(transformed, tw, th)
+			members[member] = transformed
 		elif _type == 'fill_surface_member' and member:
 			surf = members.get(member)
 			if surf is None:
