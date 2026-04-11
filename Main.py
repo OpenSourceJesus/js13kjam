@@ -12,9 +12,11 @@ from MathUtil import *
 from SystemUtil import *
 try:
 	from py2gba.blender_export import export_gba_py_assembly as _py2gb_export_gba_py_assembly
+	from py2gba.blender_export import normalize_gb_script_code as _py2gb_normalize_gb_script_code
 	from py2gba.blender_export import py2gba_asm as _py2gb_py2gb_asm
 except Exception:
 	_py2gb_export_gba_py_assembly = None
+	_py2gb_normalize_gb_script_code = None
 	_py2gb_py2gb_asm = None
 
 isLinux = False
@@ -1875,7 +1877,7 @@ def _runtime_key_state_snapshot ():
 		out.append(bool(_runtime_x11_key_pressed(btn_map.get(btn, ''))))
 	return tuple(out)
 
-def _eval_runtime_expr_value (value, frame : int = None, start_time : float = None):
+def _eval_runtime_expr_value (value, frame : int = None, start_time : float = None, extra_env : dict = None):
 	if isinstance(value, (int, float)):
 		return float(value)
 	if value is None:
@@ -1897,20 +1899,39 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 	except Exception:
 		pass
 	key_state = _runtime_key_state_snapshot()
+	extra_env = extra_env if isinstance(extra_env, dict) else {}
+	protected_names = set((
+		'int', 'float', 'round', 'abs', 'max', 'min', 'len', 'bool',
+		'hasattr', 'getattr', 'keys', 'js13k_get_pressed',
+	))
+	class _RuntimeExprLocals(dict):
+		def __missing__ (self, _key):
+			return None
+	eval_locals = _RuntimeExprLocals({
+		'int' : int,
+		'float' : float,
+		'round' : round,
+		'abs' : abs,
+		'max' : max,
+		'min' : min,
+		'len' : len,
+		'bool' : bool,
+		'hasattr' : hasattr,
+		'getattr' : getattr,
+		'keys' : key_state,
+		'js13k_get_pressed' : (lambda : key_state),
+	})
+	for k, v in extra_env.items():
+		name = str(k)
+		if re.fullmatch(r'[A-Za-z_]\w*', name) and not name.startswith('__'):
+			if name in protected_names:
+				continue
+			eval_locals[name] = v
 	try:
 		val = eval(
 			expr,
 			{'__builtins__' : {}},
-			{
-				'int' : int,
-				'float' : float,
-				'round' : round,
-				'abs' : abs,
-				'max' : max,
-				'min' : min,
-				'keys' : key_state,
-				'js13k_get_pressed' : (lambda : key_state),
-			},
+			eval_locals,
 		)
 		if isinstance(val, (int, float, bool)):
 			return float(val)
@@ -2735,21 +2756,21 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	entries = list(script_entries or [])
 	# Match runtime semantics: init scripts run before update scripts.
 	entries.sort(key = lambda e: (0 if bool((e or {}).get('is_init')) else 1))
-	print_env_by_owner = {}
+	print_const_env_by_scope = {}
+	print_expr_env_by_scope = {}
 	print_const_env_by_owner = {}
 	print_expr_env_by_owner = {}
-	for entry in entries:
+	for entry_idx, entry in enumerate(entries):
 		code = entry.get('code', '')
 		is_init = bool(entry.get('is_init'))
 		owner_name = entry.get('owner_name') or '__world__'
-		if owner_name not in print_env_by_owner:
-			print_env_by_owner[owner_name] = {
-				'const_env' : {},
-				'expr_env' : {},
-				'rb_alias' : {},
-				'vel_env' : {},
-			}
-		env = print_env_by_owner[owner_name]
+		scope_key = str((owner_name, bool(is_init), entry.get('symbol_hint') or '', int(entry_idx)))
+		env = {
+			'const_env' : {},
+			'expr_env' : {},
+			'rb_alias' : {},
+			'vel_env' : {},
+		}
 		extracted = _extract_dynamic_draw_circles_from_script(code, is_init)
 		for circle in extracted:
 			target_type = circle.get('target_type')
@@ -2796,8 +2817,12 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			if key in extracted_print_keys:
 				continue
 			extracted_print_keys.add(key)
+			info['scope_key'] = scope_key
 			print_calls.append(info)
-		# Persist per-owner compile-time constants for runtime print evaluation.
+		# Persist compile-time constants for runtime print evaluation.
+		print_const_env_by_scope[scope_key] = dict(env.get('const_env', {}))
+		print_expr_env_by_scope[scope_key] = dict(env.get('expr_env', {}))
+		# Backward-compat fallback map (owner scoped) for pre-existing entries.
 		print_const_env_by_owner[owner_name] = dict(env.get('const_env', {}))
 		print_expr_env_by_owner[owner_name] = dict(env.get('expr_env', {}))
 	# Prefer parser-rebuilt print metadata for script owner/phase pairs we handled,
@@ -2823,262 +2848,16 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	script_runtime['update_draw_circles'] = update_draw
 	script_runtime['surface_ops'] = surface_ops
 	script_runtime['print_calls'] = print_calls
+	script_runtime['print_const_env_by_scope'] = print_const_env_by_scope
+	script_runtime['print_expr_env_by_scope'] = print_expr_env_by_scope
 	script_runtime['print_const_env_by_owner'] = print_const_env_by_owner
 	script_runtime['print_expr_env_by_owner'] = print_expr_env_by_owner
 	return script_runtime
 
-def _gbc_script_physics_prelude ():
-	return (
-		'try:\n'
-		'    rigidBodiesRaw = rigidBodiesIds\n'
-		'except:\n'
-		'    try:\n'
-		'        rigidBodiesRaw = rigidBodies\n'
-		'    except:\n'
-		'        rigidBodiesRaw = {}\n'
-		'try:\n'
-		'    collidersRaw = collidersIds\n'
-		'except:\n'
-		'    try:\n'
-		'        collidersRaw = colliders\n'
-		'    except:\n'
-		'        collidersRaw = {}\n'
-		'rigidBodies = {}\n'
-		'colliders = {}\n'
-		'for k, v in (list(rigidBodiesRaw.items()) if isinstance(rigidBodiesRaw, dict) else []):\n'
-		'    if not ((k in rigidBodies) and (rigidBodies.get(k) is not None) and (v is None)):\n'
-		'        rigidBodies[k] = v\n'
-		'    if isinstance(k, str) and k.startswith("_") and len(k) > 1:\n'
-		'        k2 = k[1:]\n'
-		'        if (k2 not in rigidBodies) or (rigidBodies.get(k2) is None):\n'
-		'            rigidBodies[k2] = v\n'
-		'for k, v in (list(collidersRaw.items()) if isinstance(collidersRaw, dict) else []):\n'
-		'    if not ((k in colliders) and (colliders.get(k) is not None) and (v is None)):\n'
-		'        colliders[k] = v\n'
-		'    if isinstance(k, str) and k.startswith("_") and len(k) > 1:\n'
-		'        k2 = k[1:]\n'
-		'        if (k2 not in colliders) or (colliders.get(k2) is None):\n'
-		'            colliders[k2] = v\n'
-		'def _gbc_lookup_handle(_dict, _name):\n'
-		'    if not isinstance(_dict, dict):\n'
-		'        return None\n'
-		'    if _name in _dict:\n'
-		'        direct_exact = _dict[_name]\n'
-		'        if direct_exact is not None:\n'
-		'            return direct_exact\n'
-		'    if isinstance(_name, str):\n'
-		'        if _name.startswith("_"):\n'
-		'            direct = _dict.get(_name[1:])\n'
-		'            if direct is not None:\n'
-		'                return direct\n'
-		'        else:\n'
-		'            direct = _dict.get("_" + _name)\n'
-		'            if direct is not None:\n'
-		'                return direct\n'
-		'        name_norm = _name.lstrip("_").lower()\n'
-		'        for k, v in list(_dict.items()):\n'
-		'            if not isinstance(k, str):\n'
-		'                continue\n'
-		'            k_norm = k.lstrip("_").lower()\n'
-		'            if k_norm == name_norm or k_norm.endswith("_" + name_norm) or k_norm.endswith(name_norm):\n'
-		'                return v\n'
-		'    return None\n'
-		'class _GbcPhysicsSimCompat:\n'
-		'    def __init__(self):\n'
-		'        self._lin_vel = {}\n'
-		'        self._ang_vel = {}\n'
-		'        self._rb_pos = {}\n'
-		'        self._rb_rot = {}\n'
-		'    def _key(self, handle):\n'
-		'        try:\n'
-		'            if handle is None:\n'
-		'                return "__none__"\n'
-		'            return str(handle)\n'
-		'        except:\n'
-		'            return "__unknown__"\n'
-		'    def set_linear_velocity(self, rigidBody, vel, wakeUp = True):\n'
-		'        try:\n'
-		'            vx = float(vel[0])\n'
-		'            vy = float(vel[1])\n'
-		'        except:\n'
-		'            vx = 0.0\n'
-		'            vy = 0.0\n'
-		'        self._lin_vel[self._key(rigidBody)] = [vx, vy]\n'
-		'    def get_linear_velocity(self, rigidBody):\n'
-		'        return list(self._lin_vel.get(self._key(rigidBody), [0.0, 0.0]))\n'
-		'    def set_angular_velocity(self, rigidBody, angVel, wakeUp = True):\n'
-		'        try:\n'
-		'            self._ang_vel[self._key(rigidBody)] = float(angVel)\n'
-		'        except:\n'
-		'            self._ang_vel[self._key(rigidBody)] = 0.0\n'
-		'    def get_angular_velocity(self, rigidBody):\n'
-		'        return float(self._ang_vel.get(self._key(rigidBody), 0.0))\n'
-		'    def set_rigid_body_position(self, rigidBody, pos, wakeUp = True):\n'
-		'        try:\n'
-		'            self._rb_pos[self._key(rigidBody)] = [float(pos[0]), float(pos[1])]\n'
-		'        except:\n'
-		'            self._rb_pos[self._key(rigidBody)] = [0.0, 0.0]\n'
-		'    def get_rigid_body_position(self, rigidBody):\n'
-		'        return list(self._rb_pos.get(self._key(rigidBody), [0.0, 0.0]))\n'
-		'    def set_rigid_body_rotation(self, rigidBody, rot, wakeUp = True):\n'
-		'        try:\n'
-		'            self._rb_rot[self._key(rigidBody)] = float(rot)\n'
-		'        except:\n'
-		'            self._rb_rot[self._key(rigidBody)] = 0.0\n'
-		'    def get_rigid_body_rotation(self, rigidBody):\n'
-		'        return float(self._rb_rot.get(self._key(rigidBody), 0.0))\n'
-		'    def __getattr__(self, _name):\n'
-		'        if isinstance(_name, str) and _name.startswith("get_"):\n'
-		'            return (lambda *args, **kwargs: None)\n'
-		'        return (lambda *args, **kwargs: 0)\n'
-		'try:\n'
-		'    sim = sim\n'
-		'except:\n'
-		'    try:\n'
-		'        sim = physics\n'
-		'    except:\n'
-		'        sim = _GbcPhysicsSimCompat()\n'
-		'if sim is None:\n'
-		'    sim = _GbcPhysicsSimCompat()\n'
-		'if not hasattr(sim, "set_linear_velocity"):\n'
-		'    sim = _GbcPhysicsSimCompat()\n'
-		'def _js13k_gbc_resolve_rb_handle(_rb):\n'
-		'    try:\n'
-		'        if isinstance(_rb, str):\n'
-		'            h = _gbc_lookup_handle(rigidBodies, _rb)\n'
-		'            if h is not None:\n'
-		'                return h\n'
-		'    except:\n'
-		'        pass\n'
-		'    return _rb\n'
-		'if hasattr(sim, "get_rigid_body_position") and not getattr(sim, "_js13k_gbc_get_rbpos_safe", False):\n'
-		'    _js13k_gbc_orig_get_rigid_body_position = sim.get_rigid_body_position\n'
-		'    def _js13k_gbc_get_rigid_body_position_safe(rigidBody):\n'
-		'        rb_resolved = _js13k_gbc_resolve_rb_handle(rigidBody)\n'
-		'        pos = None\n'
-		'        try:\n'
-		'            pos = _js13k_gbc_orig_get_rigid_body_position(rb_resolved)\n'
-		'        except:\n'
-		'            pos = None\n'
-		'        if (pos is None) and (rb_resolved is not rigidBody):\n'
-		'            try:\n'
-		'                pos = _js13k_gbc_orig_get_rigid_body_position(rigidBody)\n'
-		'            except:\n'
-		'                pos = None\n'
-		'        try:\n'
-		'            return [float(pos[0]), float(pos[1])]\n'
-		'        except:\n'
-		'            return [0.0, 0.0]\n'
-		'    sim.get_rigid_body_position = _js13k_gbc_get_rigid_body_position_safe\n'
-		'    sim._js13k_gbc_get_rbpos_safe = True\n'
-		'if hasattr(sim, "set_linear_velocity") and not getattr(sim, "_js13k_gbc_flip_linvel_y", False):\n'
-		'    _js13k_gbc_orig_set_linear_velocity = sim.set_linear_velocity\n'
-		'    def _js13k_gbc_set_linear_velocity_flipy(rigidBody, vel, wakeUp = True):\n'
-		'        try:\n'
-		'            vx = vel[0]\n'
-		'            vy = -vel[1]\n'
-		'            vel2 = [vx, vy]\n'
-		'        except:\n'
-		'            vel2 = vel\n'
-		'        return _js13k_gbc_orig_set_linear_velocity(rigidBody, vel2, wakeUp)\n'
-		'    sim.set_linear_velocity = _js13k_gbc_set_linear_velocity_flipy\n'
-		'    sim._js13k_gbc_flip_linvel_y = True\n'
-		'if hasattr(sim, "get_linear_velocity") and hasattr(sim, "get_rigid_body_position") and not getattr(sim, "_js13k_gbc_get_linvel_safe", False):\n'
-		'    _js13k_gbc_orig_get_linear_velocity = sim.get_linear_velocity\n'
-		'    _js13k_gbc_prev_linvel_pos = {}\n'
-		'    _js13k_gbc_prev_linvel_t = {}\n'
-		'    def _js13k_gbc_get_linear_velocity_safe(rigidBody):\n'
-		'        rigidBody = _js13k_gbc_resolve_rb_handle(rigidBody)\n'
-		'        key = str(rigidBody)\n'
-		'        vel = None\n'
-		'        try:\n'
-		'            vel = _js13k_gbc_orig_get_linear_velocity(rigidBody)\n'
-		'        except:\n'
-		'            vel = None\n'
-		'        vx = 0.0\n'
-		'        vy = 0.0\n'
-		'        has_nonzero_vel = False\n'
-		'        try:\n'
-		'            vx = float(vel[0])\n'
-		'            vy = float(vel[1])\n'
-		'            has_nonzero_vel = (abs(vx) > 1e-6) or (abs(vy) > 1e-6)\n'
-		'        except:\n'
-		'            pass\n'
-		'        try:\n'
-		'            pos = sim.get_rigid_body_position(rigidBody)\n'
-		'            px = float(pos[0])\n'
-		'            py = float(pos[1])\n'
-		'            try:\n'
-		'                t_now = float(pygame.time.get_ticks()) * 0.001\n'
-		'            except:\n'
-		'                t_now = None\n'
-		'            prev_pos = _js13k_gbc_prev_linvel_pos.get(key)\n'
-		'            prev_t = _js13k_gbc_prev_linvel_t.get(key)\n'
-		'            _js13k_gbc_prev_linvel_pos[key] = [px, py]\n'
-		'            _js13k_gbc_prev_linvel_t[key] = t_now\n'
-		'            if (not has_nonzero_vel) and (prev_pos is not None) and (t_now is not None) and (prev_t is not None):\n'
-		'                dt = t_now - prev_t\n'
-		'                if dt > 1e-6:\n'
-		'                    vx = (px - float(prev_pos[0])) / dt\n'
-		'                    vy = (py - float(prev_pos[1])) / dt\n'
-		'        except:\n'
-		'            pass\n'
-		'        return [vx, vy]\n'
-		'    sim.get_linear_velocity = _js13k_gbc_get_linear_velocity_safe\n'
-		'    sim._js13k_gbc_get_linvel_safe = True\n'
-		'rigidbodies = rigidBodies\n'
-		'physics = sim\n'
-		'try:\n'
-		'    PyRapier2d = PyRapier2d\n'
-		'except:\n'
-		'    PyRapier2d = None\n'
-		'if PyRapier2d is None:\n'
-		'    class _GbcPyRapier2dCompat:\n'
-		'        Simulation = _GbcPhysicsSimCompat\n'
-		'    PyRapier2d = _GbcPyRapier2dCompat()\n'
-		'get_rigidbody = (lambda name : _gbc_lookup_handle(rigidBodies, name))\n'
-		'get_collider = (lambda name : _gbc_lookup_handle(colliders, name))\n'
-	)
-
 def _normalize_gb_script_code (code : str, is_init : bool, script_type : str = '', owner_name : str = ''):
-	if not code:
-		return code
-	code2 = code
-	prefix = ''
-	if script_type == 'gbc-py':
-		# Local gbc-py scripts can use this.id to refer to the Blender object name.
-		if owner_name and owner_name != '__world__':
-			code2 = re.sub(r'\bthis\s*\.\s*id\b', repr(owner_name), code2)
-		prefix += _gbc_script_physics_prelude()
-	uses_ticks = bool(re.search(r'pygame\s*\.\s*time\s*\.\s*get_ticks\s*\(\s*\)', code2, flags = re.IGNORECASE))
-	if uses_ticks:
-		code2 = re.sub(
-			r'pygame\s*\.\s*time\s*\.\s*get_ticks\s*\(\s*\)',
-			'js13k_get_ticks()',
-			code2,
-			flags = re.IGNORECASE,
-		)
-		if is_init:
-			prefix += (
-				'global __js13k_ticks\n'
-				'__js13k_ticks = 0\n'
-				'def js13k_get_ticks():\n'
-				'    return __js13k_ticks\n'
-			)
-		else:
-			# Keep a monotonic millisecond-ish counter for update scripts.
-			prefix += (
-				'global __js13k_ticks\n'
-				'try:\n'
-				'    __js13k_ticks += 16\n'
-				'except:\n'
-				'    __js13k_ticks = 0\n'
-				'def js13k_get_ticks():\n'
-				'    return __js13k_ticks\n'
-			)
-	if prefix:
-		code2 = prefix + code2
-	return code2
+	if callable(_py2gb_normalize_gb_script_code):
+		return _py2gb_normalize_gb_script_code(code, is_init, script_type, owner_name)
+	return code
 
 def ExportGbaPyAssembly (world, gba_out_path : str):
 	'''Collect gba-py scripts from world and exported objects; write Thumb assembly next to the .gba.'''
@@ -3344,22 +3123,26 @@ def unregister_instance (name):
 	scripts.pop(name, None)
 	scriptLocals.pop(name, None)
 
-def _get_script_locals (instanceName, this):
+def _get_script_locals (instanceName, scriptKey, this):
 	if instanceName not in scriptLocals:
 		scriptLocals[instanceName] = {}
-	scriptLocals[instanceName]['this'] = this
-	scriptLocals[instanceName]['_currentInstanceName'] = instanceName
-	scriptLocals[instanceName]['rigidBodies'] = rigidBodiesIds
-	scriptLocals[instanceName]['colliders'] = collidersIds
-	scriptLocals[instanceName]['sim'] = sim
-	scriptLocals[instanceName]['physics'] = sim
-	scriptLocals[instanceName]['get_rigidbody'] = rigidBodiesIds.get
-	scriptLocals[instanceName]['get_collider'] = collidersIds.get
-	return scriptLocals[instanceName]
+	instanceScriptLocals = scriptLocals[instanceName]
+	if scriptKey not in instanceScriptLocals:
+		instanceScriptLocals[scriptKey] = {}
+	localsDict = instanceScriptLocals[scriptKey]
+	localsDict['this'] = this
+	localsDict['_currentInstanceName'] = instanceName
+	localsDict['rigidBodies'] = rigidBodiesIds
+	localsDict['colliders'] = collidersIds
+	localsDict['sim'] = sim
+	localsDict['physics'] = sim
+	localsDict['get_rigidbody'] = rigidBodiesIds.get
+	localsDict['get_collider'] = collidersIds.get
+	return localsDict
 
-def _exec_script (code, instanceName, this, phase):
+def _exec_script (code, instanceName, this, phase, scriptKey):
 	try:
-		exec(code, globals(), _get_script_locals(instanceName, this))
+		exec(code, globals(), _get_script_locals(instanceName, scriptKey, this))
 	except Exception as err:
 		print(f"[script:{phase}] {instanceName}: {err}")
 
@@ -3369,14 +3152,15 @@ def run_init_scripts (name):
 	tid = instanceToTemplate.get(name)
 	if tid and tid in templateScripts and templateScripts[tid].get('init'):
 		_currentInstanceName = name
-		for code in templateScripts[tid]['init']:
-			try: exec(code, { **globals(), 'this': this, '_currentInstanceName': name })
+		for i, code in enumerate(templateScripts[tid]['init']):
+			try:
+				_exec_script(code, name, this, 'init', ('template', tid, 'init', i, id(code)))
 			except: pass
 		_currentInstanceName = None
 	if name in scripts and scripts[name].get('init'):
 		_currentInstanceName = name
-		for code in scripts[name]['init']:
-			_exec_script(code, name, this, 'init')
+		for i, code in enumerate(scripts[name]['init']):
+			_exec_script(code, name, this, 'init', ('instance', name, 'init', i, id(code)))
 		_currentInstanceName = None
 
 def run_update_scripts ():
@@ -3386,13 +3170,13 @@ def run_update_scripts ():
 		tid = instanceToTemplate.get(name)
 		if tid and tid in templateScripts and templateScripts[tid].get('update'):
 			_currentInstanceName = name
-			for code in templateScripts[tid]['update']:
-				_exec_script(code, name, this, 'update')
+			for i, code in enumerate(templateScripts[tid]['update']):
+				_exec_script(code, name, this, 'update', ('template', tid, 'update', i, id(code)))
 			_currentInstanceName = None
 		if name in scripts and scripts[name].get('update'):
 			_currentInstanceName = name
-			for code in scripts[name]['update']:
-				_exec_script(code, name, this, 'update')
+			for i, code in enumerate(scripts[name]['update']):
+				_exec_script(code, name, this, 'update', ('instance', name, 'update', i, id(code)))
 			_currentInstanceName = None
 
 def add_script (instanceName, code, type):
@@ -3403,7 +3187,8 @@ def add_script (instanceName, code, type):
 		global _currentInstanceName
 		_currentInstanceName = instanceName
 		this = _ThisObject(instanceName)
-		_exec_script(code, instanceName, this, 'init')
+		script_index = len(scripts[instanceName][type]) - 1
+		_exec_script(code, instanceName, this, 'init', ('instance', instanceName, 'init', script_index, id(code)))
 		_currentInstanceName = None
 
 def remove_script (instanceName, type, index):
@@ -5594,6 +5379,11 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 			class _EvalLocals(dict):
 				def __missing__ (self, key):
 					return None
+			protected_names = set((
+				'int', 'float', 'type', 'str', 'repr', 'len', 'list', 'tuple', 'dict',
+				'round', 'abs', 'max', 'min', 'bool', 'hasattr', 'getattr', 'callable',
+				'keys', 'js13k_get_pressed',
+			))
 			eval_locals = _EvalLocals({
 				'int' : int,
 				'float' : float,
@@ -5608,6 +5398,10 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				'abs' : abs,
 				'max' : max,
 				'min' : min,
+				'bool' : bool,
+				'hasattr' : hasattr,
+				'getattr' : getattr,
+				'callable' : callable,
 				'keys' : key_state,
 				'js13k_get_pressed' : (lambda : key_state),
 				'rigidBodies' : rigid_bodies_named,
@@ -5646,10 +5440,15 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 			})
 			for k, v in const_env.items():
 				if re.fullmatch(r'[A-Za-z_]\w*', str(k)) and _is_simple_const_value(v):
-					eval_locals[str(k)] = v
+					name = str(k)
+					if name in protected_names:
+						continue
+					eval_locals[name] = v
 			for k, v in extra_env.items():
 				name = str(k)
 				if re.fullmatch(r'[A-Za-z_]\w*', name) and not name.startswith('__'):
+					if name in protected_names:
+						continue
 					# Keep runtime key-state helpers authoritative for print eval.
 					if name == 'keys':
 						if not isinstance(v, (list, tuple)):
@@ -5823,6 +5622,8 @@ def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
 
 def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = 'gba-py', strict_print_exprs : bool = False, runtime_env = None, mirror_step = None):
 	print_calls = list((script_runtime or {}).get('print_calls') or [])
+	print_const_env_by_scope = dict((script_runtime or {}).get('print_const_env_by_scope') or {})
+	print_expr_env_by_scope = dict((script_runtime or {}).get('print_expr_env_by_scope') or {})
 	print_const_env_by_owner = dict((script_runtime or {}).get('print_const_env_by_owner') or {})
 	print_expr_env_by_owner = dict((script_runtime or {}).get('print_expr_env_by_owner') or {})
 	init_calls = [p for p in print_calls if p.get('is_init')]
@@ -5836,19 +5637,28 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 		per_script_locals = __import__('builtins').globals().get('scriptLocals', {})
 		if not isinstance(per_script_locals, dict):
 			per_script_locals = {}
-		shared_scope_env = {}
-		for scope in per_script_locals.values():
-			if isinstance(scope, dict):
-				for k, v in scope.items():
-					# Keep the first-seen binding to preserve stable handles/state.
-					if k not in shared_scope_env:
-						shared_scope_env[k] = v
-		def _eval_env_for_owner(owner):
+		def _owner_scopes (owner):
 			owner_scope = per_script_locals.get(owner, {})
 			if not isinstance(owner_scope, dict):
-				owner_scope = {}
-			env = dict(shared_scope_env)
-			env.update(owner_scope)
+				return {}
+			# New layout: scriptLocals[owner][scriptKey] = locals dict.
+			if any(isinstance(v, dict) for v in owner_scope.values()):
+				return owner_scope
+			# Legacy layout: scriptLocals[owner] = locals dict.
+			return {'__legacy__' : owner_scope}
+		def _eval_env_for_owner(owner, frame = None, scope_key = None):
+			env = {}
+			owner_scopes = _owner_scopes(owner)
+			if scope_key is not None:
+				scope = owner_scopes.get(scope_key)
+				if isinstance(scope, dict):
+					env.update(scope)
+			if not env:
+				# Fallback for cases where scope key is absent (legacy runtime/export path).
+				for scope in owner_scopes.values():
+					if isinstance(scope, dict):
+						env.update(scope)
+						break
 			if runtime_env:
 				# Mirror/runtime physics bindings must win over per-script locals.
 				for k in ('sim', 'physics', 'rigidBodies', 'rigidBodiesIds', 'colliders', 'collidersIds'):
@@ -5857,8 +5667,14 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				for k, v in runtime_env.items():
 					if k not in env:
 						env[k] = v
+			# Keep mirror-eval aligned with fixed-step handheld runtime semantics.
+			if frame is not None:
+				dt = 1.0 / 60.0
+				env.setdefault('dt', dt)
+				env.setdefault('deltaTime', dt)
+				env.setdefault('frame', int(frame))
 			return env
-		def _const_env_for_owner (owner):
+		def _const_env_for_owner (owner, scope_key = None):
 			env = {}
 			world_consts = print_const_env_by_owner.get('__world__')
 			if isinstance(world_consts, dict):
@@ -5866,8 +5682,13 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			owner_consts = print_const_env_by_owner.get(owner)
 			if isinstance(owner_consts, dict):
 				env.update(owner_consts)
+			if scope_key is not None:
+				scope_consts = print_const_env_by_scope.get(scope_key)
+				if isinstance(scope_consts, dict):
+					# Per-script bindings must override owner-wide fallbacks.
+					env.update(scope_consts)
 			return env
-		def _expr_env_for_owner (owner):
+		def _expr_env_for_owner (owner, scope_key = None):
 			env = {}
 			world_expr = print_expr_env_by_owner.get('__world__')
 			if isinstance(world_expr, dict):
@@ -5875,10 +5696,15 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			owner_expr = print_expr_env_by_owner.get(owner)
 			if isinstance(owner_expr, dict):
 				env.update(owner_expr)
+			if scope_key is not None:
+				scope_expr = print_expr_env_by_scope.get(scope_key)
+				if isinstance(scope_expr, dict):
+					# Per-script expressions must override owner-wide fallbacks.
+					env.update(scope_expr)
 			return env
-		def _expand_text_placeholders (text, owner):
+		def _expand_text_placeholders (text, owner, scope_key = None):
 			txt = str(text)
-			expr_env = _expr_env_for_owner(owner)
+			expr_env = _expr_env_for_owner(owner, scope_key = scope_key)
 			def _replace_name_expr (m):
 				name = m.group(1)
 				if name not in expr_env:
@@ -5897,7 +5723,13 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			cond = info.get('condition')
 			if cond is None or cond == '':
 				return True
-			val = _eval_runtime_expr_value(cond, frame = frame)
+			owner = info.get('owner_name') or '__world__'
+			scope_key = info.get('scope_key')
+			val = _eval_runtime_expr_value(
+				cond,
+				frame = frame,
+				extra_env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key),
+			)
 			if val is None:
 				return False
 			return abs(float(val)) > 1e-9
@@ -5919,12 +5751,13 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					if not _should_emit(info, frame):
 						continue
 					owner = info.get('owner_name') or '__world__'
-					text = _expand_text_placeholders(str(info.get('text', '')), owner).rstrip('\n')
+					scope_key = info.get('scope_key')
+					text = _expand_text_placeholders(str(info.get('text', '')), owner, scope_key = scope_key).rstrip('\n')
 					text = _resolve_runtime_print_exprs(
 						text,
 						frame = frame,
-						const_env = _const_env_for_owner(owner),
-						extra_env = _eval_env_for_owner(owner),
+						const_env = _const_env_for_owner(owner, scope_key = scope_key),
+						extra_env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key),
 						strict = strict_print_exprs,
 					)
 					print(f"[{script_label}:init:runtime] {owner} {text}")
@@ -5933,12 +5766,13 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				if not _should_emit(info, frame):
 					continue
 				owner = info.get('owner_name') or '__world__'
-				text = _expand_text_placeholders(str(info.get('text', '')), owner).rstrip('\n')
+				scope_key = info.get('scope_key')
+				text = _expand_text_placeholders(str(info.get('text', '')), owner, scope_key = scope_key).rstrip('\n')
 				text = _resolve_runtime_print_exprs(
 					text,
 					frame = frame,
-					const_env = _const_env_for_owner(owner),
-					extra_env = _eval_env_for_owner(owner),
+					const_env = _const_env_for_owner(owner, scope_key = scope_key),
+					extra_env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key),
 					strict = strict_print_exprs,
 				)
 				print(f"[{script_label}:update:runtime] {owner} [f={frame}] {text}")
@@ -7562,6 +7396,12 @@ class _GbcPhase1MirrorSim:
 		return None
 	def get_angular_velocity (self, _rigidBody):
 		return 0.0
+	def __getattr__ (self, _name):
+		# Keep phase1 print-mirror API permissive like script compat shims:
+		# unknown physics helpers (e.g. cast_collider/cast_shape) should be callable.
+		if isinstance(_name, str) and (_name.startswith('get_') or _name.startswith('cast_')):
+			return (lambda *args, **kwargs: None)
+		return (lambda *args, **kwargs: 0)
 
 def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects, velocity_script = None):
 	if sprite_ob is None:
