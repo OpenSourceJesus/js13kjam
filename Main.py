@@ -6721,24 +6721,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		collider_skip_addr = len(code)
 		patch_jr(jr_skip_collider_pass, collider_skip_addr)
 		patch_jr(jr_skip_collider_neg, collider_skip_addr)
-	# Despawn only once below visible screen range.
-	# Horizontal exits stay reversible (player can move back onscreen).
-	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
-	emit(0xFE, offscreen_bottom_y & 0xFF)
-	jr_not_despawn = jr(0x38)  # jr c, keep_visible
-	ld_a_imm(1)
-	emit(0xEA, dead_addr & 0xFF, (dead_addr >> 8) & 0xFF)
-	emit(0xAF)  # hide all metasprite tiles
-	for row in range(sprite_tiles_h):
-		for col in range(sprite_tiles_w):
-			idx = row * sprite_tiles_w + col
-			if idx >= sprite_tile_count:
-				continue
-			base = 0xFE00 + idx * 4
-			emit(0xEA, base & 0xFF, (base >> 8) & 0xFF)
-	emit(0xC9)
-	keep_visible_addr = len(code)
-	patch_jr(jr_not_despawn, keep_visible_addr)
+	# Keep world-wrap reversible: do not despawn when crossing screen edges.
 	for row in range(sprite_tiles_h):
 		for col in range(sprite_tiles_w):
 			idx = row * sprite_tiles_w + col
@@ -7136,8 +7119,6 @@ class _GbcPhase1MirrorSim:
 				self.vy = 0
 				self.gacc_y = 0
 				break
-		if self.y >= self.offscreen_bottom_y:
-			self.dead = True
 	def set_linear_velocity (self, _rigidBody, vel, wakeUp = True):
 		try:
 			# Mirror script-facing convention (Y-up) while internal phase1 state is Y-down.
