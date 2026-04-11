@@ -14,10 +14,14 @@ try:
 	from py2gba.blender_export import export_gba_py_assembly as _py2gb_export_gba_py_assembly
 	from py2gba.blender_export import normalize_gb_script_code as _py2gb_normalize_gb_script_code
 	from py2gba.blender_export import py2gba_asm as _py2gb_py2gb_asm
+	from py2gba.blender_export import is_runtime_script_binding_name as _py2gb_is_runtime_script_binding_name
+	from py2gba.blender_export import augment_runtime_physics_maps as _py2gb_augment_runtime_physics_maps
 except Exception:
 	_py2gb_export_gba_py_assembly = None
 	_py2gb_normalize_gb_script_code = None
 	_py2gb_py2gb_asm = None
+	_py2gb_is_runtime_script_binding_name = None
+	_py2gb_augment_runtime_physics_maps = None
 
 isLinux = False
 POTRACE_PATH = 'potrace-1.16.'
@@ -1117,7 +1121,7 @@ def RegisterPhysics (ob):
 		posStr = str([worldPivot.x, -worldPivot.y])
 		if ob.rigidBodyExists:
 			rigidBodyName = obVarName + 'RigidBody'
-			rigidBody = rigidBodyName + ' = sim.add_rigid_body(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ', ' + posStr + ', ' + str(math.degrees(objectRotZ)) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ', ' + str(ob.canSleep) + ', ' + str(ob.continuousCollideDetect) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName
+			rigidBody = rigidBodyName + ' = sim.add_rigid_body(' + str(ob.rigidBodyEnable) + ', ' + str(RIGID_BODY_TYPES.index(ob.rigidBodyType)) + ', ' + posStr + ', ' + str(math.degrees(objectRotZ)) + ', ' + str(ob.gravityScale) + ', ' + str(ob.dominance) + ', ' + str(ob.canRot) + ', ' + str(ob.linearDrag) + ', ' + str(ob.angDrag) + ', ' + str(ob.canSleep) + ', ' + str(ob.continuousCollideDetect) + ')\nrigidBodiesIds["' + obVarName + '"] = ' + rigidBodyName + '\nrigidBodiesIds["' + ob.name + '"] = ' + rigidBodyName
 			rigidBodies[ob] = rigidBody
 			vars.append(rigidBodyName + ' = (-1, -1)')
 			globals.append(rigidBodyName)
@@ -1215,7 +1219,7 @@ def RegisterPhysics (ob):
 					collider = colliderName + ' = sim.add_round_convex_hull_collider(' + str(ob.colliderEnable) + ', ' + colliderPosStr + ', ' + colliderRotStr + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(convexHullBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + str(ob.bounciness) + ', ' + str(BOUNCINESS_COMBINE_RULES.index(ob.bouncinessCombineRule)) + ')'
 				elif ob.colliderShapeType == 'heightfield':
 					collider = colliderName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', ' + colliderPosStr + ', ' + colliderRotStr + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ',' + str(list(heightfieldScale)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + str(ob.bounciness) + ', ' + str(BOUNCINESS_COMBINE_RULES.index(ob.bouncinessCombineRule)) + ')'
-				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName
+				collider += '\ncollidersIds["' + obVarName + '"] = ' + colliderName + '\ncollidersIds["' + ob.name + '"] = ' + colliderName
 				vars.append(colliderName + ' = (-1, -1)')
 				globals.append(colliderName)
 			else:
@@ -1247,7 +1251,7 @@ def RegisterPhysics (ob):
 						collider = colliderName + attachToVarName + ' = sim.add_round_convex_hull_collider(' + str(ob.colliderEnable) + ', ' + colliderAttachPosStr + ', ' + colliderAttachRotStr + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(convexHullPnts) + ', ' + str(ob.colliderConvexHullBorderRadius) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + str(ob.bounciness) + ', ' + str(BOUNCINESS_COMBINE_RULES.index(ob.bouncinessCombineRule)) + ', rigidBodiesIds["' + attachToVarName + '"])'
 					elif ob.colliderShapeType == 'heightfield':
 						collider = colliderName + attachToVarName + ' = sim.add_heightfield_collider(' + str(ob.colliderEnable) + ', ' + colliderAttachPosStr + ', ' + colliderAttachRotStr + ', ' + str(collisionGroupMembership) + ', ' + str(collisionGroupFilter) + ', ' + str(heights) + ',' + str(list(heightfieldScale)) + ', ' + str(ob.isSensor) + ', ' + str(ob.density) + ', ' + str(ob.bounciness) + ', ' + str(BOUNCINESS_COMBINE_RULES.index(ob.bouncinessCombineRule)) + ', rigidBodiesIds["' + attachToVarName + '"])'
-					collider += '\ncollidersIds["' + obVarName + attachToVarName + '"] = ' + colliderName + attachToVarName
+					collider += '\ncollidersIds["' + obVarName + attachToVarName + '"] = ' + colliderName + attachToVarName + '\nif "' + obVarName + '" not in collidersIds: collidersIds["' + obVarName + '"] = ' + colliderName + attachToVarName + '\nif "' + ob.name + '" not in collidersIds: collidersIds["' + ob.name + '"] = ' + colliderName + attachToVarName
 					vars.append(colliderName + attachToVarName + ' = (-1, -1)')
 					globals.append(colliderName + attachToVarName)
 			colliders[ob] = collider
@@ -2200,6 +2204,18 @@ def _extract_dynamic_draw_circles_from_stmts (stmts, is_init : bool, parent_cond
 def _is_print_call (call_node):
 	return isinstance(call_node, ast.Call) and isinstance(call_node.func, ast.Name) and call_node.func.id == 'print'
 
+def _is_runtime_script_binding_name (name):
+	if callable(_py2gb_is_runtime_script_binding_name):
+		try:
+			return bool(_py2gb_is_runtime_script_binding_name(name))
+		except Exception:
+			pass
+	return isinstance(name, str) and name in set((
+		'colliders', 'collidersIds', 'get_collider',
+		'rigidBodies', 'rigidBodiesIds', 'get_rigidbody',
+		'sim', 'physics',
+	))
+
 def _serialize_print_call_text (call_node, const_env = None, expr_env = None, rb_alias = None, vel_env = None):
 	if not _is_print_call(call_node):
 		return None
@@ -2222,6 +2238,8 @@ def _serialize_print_call_text (call_node, const_env = None, expr_env = None, rb
 	def _inline_name_refs (node):
 		class _InlineNameTransformer(ast.NodeTransformer):
 			def visit_Name (self, n):
+				if _is_runtime_script_binding_name(n.id):
+					return n
 				if n.id in const_env:
 					try:
 						repl = ast.parse(repr(const_env[n.id]), mode = 'eval').body
@@ -2614,6 +2632,11 @@ def _extract_print_calls_from_stmts (stmts, is_init : bool, owner_name : str, pa
 				rb_value = rb_alias.get(rb_value)
 			for target in list(stmt.targets or []):
 				if isinstance(target, ast.Name):
+					if _is_runtime_script_binding_name(target.id):
+						const_env.pop(target.id, None)
+						expr_env.pop(target.id, None)
+						rb_alias.pop(target.id, None)
+						continue
 					if val is None:
 						const_env.pop(target.id, None)
 					else:
@@ -2635,6 +2658,11 @@ def _extract_print_calls_from_stmts (stmts, is_init : bool, owner_name : str, pa
 			continue
 		if isinstance(stmt, ast.AnnAssign):
 			if isinstance(stmt.target, ast.Name):
+				if _is_runtime_script_binding_name(stmt.target.id):
+					const_env.pop(stmt.target.id, None)
+					expr_env.pop(stmt.target.id, None)
+					rb_alias.pop(stmt.target.id, None)
+					continue
 				val = _extract_simple_const_value(stmt.value) if stmt.value is not None else None
 				expr_val = _serialize_script_expr(stmt.value) if stmt.value is not None else None
 				if val is None:
@@ -3123,6 +3151,77 @@ def unregister_instance (name):
 	scripts.pop(name, None)
 	scriptLocals.pop(name, None)
 
+def _normalize_script_lookup_key (name):
+	try:
+		s = str(name)
+	except:
+		return ''
+	s = s.lstrip('_').lower()
+	out = ''
+	for ch in s:
+		if ('a' <= ch <= 'z') or ('0' <= ch <= '9') or ch == '_':
+			out += ch
+	return out
+
+def _resolve_script_lookup (sourceDict, name):
+	if not isinstance(sourceDict, dict):
+		return None
+	if name in sourceDict:
+		value = sourceDict[name]
+		if value is not None:
+			return value
+	if isinstance(name, str):
+		if name.startswith('_'):
+			value = sourceDict.get(name[1:])
+			if value is not None:
+				return value
+		else:
+			value = sourceDict.get('_' + name)
+			if value is not None:
+				return value
+		nameNorm = _normalize_script_lookup_key(name)
+		for k, v in list(sourceDict.items()):
+			if not isinstance(k, str):
+				continue
+			kNorm = _normalize_script_lookup_key(k)
+			if kNorm == nameNorm or kNorm.endswith('_' + nameNorm) or kNorm.endswith(nameNorm):
+				return v
+	return None
+
+class _ScriptLookupDict:
+	def __init__ (self, source):
+		self._source = source
+	def _source_dict (self):
+		src = self._source() if callable(self._source) else self._source
+		return src if isinstance(src, dict) else {}
+	def __getitem__ (self, name):
+		src = self._source_dict()
+		if name in src:
+			return src[name]
+		value = _resolve_script_lookup(src, name)
+		return value
+	def get (self, name, default = None):
+		src = self._source_dict()
+		if name in src:
+			return src.get(name, default)
+		value = _resolve_script_lookup(src, name)
+		return default if value is None else value
+	def __contains__ (self, name):
+		src = self._source_dict()
+		if name in src:
+			return True
+		return _resolve_script_lookup(src, name) is not None
+	def keys (self):
+		return self._source_dict().keys()
+	def items (self):
+		return self._source_dict().items()
+	def values (self):
+		return self._source_dict().values()
+	def __iter__ (self):
+		return iter(self._source_dict())
+	def __len__ (self):
+		return len(self._source_dict())
+
 def _get_script_locals (instanceName, scriptKey, this):
 	if instanceName not in scriptLocals:
 		scriptLocals[instanceName] = {}
@@ -3132,12 +3231,12 @@ def _get_script_locals (instanceName, scriptKey, this):
 	localsDict = instanceScriptLocals[scriptKey]
 	localsDict['this'] = this
 	localsDict['_currentInstanceName'] = instanceName
-	localsDict['rigidBodies'] = rigidBodiesIds
-	localsDict['colliders'] = collidersIds
+	localsDict['rigidBodies'] = _ScriptLookupDict(lambda : rigidBodiesIds)
+	localsDict['colliders'] = _ScriptLookupDict(lambda : collidersIds)
 	localsDict['sim'] = sim
 	localsDict['physics'] = sim
-	localsDict['get_rigidbody'] = rigidBodiesIds.get
-	localsDict['get_collider'] = collidersIds.get
+	localsDict['get_rigidbody'] = (lambda name : _resolve_script_lookup(rigidBodiesIds, name))
+	localsDict['get_collider'] = (lambda name : _resolve_script_lookup(collidersIds, name))
 	return localsDict
 
 def _exec_script (code, instanceName, this, phase, scriptKey):
@@ -5310,28 +5409,18 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 			if not isinstance(colliders_runtime, dict):
 				colliders_runtime = {}
 			# GBA/GBC print mirror can run with partial runtime state.
-			# Always augment with exported object names to make get_rigidbody lookups
+			# Always augment with exported object names to make physics lookups
 			# robust against naming differences between script and runtime bindings.
-			try:
-				bpy_mod = runtime_globals.get('bpy')
-				if bpy_mod is not None and hasattr(bpy_mod, 'data') and hasattr(bpy_mod.data, 'objects'):
-					synth = {}
-					for ob in list(getattr(bpy_mod.data, 'objects', []) or []):
-						if not bool(getattr(ob, 'exportOb', False)):
-							continue
-						if not bool(getattr(ob, 'rigidBodyExists', False)):
-							continue
-						key = str(GetVarNameForObject(ob))
-						if key:
-							synth.setdefault(key, key)
-						name_key = str(getattr(ob, 'name', '') or '')
-						if name_key:
-							synth.setdefault(name_key, key if key else name_key)
-							synth.setdefault('_' + name_key, key if key else name_key)
-					for k, v in synth.items():
-						rigid_bodies_runtime.setdefault(k, v)
-			except Exception:
-				pass
+			if callable(_py2gb_augment_runtime_physics_maps):
+				try:
+					rigid_bodies_runtime, colliders_runtime = _py2gb_augment_runtime_physics_maps(
+						runtime_globals,
+						rigid_bodies_runtime,
+						colliders_runtime,
+						GetVarNameForObject,
+					)
+				except Exception:
+					pass
 			rigid_bodies_named = dict(rigid_bodies_runtime)
 			for k, v in list(rigid_bodies_runtime.items()):
 				if isinstance(k, str) and k.startswith('_') and len(k) > 1:
@@ -5384,6 +5473,13 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				'round', 'abs', 'max', 'min', 'bool', 'hasattr', 'getattr', 'callable',
 				'keys', 'js13k_get_pressed',
 			))
+			for _nm in (
+				'rigidBodies', 'rigidBodiesIds', 'get_rigidbody',
+				'colliders', 'collidersIds', 'get_collider',
+				'sim', 'physics',
+			):
+				if _is_runtime_script_binding_name(_nm):
+					protected_names.add(_nm)
 			eval_locals = _EvalLocals({
 				'int' : int,
 				'float' : float,
@@ -5707,6 +5803,8 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			expr_env = _expr_env_for_owner(owner, scope_key = scope_key)
 			def _replace_name_expr (m):
 				name = m.group(1)
+				if _is_runtime_script_binding_name(name):
+					return m.group(0)
 				if name not in expr_env:
 					return m.group(0)
 				val = expr_env.get(name)
