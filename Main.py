@@ -6327,8 +6327,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0x11, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
 	def ld_bc_imm(v):
 		emit(0x01, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
-	init_x = max(0, min(159, int(init_x)))
-	init_y = max(0, min(143, int(init_y)))
+	init_x = max(0, min(65535, int(init_x)))
+	init_y = max(0, min(65535, int(init_y)))
 	init_vx = max(-127, min(127, int(init_vx)))
 	init_vy = max(-127, min(127, int(init_vy)))
 	grav_step_x = max(-32, min(32, int(grav_step_x)))
@@ -6360,6 +6360,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	gacc_y_addr = 0xC114
 	gacc_x_addr = 0xC115
 	dead_addr = 0xC116
+	y_hi_addr = 0xC117
+	x_hi_addr = 0xC118
 	emit(0xF3)  # di
 	emit(0x31, 0xFE, 0xFF)  # ld sp, $FFFE
 	emit(0xAF)  # xor a
@@ -6391,10 +6393,14 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	# Seed y/vy state and OAM metasprite entries.
 	ld_a_imm(init_y)
 	emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	ld_a_imm((init_y >> 8) & 0xFF)
+	emit(0xEA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
 	ld_a_imm(init_vy)
 	emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
 	ld_a_imm(init_x)
 	emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+	ld_a_imm((init_x >> 8) & 0xFF)
+	emit(0xEA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
 	ld_a_imm(init_vx)
 	emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 	ld_a_imm(0)
@@ -6501,12 +6507,19 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
 			no_jump_addr = len(code)
 			patch_jr(jr_not_a, no_jump_addr)
+	# x += sign_extend(vx)
 	emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 	emit(0x47)  # ld b,a (vx)
-	# x += vx
+	emit(0x78)  # ld a,b
+	emit(0x87)  # add a,a ; carry = sign bit of vx
+	emit(0x9F)  # sbc a,a ; a = 0x00 or 0xFF
+	emit(0x4F)  # ld c,a (vx sign extension)
 	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
 	emit(0x80)  # add a,b
 	emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+	emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
+	emit(0x89)  # adc a,c
+	emit(0xEA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
 	if grav_step_y != 0:
 		grav_mag_y = max(1, min(32, abs(int(grav_step_y))))
 		emit(0xFA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)  # ld a,(gacc_y)
@@ -6521,14 +6534,27 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # (vy)=a
 		y_no_v_addr = len(code)
 		patch_jr(jr_y_no_v, y_no_v_addr)
+	# y += sign_extend(vy)
 	emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
 	emit(0x47)  # ld b,a (vy)
-	# y += vy
+	emit(0x78)  # ld a,b
+	emit(0x87)  # add a,a ; carry = sign bit of vy
+	emit(0x9F)  # sbc a,a ; a = 0x00 or 0xFF
+	emit(0x4F)  # ld c,a (vy sign extension)
 	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 	emit(0x80)  # add a,b
 	emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+	emit(0x89)  # adc a,c
+	emit(0xEA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
 	# Runtime collider pass: resolve downward contacts against authored collider AABBs.
 	if collider_count > 0:
+		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)  # ld a,(x_hi)
+		emit(0xB7)  # or a
+		jr_skip_collider_world_x = jr(0x20)  # jr nz, no collider step
+		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)  # ld a,(y_hi)
+		emit(0xB7)  # or a
+		jr_skip_collider_world_y = jr(0x20)  # jr nz, no collider step
 		emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
 		emit(0xB7)  # or a
 		jr_skip_collider_pass = jr(0x28)  # jr z, no collider step
@@ -6590,9 +6616,40 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		patch_jr(jr_collider_loop, collider_loop_addr)
 		patch_jr(jr_store_hit_y, store_hit_y_addr)
 		collider_skip_addr = len(code)
+		patch_jr(jr_skip_collider_world_x, collider_skip_addr)
+		patch_jr(jr_skip_collider_world_y, collider_skip_addr)
 		patch_jr(jr_skip_collider_pass, collider_skip_addr)
 		patch_jr(jr_skip_collider_neg, collider_skip_addr)
-	# Keep world-wrap reversible: do not despawn when crossing screen edges.
+	# Hide sprite when body is outside the local 0..255 OAM addressable area.
+	emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
+	emit(0xB7)  # or a
+	jr_oam_hide_x = jr(0x20)  # jr nz, hide sprite
+	emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+	emit(0xB7)  # or a
+	jr_oam_hide_y = jr(0x20)  # jr nz, hide sprite
+	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+	emit(0xFE, 160)  # cp 160
+	jr_oam_hide_right = jr(0x30)  # jr nc, hide sprite
+	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	emit(0xFE, 144)  # cp 144
+	jr_oam_hide_bottom = jr(0x30)  # jr nc, hide sprite
+	jr_oam_visible = jr(0x18)  # jr draw sprite
+	oam_hide_addr = len(code)
+	patch_jr(jr_oam_hide_x, oam_hide_addr)
+	patch_jr(jr_oam_hide_y, oam_hide_addr)
+	patch_jr(jr_oam_hide_right, oam_hide_addr)
+	patch_jr(jr_oam_hide_bottom, oam_hide_addr)
+	emit(0xAF)  # hide y for every tile
+	for row in range(sprite_tiles_h):
+		for col in range(sprite_tiles_w):
+			idx = row * sprite_tiles_w + col
+			if idx >= sprite_tile_count:
+				continue
+			base = 0xFE00 + idx * 4
+			emit(0xEA, base & 0xFF, (base >> 8) & 0xFF)
+	emit(0xC9)
+	oam_visible_addr = len(code)
+	patch_jr(jr_oam_visible, oam_visible_addr)
 	for row in range(sprite_tiles_h):
 		for col in range(sprite_tiles_w):
 			idx = row * sprite_tiles_w + col
@@ -6780,13 +6837,17 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		vx_addr = base + 3
 		gacc_y_addr = base + 4
 		gacc_x_addr = base + 5
-		init_x = max(0, min(255, int(body.get('init_x', 0))))
-		init_y = max(0, min(255, int(body.get('init_y', 0))))
+		y_hi_addr = base + 6
+		x_hi_addr = base + 7
+		init_x = max(0, min(65535, int(body.get('init_x', 0))))
+		init_y = max(0, min(65535, int(body.get('init_y', 0))))
 		init_vx = max(-127, min(127, int(body.get('init_vx', 0))))
 		init_vy = max(-127, min(127, int(body.get('init_vy', 0))))
 		ld_a_imm(init_y); emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+		ld_a_imm((init_y >> 8) & 0xFF); emit(0xEA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
 		ld_a_imm(init_vy); emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
 		ld_a_imm(init_x); emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+		ld_a_imm((init_x >> 8) & 0xFF); emit(0xEA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
 		ld_a_imm(init_vx); emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 		ld_a_imm(0); emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
 		ld_a_imm(0); emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
@@ -6835,6 +6896,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		vx_addr = base + 3
 		gacc_y_addr = base + 4
 		gacc_x_addr = base + 5
+		y_hi_addr = base + 6
+		x_hi_addr = base + 7
 		sprite_tiles_w = max(1, min(4, int(body.get('sprite_tiles_w', 1))))
 		sprite_tiles_h = max(1, min(4, int(body.get('sprite_tiles_h', 1))))
 		sprite_tile_count_for_body = max(1, min(16, int(body.get('sprite_tile_count', sprite_tiles_w * sprite_tiles_h))))
@@ -6911,12 +6974,19 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
 				no_jump_addr = len(code)
 				patch_jr(jr_not_a, no_jump_addr)
-		# x += vx
+		# x += sign_extend(vx)
 		emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 		emit(0x47)  # ld b,a (vx)
+		emit(0x78)  # ld a,b
+		emit(0x87)  # add a,a ; carry = sign bit of vx
+		emit(0x9F)  # sbc a,a ; a = 0x00 or 0xFF
+		emit(0x4F)  # ld c,a (vx sign extension)
 		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
 		emit(0x80)  # add a,b
 		emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
+		emit(0x89)  # adc a,c
+		emit(0xEA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
 		if grav_step_y != 0:
 			grav_mag_y = max(1, min(32, abs(int(grav_step_y))))
 			emit(0xFA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)  # ld a,(gacc_y)
@@ -6931,14 +7001,27 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # (vy)=a
 			y_no_v_addr = len(code)
 			patch_jr(jr_y_no_v, y_no_v_addr)
-		# y += vy
+		# y += sign_extend(vy)
 		emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
 		emit(0x47)  # ld b,a (vy)
+		emit(0x78)  # ld a,b
+		emit(0x87)  # add a,a ; carry = sign bit of vy
+		emit(0x9F)  # sbc a,a ; a = 0x00 or 0xFF
+		emit(0x4F)  # ld c,a (vy sign extension)
 		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 		emit(0x80)  # add a,b
 		emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+		emit(0x89)  # adc a,c
+		emit(0xEA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
 		if collider_count > 0:
 			# Runtime collider pass: resolve downward contacts against authored collider AABBs.
+			emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)  # ld a,(x_hi)
+			emit(0xB7)  # or a
+			jr_skip_collider_world_x = jr(0x20)  # jr nz, no collider step
+			emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)  # ld a,(y_hi)
+			emit(0xB7)  # or a
+			jr_skip_collider_world_y = jr(0x20)  # jr nz, no collider step
 			emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
 			emit(0xB7)  # or a
 			jr_skip_collider_pass = jr(0x28)  # jr z, no collider step
@@ -7000,10 +7083,44 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			patch_jr(jr_collider_loop, collider_loop_addr)
 			patch_jr(jr_store_hit_y, store_hit_y_addr)
 			collider_skip_addr = len(code)
+			patch_jr(jr_skip_collider_world_x, collider_skip_addr)
+			patch_jr(jr_skip_collider_world_y, collider_skip_addr)
 			patch_jr(jr_skip_collider_pass, collider_skip_addr)
 			patch_jr(jr_skip_collider_neg, collider_skip_addr)
 		# Update metasprite OAM from solved body position.
 		oam_base = max(0, min(39, int(body.get('oam_base', 0))))
+		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
+		emit(0xB7)  # or a
+		jr_oam_hide_x = jr(0x20)  # jr nz, hide sprite
+		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+		emit(0xB7)  # or a
+		jr_oam_hide_y = jr(0x20)  # jr nz, hide sprite
+		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+		emit(0xFE, 160)  # cp 160
+		jr_oam_hide_right = jr(0x30)  # jr nc, hide sprite
+		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+		emit(0xFE, 144)  # cp 144
+		jr_oam_hide_bottom = jr(0x30)  # jr nc, hide sprite
+		jr_oam_draw = jr(0x18)  # jr draw sprite
+		oam_hide_addr = len(code)
+		patch_jr(jr_oam_hide_x, oam_hide_addr)
+		patch_jr(jr_oam_hide_y, oam_hide_addr)
+		patch_jr(jr_oam_hide_right, oam_hide_addr)
+		patch_jr(jr_oam_hide_bottom, oam_hide_addr)
+		emit(0xAF)  # hide y for every tile
+		for row in range(sprite_tiles_h):
+			for col in range(sprite_tiles_w):
+				tile_idx = row * sprite_tiles_w + col
+				if tile_idx >= sprite_tile_count_for_body:
+					continue
+				base_oam = oam_base + tile_idx
+				if base_oam >= 40:
+					continue
+				oam_addr = 0xFE00 + base_oam * 4
+				emit(0xEA, oam_addr & 0xFF, (oam_addr >> 8) & 0xFF)
+		jr_oam_done = jr(0x18)  # jr oam_done
+		oam_draw_addr = len(code)
+		patch_jr(jr_oam_draw, oam_draw_addr)
 		for row in range(sprite_tiles_h):
 			for col in range(sprite_tiles_w):
 				tile_idx = row * sprite_tiles_w + col
@@ -7019,6 +7136,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
 				emit(0xC6, (8 + col * 8) & 0xFF)
 				emit(0xEA, (oam_addr + 1) & 0xFF, ((oam_addr + 1) >> 8) & 0xFF)
+		oam_done_addr = len(code)
+		patch_jr(jr_oam_done, oam_done_addr)
 	emit(0xC9)
 	wait_vblank_addr = len(code)
 	emit(0xF0, 0x44)  # ld a,[LY]
@@ -7383,8 +7502,8 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 
 class _GbcPhase1MirrorSim:
 	def __init__ (self, x : int, y : int, vx : int, vy : int, grav_step_x : int, grav_step_y : int, sprite_w_px : int, sprite_h_px : int, collider_rects, offscreen_bottom_y : int, velocity_script = None):
-		self.x = max(0, min(255, int(x)))
-		self.y = max(0, min(255, int(y)))
+		self.x = max(0, min(65535, int(x)))
+		self.y = max(0, min(65535, int(y)))
 		self.vx = max(-127, min(127, int(vx)))
 		self.vy = max(-127, min(127, int(vy)))
 		self.gacc_x = 0
@@ -7438,14 +7557,14 @@ class _GbcPhase1MirrorSim:
 				# Script-space Y is up, internal velocity is Y-down.
 				self.vy = max(-127, min(127, int(-int(jump_y))))
 				self.gacc_y = 0
-		self.x = (int(self.x) + int(self.vx)) & 0xFF
+		self.x = (int(self.x) + int(self.vx)) & 0xFFFF
 		# Keep resting bodies stable on top of colliders instead of re-accelerating each frame.
 		if self.vy >= 0 and self._is_supported():
 			self.vy = 0
 			self.gacc_y = 0
 		else:
 			self.gacc_y, self.vy = self._step_gravity_axis(self.grav_step_y, self.gacc_y, self.vy)
-			self.y = (int(self.y) + int(self.vy)) & 0xFF
+			self.y = (int(self.y) + int(self.vy)) & 0xFFFF
 		# Match phase1 runtime: only resolve downward contacts.
 		if self.vy > 0:
 			for cx, cy, cw, _ch in self.collider_rects:
@@ -7480,8 +7599,8 @@ class _GbcPhase1MirrorSim:
 		return [vx_f, -vy_f]
 	def set_rigid_body_position (self, _rigidBody, pos, wakeUp = True):
 		try:
-			self.x = max(0, min(255, int(round(float(pos[0])))))
-			self.y = max(0, min(255, int(round(-float(pos[1])))))
+			self.x = max(0, min(65535, int(round(float(pos[0])))))
+			self.y = max(0, min(65535, int(round(-float(pos[1])))))
 		except Exception:
 			pass
 	def get_rigid_body_position (self, _rigidBody):
