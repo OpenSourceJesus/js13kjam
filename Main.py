@@ -6606,6 +6606,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		sprite_tiles_h = max(1, sprite_tile_count // sprite_tiles_w)
 	sprite_w_px = max(8, min(32, sprite_tiles_w * 8))
 	sprite_h_px = max(8, min(32, sprite_tiles_h * 8))
+	oam_left_visible_min = (256 - int(sprite_w_px)) & 0xFF
+	oam_top_visible_min = (256 - int(sprite_h_px)) & 0xFF
 	offscreen_bottom_y = max(145, min(252, 144 + sprite_tiles_h * 8))
 	y_addr = 0xC110
 	vy_addr = 0xC111
@@ -6888,20 +6890,42 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	# Hide sprite when body is outside the local 0..255 OAM addressable area.
 	emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
 	emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
-	jr_oam_hide_x = jr(0x20)  # jr nz, hide sprite
-	emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
-	emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
-	jr_oam_hide_y = jr(0x20)  # jr nz, hide sprite
+	jr_oam_x_hi_pos = jr(0x28)  # jr z, x_hi_pos
+	emit(0xFE, 0x7F)  # cp $7F (negative local x range)
+	jr_oam_hide_x_hi = jr(0x20)  # jr nz, hide sprite
+	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+	emit(0xFE, oam_left_visible_min)  # cp (x >= -sprite_w in signed-local space)
+	jr_oam_hide_left = jr(0x38)  # jr c, hide sprite
+	jr_oam_x_ok = jr(0x18)  # jr x_done
+	oam_x_hi_pos_addr = len(code)
+	patch_jr(jr_oam_x_hi_pos, oam_x_hi_pos_addr)
 	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
 	emit(0xFE, 160)  # cp 160
 	jr_oam_hide_right = jr(0x30)  # jr nc, hide sprite
+	oam_x_done_addr = len(code)
+	patch_jr(jr_oam_x_ok, oam_x_done_addr)
+	emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+	emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
+	jr_oam_y_hi_pos = jr(0x28)  # jr z, y_hi_pos
+	emit(0xFE, 0x7F)  # cp $7F (negative local y range)
+	jr_oam_hide_y_hi = jr(0x20)  # jr nz, hide sprite
+	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	emit(0xFE, oam_top_visible_min)  # cp (y >= -sprite_h in signed-local space)
+	jr_oam_hide_top = jr(0x38)  # jr c, hide sprite
+	jr_oam_y_ok = jr(0x18)  # jr y_done
+	oam_y_hi_pos_addr = len(code)
+	patch_jr(jr_oam_y_hi_pos, oam_y_hi_pos_addr)
 	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 	emit(0xFE, 144)  # cp 144
 	jr_oam_hide_bottom = jr(0x30)  # jr nc, hide sprite
+	oam_y_done_addr = len(code)
+	patch_jr(jr_oam_y_ok, oam_y_done_addr)
 	jr_oam_visible = jr(0x18)  # jr draw sprite
 	oam_hide_addr = len(code)
-	patch_jr(jr_oam_hide_x, oam_hide_addr)
-	patch_jr(jr_oam_hide_y, oam_hide_addr)
+	patch_jr(jr_oam_hide_x_hi, oam_hide_addr)
+	patch_jr(jr_oam_hide_left, oam_hide_addr)
+	patch_jr(jr_oam_hide_y_hi, oam_hide_addr)
+	patch_jr(jr_oam_hide_top, oam_hide_addr)
 	patch_jr(jr_oam_hide_right, oam_hide_addr)
 	patch_jr(jr_oam_hide_bottom, oam_hide_addr)
 	emit(0xAF)  # hide y for every tile
@@ -7170,6 +7194,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			sprite_tiles_h = max(1, sprite_tile_count_for_body // sprite_tiles_w)
 		sprite_w_px = max(8, min(32, sprite_tiles_w * 8))
 		sprite_h_px = max(8, min(32, sprite_tiles_h * 8))
+		oam_left_visible_min = (256 - int(sprite_w_px)) & 0xFF
+		oam_top_visible_min = (256 - int(sprite_h_px)) & 0xFF
 		grav_step_x = max(-32, min(32, int(body.get('grav_step_x', 0))))
 		grav_step_y = max(-32, min(32, int(body.get('grav_step_y', 1))))
 		script_spec = body.get('velocity_script') if isinstance(body.get('velocity_script'), dict) else None
@@ -7370,20 +7396,42 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		oam_base = max(0, min(39, int(body.get('oam_base', 0))))
 		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
 		emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
-		jr_oam_hide_x = jr(0x20)  # jr nz, hide sprite
-		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
-		emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
-		jr_oam_hide_y = jr(0x20)  # jr nz, hide sprite
+		jr_oam_x_hi_pos = jr(0x28)  # jr z, x_hi_pos
+		emit(0xFE, 0x7F)  # cp $7F (negative local x range)
+		jr_oam_hide_x_hi = jr(0x20)  # jr nz, hide sprite
+		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+		emit(0xFE, oam_left_visible_min)  # cp (x >= -sprite_w in signed-local space)
+		jr_oam_hide_left = jr(0x38)  # jr c, hide sprite
+		jr_oam_x_ok = jr(0x18)  # jr x_done
+		oam_x_hi_pos_addr = len(code)
+		patch_jr(jr_oam_x_hi_pos, oam_x_hi_pos_addr)
 		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
 		emit(0xFE, 160)  # cp 160
 		jr_oam_hide_right = jr(0x30)  # jr nc, hide sprite
+		oam_x_done_addr = len(code)
+		patch_jr(jr_oam_x_ok, oam_x_done_addr)
+		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+		emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
+		jr_oam_y_hi_pos = jr(0x28)  # jr z, y_hi_pos
+		emit(0xFE, 0x7F)  # cp $7F (negative local y range)
+		jr_oam_hide_y_hi = jr(0x20)  # jr nz, hide sprite
+		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+		emit(0xFE, oam_top_visible_min)  # cp (y >= -sprite_h in signed-local space)
+		jr_oam_hide_top = jr(0x38)  # jr c, hide sprite
+		jr_oam_y_ok = jr(0x18)  # jr y_done
+		oam_y_hi_pos_addr = len(code)
+		patch_jr(jr_oam_y_hi_pos, oam_y_hi_pos_addr)
 		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 		emit(0xFE, 144)  # cp 144
 		jr_oam_hide_bottom = jr(0x30)  # jr nc, hide sprite
+		oam_y_done_addr = len(code)
+		patch_jr(jr_oam_y_ok, oam_y_done_addr)
 		jr_oam_draw = jr(0x18)  # jr draw sprite
 		oam_hide_addr = len(code)
-		patch_jr(jr_oam_hide_x, oam_hide_addr)
-		patch_jr(jr_oam_hide_y, oam_hide_addr)
+		patch_jr(jr_oam_hide_x_hi, oam_hide_addr)
+		patch_jr(jr_oam_hide_left, oam_hide_addr)
+		patch_jr(jr_oam_hide_y_hi, oam_hide_addr)
+		patch_jr(jr_oam_hide_top, oam_hide_addr)
 		patch_jr(jr_oam_hide_right, oam_hide_addr)
 		patch_jr(jr_oam_hide_bottom, oam_hide_addr)
 		emit(0xAF)  # hide y for every tile
@@ -8210,6 +8258,8 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 		vel_alias_name = None
 		base_vx = 0
 		base_vx_found = False
+		base_vy = 0
+		base_vy_found = False
 		left_delta = 0
 		right_delta = 0
 		jump_y = None
@@ -8246,9 +8296,13 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 						if isinstance(stmt.value, ast.List) and len(stmt.value.elts) >= 2:
 							vel_alias_name = target.id
 							vx_candidate = _ast_small_int(stmt.value.elts[0], consts)
+							vy_candidate = _ast_small_int(stmt.value.elts[1], consts)
 							if isinstance(vx_candidate, int):
 								base_vx = vx_candidate
 								base_vx_found = True
+							if isinstance(vy_candidate, int):
+								base_vy = vy_candidate
+								base_vy_found = True
 						elif vel_alias_name == target.id:
 							vel_alias_name = None
 			elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
@@ -8316,8 +8370,11 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 			return None
 		if not base_vx_found:
 			base_vx = 0
+		if not base_vy_found:
+			base_vy = 0
 		return {
 			'base_vx' : max(-127, min(127, int(base_vx))),
+			'base_vy' : max(-127, min(127, int(base_vy))),
 			'left_delta' : max(-8, min(8, int(left_delta))),
 			'right_delta' : max(-8, min(8, int(right_delta))),
 			'jump_y' : None if jump_y is None else max(-8, min(8, int(jump_y))),
