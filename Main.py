@@ -11,11 +11,19 @@ if os.path.isdir(PY2GB_PATH) and PY2GB_PATH not in sys.path:
 from MathUtil import *
 from SystemUtil import *
 try:
-	from py2gba.blender_export import export_gba_py_assembly as _py2gb_export_gba_py_assembly
-	from py2gba.blender_export import normalize_gb_script_code as _py2gb_normalize_gb_script_code
-	from py2gba.blender_export import py2gba_asm as _py2gb_py2gb_asm
-	from py2gba.blender_export import is_runtime_script_binding_name as _py2gb_is_runtime_script_binding_name
-	from py2gba.blender_export import augment_runtime_physics_maps as _py2gb_augment_runtime_physics_maps
+	try:
+		from py2gb.blender_export import export_gba_py_assembly as _py2gb_export_gba_py_assembly
+		from py2gb.blender_export import normalize_gb_script_code as _py2gb_normalize_gb_script_code
+		from py2gb.blender_export import py2gb_asm as _py2gb_py2gb_asm
+		from py2gb.blender_export import is_runtime_script_binding_name as _py2gb_is_runtime_script_binding_name
+		from py2gb.blender_export import augment_runtime_physics_maps as _py2gb_augment_runtime_physics_maps
+	except Exception:
+		# Compatibility path: some renamed toolchains still expose py2gba module symbols.
+		from py2gba.blender_export import export_gba_py_assembly as _py2gb_export_gba_py_assembly
+		from py2gba.blender_export import normalize_gb_script_code as _py2gb_normalize_gb_script_code
+		from py2gba.blender_export import py2gba_asm as _py2gb_py2gb_asm
+		from py2gba.blender_export import is_runtime_script_binding_name as _py2gb_is_runtime_script_binding_name
+		from py2gba.blender_export import augment_runtime_physics_maps as _py2gb_augment_runtime_physics_maps
 except Exception:
 	_py2gb_export_gba_py_assembly = None
 	_py2gb_normalize_gb_script_code = None
@@ -1670,7 +1678,7 @@ def Py2Js (pyCode, txtBlock = None):
 	return jsCode
 
 def Py2GbAsm (pyCode, txtBlock = None, symbol_base : str = 'gba_export', kind : str = 'update'):
-	'''Transpile Python to ARM Thumb assembly for GBA (via py2gba package). kind is "init" or "update".'''
+	'''Transpile Python to ARM Thumb assembly for GBA (via py2gb package). kind is "init" or "update".'''
 	if _py2gb_py2gb_asm:
 		return _py2gb_py2gb_asm(
 			pyCode,
@@ -1681,9 +1689,6 @@ def Py2GbAsm (pyCode, txtBlock = None, symbol_base : str = 'gba_export', kind : 
 			kind = kind,
 		)
 	return ''
-
-# Backward-compatible alias for older callers.
-Py2GbaAsm = Py2GbAsm
 
 def _gba_draw_circle_rgba (canvas, center_xy, radius, color_rgba, width = 0.0):
 	try:
@@ -1758,8 +1763,9 @@ _RUNTIME_GB_BUTTON_KEYSYM_DEFAULTS = {
 	'RIGHT' : 'Right',
 	'DOWN' : 'Down',
 	'UP' : 'Up',
-	'A' : 'x',
-	'B' : 'z',
+	# Support common emulator bindings by default.
+	'A' : 'x|a',
+	'B' : 'z|s',
 	'START' : 'Return',
 	'SELECT' : 'BackSpace',
 }
@@ -1825,6 +1831,11 @@ def _runtime_try_init_x11 ():
 		return False
 
 def _runtime_x11_key_pressed (keysym_name : str):
+	if isinstance(keysym_name, str) and ('|' in keysym_name):
+		for part in keysym_name.split('|'):
+			if _runtime_x11_key_pressed(part.strip()):
+				return True
+		return False
 	if not _runtime_try_init_x11():
 		return False
 	state = _RUNTIME_X11
@@ -1838,6 +1849,14 @@ def _runtime_x11_key_pressed (keysym_name : str):
 		keycode = cache.get(keysym_name)
 		if keycode is None:
 			keysym = lib.XStringToKeysym(keysym_name.encode('utf-8'))
+			if keysym == 0 and isinstance(keysym_name, str):
+				alt = keysym_name.lower()
+				if alt != keysym_name:
+					keysym = lib.XStringToKeysym(alt.encode('utf-8'))
+			if keysym == 0 and isinstance(keysym_name, str):
+				alt = keysym_name.upper()
+				if alt != keysym_name:
+					keysym = lib.XStringToKeysym(alt.encode('utf-8'))
 			if keysym == 0:
 				cache[keysym_name] = 0
 				return False
@@ -1881,7 +1900,7 @@ def _runtime_key_state_snapshot ():
 		out.append(bool(_runtime_x11_key_pressed(btn_map.get(btn, ''))))
 	return tuple(out)
 
-def _eval_runtime_expr_value (value, frame : int = None, start_time : float = None, extra_env : dict = None):
+def _eval_runtime_expr_value (value, frame : int = None, start_time : float = None, extra_env : dict = None, const_env : dict = None):
 	if isinstance(value, (int, float)):
 		return float(value)
 	if value is None:
@@ -1904,6 +1923,7 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 		pass
 	key_state = _runtime_key_state_snapshot()
 	extra_env = extra_env if isinstance(extra_env, dict) else {}
+	const_env = const_env if isinstance(const_env, dict) else {}
 	protected_names = set((
 		'int', 'float', 'round', 'abs', 'max', 'min', 'len', 'bool',
 		'hasattr', 'getattr', 'keys', 'js13k_get_pressed',
@@ -1925,6 +1945,13 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 		'keys' : key_state,
 		'js13k_get_pressed' : (lambda : key_state),
 	})
+	for k, v in const_env.items():
+		name = str(k)
+		if re.fullmatch(r'[A-Za-z_]\w*', name) and not name.startswith('__'):
+			if name in protected_names:
+				continue
+			if _is_simple_const_value(v):
+				eval_locals[name] = v
 	for k, v in extra_env.items():
 		name = str(k)
 		if re.fullmatch(r'[A-Za-z_]\w*', name) and not name.startswith('__'):
@@ -2765,6 +2792,31 @@ def _extract_print_calls_from_script (code : str, is_init : bool, owner_name : s
 		vel_env = vel_env,
 	)
 
+def _strip_print_calls_from_python (code : str):
+	'''Return Python code with top-level `print(...)` expression statements removed.'''
+	try:
+		tree = ast.parse(code or '')
+	except Exception:
+		return str(code or '')
+	class _StripPrintExprs(ast.NodeTransformer):
+		def visit_Expr (self, node):
+			if (
+				isinstance(node.value, ast.Call)
+				and isinstance(node.value.func, ast.Name)
+				and node.value.func.id == 'print'
+			):
+				return None
+			return self.generic_visit(node)
+	tree = _StripPrintExprs().visit(tree)
+	try:
+		tree = ast.fix_missing_locations(tree)
+	except Exception:
+		pass
+	try:
+		return ast.unparse(tree)
+	except Exception:
+		return str(code or '')
+
 def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries : list):
 	if not isinstance(script_runtime, dict):
 		script_runtime = {}
@@ -2788,8 +2840,10 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	print_expr_env_by_scope = {}
 	print_const_env_by_owner = {}
 	print_expr_env_by_owner = {}
+	mirror_scripts = []
 	for entry_idx, entry in enumerate(entries):
 		code = entry.get('code', '')
+		raw_code = entry.get('raw_code', code)
 		is_init = bool(entry.get('is_init'))
 		owner_name = entry.get('owner_name') or '__world__'
 		scope_key = str((owner_name, bool(is_init), entry.get('symbol_hint') or '', int(entry_idx)))
@@ -2853,6 +2907,13 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		# Backward-compat fallback map (owner scoped) for pre-existing entries.
 		print_const_env_by_owner[owner_name] = dict(env.get('const_env', {}))
 		print_expr_env_by_owner[owner_name] = dict(env.get('expr_env', {}))
+		mirror_scripts.append({
+			'scope_key' : scope_key,
+			'owner_name' : owner_name,
+			'is_init' : bool(is_init),
+			# Mirror runner resolves print output itself; avoid duplicate script prints.
+			'code' : _strip_print_calls_from_python(raw_code),
+		})
 	# Prefer parser-rebuilt print metadata for script owner/phase pairs we handled,
 	# while preserving backend-provided print calls for any untouched pairs.
 	for info in existing_print_calls:
@@ -2880,12 +2941,79 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	script_runtime['print_expr_env_by_scope'] = print_expr_env_by_scope
 	script_runtime['print_const_env_by_owner'] = print_const_env_by_owner
 	script_runtime['print_expr_env_by_owner'] = print_expr_env_by_owner
+	script_runtime['mirror_scripts'] = mirror_scripts
 	return script_runtime
 
+def _inject_gbc_signed_position_wrappers (code : str):
+	code = str(code or '')
+	if '_js13k_gbc_signed_pos_wrapped' in code:
+		return code
+	prefix = (
+		'_js13k_gbc_signed_pos_wrapped = True\n'
+		'try:\n'
+		'    sim = sim\n'
+		'except:\n'
+		'    try:\n'
+		'        sim = physics\n'
+		'    except:\n'
+		'        sim = None\n'
+		'_js13k_gbc_pos_bias = 32768.0\n'
+		'def _js13k_gbc_bias_pos_for_set(_pos):\n'
+		'    try:\n'
+		'        return [\n'
+		'            (float(_pos[0]) + _js13k_gbc_pos_bias) % 65536.0,\n'
+		'            ((-float(_pos[1])) + _js13k_gbc_pos_bias) % 65536.0,\n'
+		'        ]\n'
+		'    except:\n'
+		'        return _pos\n'
+		'def _js13k_gbc_unbias_pos_for_get(_pos):\n'
+		'    try:\n'
+		'        return [\n'
+		'            float(_pos[0]) - _js13k_gbc_pos_bias,\n'
+		'            -(float(_pos[1]) - _js13k_gbc_pos_bias),\n'
+		'        ]\n'
+		'    except:\n'
+		'        return [0.0, 0.0]\n'
+		'if (sim is not None) and hasattr(sim, "get_rigid_body_position") and not getattr(sim, "_js13k_gbc_get_rbpos_safe", False):\n'
+		'    _js13k_gbc_orig_get_rigid_body_position = sim.get_rigid_body_position\n'
+		'    def _js13k_gbc_get_rigid_body_position_safe(rigidBody):\n'
+		'        try:\n'
+		'            return _js13k_gbc_unbias_pos_for_get(_js13k_gbc_orig_get_rigid_body_position(rigidBody))\n'
+		'        except:\n'
+		'            return [0.0, 0.0]\n'
+		'    sim.get_rigid_body_position = _js13k_gbc_get_rigid_body_position_safe\n'
+		'    sim._js13k_gbc_get_rbpos_safe = True\n'
+		'if (sim is not None) and hasattr(sim, "set_rigid_body_position") and not getattr(sim, "_js13k_gbc_set_rbpos_safe", False):\n'
+		'    _js13k_gbc_orig_set_rigid_body_position = sim.set_rigid_body_position\n'
+		'    def _js13k_gbc_set_rigid_body_position_safe(rigidBody, pos, wakeUp = True):\n'
+		'        return _js13k_gbc_orig_set_rigid_body_position(rigidBody, _js13k_gbc_bias_pos_for_set(pos), wakeUp)\n'
+		'    sim.set_rigid_body_position = _js13k_gbc_set_rigid_body_position_safe\n'
+		'    sim._js13k_gbc_set_rbpos_safe = True\n'
+		'if (sim is not None) and hasattr(sim, "get_collider_position") and not getattr(sim, "_js13k_gbc_get_colpos_safe", False):\n'
+		'    _js13k_gbc_orig_get_collider_position = sim.get_collider_position\n'
+		'    def _js13k_gbc_get_collider_position_safe(collider):\n'
+		'        try:\n'
+		'            return _js13k_gbc_unbias_pos_for_get(_js13k_gbc_orig_get_collider_position(collider))\n'
+		'        except:\n'
+		'            return [0.0, 0.0]\n'
+		'    sim.get_collider_position = _js13k_gbc_get_collider_position_safe\n'
+		'    sim._js13k_gbc_get_colpos_safe = True\n'
+		'if (sim is not None) and hasattr(sim, "set_collider_position") and not getattr(sim, "_js13k_gbc_set_colpos_safe", False):\n'
+		'    _js13k_gbc_orig_set_collider_position = sim.set_collider_position\n'
+		'    def _js13k_gbc_set_collider_position_safe(collider, pos, wakeUp = True):\n'
+		'        return _js13k_gbc_orig_set_collider_position(collider, _js13k_gbc_bias_pos_for_set(pos), wakeUp)\n'
+		'    sim.set_collider_position = _js13k_gbc_set_collider_position_safe\n'
+		'    sim._js13k_gbc_set_colpos_safe = True\n'
+	)
+	return prefix + code
+
 def _normalize_gb_script_code (code : str, is_init : bool, script_type : str = '', owner_name : str = ''):
+	out = code
 	if callable(_py2gb_normalize_gb_script_code):
-		return _py2gb_normalize_gb_script_code(code, is_init, script_type, owner_name)
-	return code
+		out = _py2gb_normalize_gb_script_code(code, is_init, script_type, owner_name)
+	if script_type == 'gbc-py':
+		out = _inject_gbc_signed_position_wrappers(out)
+	return out
 
 def ExportGbaPyAssembly (world, gba_out_path : str):
 	'''Collect gba-py scripts from world and exported objects; write Thumb assembly next to the .gba.'''
@@ -2900,9 +3028,11 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
 			if _type == 'gba-py':
+				raw_script_txt = scriptTxt
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, '__world__')
 				script_entries.append({
 					'code' : scriptTxt,
+					'raw_code' : raw_script_txt,
 					'is_init' : is_init,
 					'script_obj' : script,
 					'owner_name' : '__world__',
@@ -2917,9 +3047,11 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
 			if _type == 'gba-py':
+				raw_script_txt = scriptTxt
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, ob.name)
 				script_entries.append({
 					'code' : scriptTxt,
+					'raw_code' : raw_script_txt,
 					'is_init' : is_init,
 					'script_obj' : script,
 					'owner_name' : ob.name,
@@ -2927,7 +3059,7 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 				})
 	exportType = prev_export
 	if _py2gb_export_gba_py_assembly:
-		runtime = _run_py2gba_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gba_out_path, strict_print_exprs = False)
+		runtime = _run_py2gb_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gba_out_path, strict_print_exprs = False)
 		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
 	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
 
@@ -2944,9 +3076,11 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
 			if _type == 'gbc-py':
+				raw_script_txt = scriptTxt
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, '__world__')
 				script_entries.append({
 					'code' : scriptTxt,
+					'raw_code' : raw_script_txt,
 					'is_init' : is_init,
 					'script_obj' : script,
 					'owner_name' : '__world__',
@@ -2961,9 +3095,11 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
 			if _type == 'gbc-py':
+				raw_script_txt = scriptTxt
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, ob.name)
 				script_entries.append({
 					'code' : scriptTxt,
+					'raw_code' : raw_script_txt,
 					'is_init' : is_init,
 					'script_obj' : script,
 					'owner_name' : ob.name,
@@ -2971,7 +3107,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				})
 	exportType = prev_export
 	if _py2gb_export_gba_py_assembly:
-		runtime = _run_py2gba_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gbc_out_path, strict_print_exprs = True)
+		runtime = _run_py2gb_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gbc_out_path, strict_print_exprs = True)
 		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
 	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
 
@@ -5280,7 +5416,7 @@ def PostBuild ():
 	bpy.context.scene.export_svg_output = prevSvgExportPath
 
 _GBA_EMU_PROCS = []
-def _run_py2gba_export_with_resolved_logs (export_fn, script_entries, out_path, strict_print_exprs : bool = False):
+def _run_py2gb_export_with_resolved_logs (export_fn, script_entries, out_path, strict_print_exprs : bool = False):
 	start_time = time.time()
 	stdout_buf = io.StringIO()
 	stderr_buf = io.StringIO()
@@ -5722,6 +5858,11 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 	print_expr_env_by_scope = dict((script_runtime or {}).get('print_expr_env_by_scope') or {})
 	print_const_env_by_owner = dict((script_runtime or {}).get('print_const_env_by_owner') or {})
 	print_expr_env_by_owner = dict((script_runtime or {}).get('print_expr_env_by_owner') or {})
+	mirror_scripts_raw = list((script_runtime or {}).get('mirror_scripts') or [])
+	mirror_scripts = [s for s in mirror_scripts_raw if isinstance(s, dict) and isinstance(s.get('code'), str)]
+	mirror_init_scripts = [s for s in mirror_scripts if bool(s.get('is_init'))]
+	mirror_update_scripts = [s for s in mirror_scripts if not bool(s.get('is_init'))]
+	_compiled_script_cache = {}
 	init_calls = [p for p in print_calls if p.get('is_init')]
 	update_calls = [p for p in print_calls if not p.get('is_init')]
 	if not init_calls and not update_calls:
@@ -5733,15 +5874,25 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 		per_script_locals = __import__('builtins').globals().get('scriptLocals', {})
 		if not isinstance(per_script_locals, dict):
 			per_script_locals = {}
+		mirror_script_locals = {}
 		def _owner_scopes (owner):
+			out = {}
 			owner_scope = per_script_locals.get(owner, {})
-			if not isinstance(owner_scope, dict):
-				return {}
-			# New layout: scriptLocals[owner][scriptKey] = locals dict.
-			if any(isinstance(v, dict) for v in owner_scope.values()):
-				return owner_scope
-			# Legacy layout: scriptLocals[owner] = locals dict.
-			return {'__legacy__' : owner_scope}
+			if isinstance(owner_scope, dict):
+				# New layout: scriptLocals[owner][scriptKey] = locals dict.
+				if any(isinstance(v, dict) for v in owner_scope.values()):
+					for k, v in owner_scope.items():
+						if isinstance(v, dict):
+							out[k] = v
+				# Legacy layout: scriptLocals[owner] = locals dict.
+				else:
+					out['__legacy__'] = owner_scope
+			mirror_scope = mirror_script_locals.get(owner, {})
+			if isinstance(mirror_scope, dict):
+				for k, v in mirror_scope.items():
+					if isinstance(v, dict):
+						out[k] = v
+			return out
 		def _eval_env_for_owner(owner, frame = None, scope_key = None):
 			env = {}
 			owner_scopes = _owner_scopes(owner)
@@ -5770,6 +5921,67 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				env.setdefault('deltaTime', dt)
 				env.setdefault('frame', int(frame))
 			return env
+		def _mirror_ticks_ms (_frame = None):
+			if _frame is None:
+				return 0
+			try:
+				return int(round((max(0, int(_frame) - 1) * 1000.0) / 60.0))
+			except Exception:
+				return 0
+		class _MirrorPygameShim:
+			K_LEFT = _RUNTIME_KEY_INDEX['LEFT']
+			K_RIGHT = _RUNTIME_KEY_INDEX['RIGHT']
+			K_DOWN = _RUNTIME_KEY_INDEX['DOWN']
+			K_UP = _RUNTIME_KEY_INDEX['UP']
+			K_A = _RUNTIME_KEY_INDEX['A']
+			K_B = _RUNTIME_KEY_INDEX['B']
+			K_START = _RUNTIME_KEY_INDEX['START']
+			K_SELECT = _RUNTIME_KEY_INDEX['SELECT']
+			class time:
+				@staticmethod
+				def get_ticks ():
+					return _mirror_ticks_ms(frame)
+			class key:
+				@staticmethod
+				def get_pressed ():
+					return _runtime_key_state_snapshot()
+		def _run_mirror_script (script_info, frame = None):
+			if not isinstance(script_info, dict):
+				return
+			owner = script_info.get('owner_name') or '__world__'
+			scope_key = script_info.get('scope_key')
+			code_txt = str(script_info.get('code', '') or '')
+			if code_txt.strip() == '':
+				return
+			cache_key = (scope_key, code_txt)
+			code_obj = _compiled_script_cache.get(cache_key)
+			if code_obj is None:
+				try:
+					code_obj = compile(code_txt, f'<mirror:{owner}:{scope_key}>', 'exec')
+				except Exception:
+					_compiled_script_cache[cache_key] = False
+					return
+				_compiled_script_cache[cache_key] = code_obj
+			if code_obj is False:
+				return
+			env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key)
+			if owner != '__world__':
+				try:
+					this_obj = type('MirrorThis', (), {})()
+					this_obj.id = owner
+					env.setdefault('this', this_obj)
+				except Exception:
+					pass
+			env.setdefault('pygame', _MirrorPygameShim())
+			env.setdefault('math', math)
+			env.setdefault('random', __import__('random'))
+			env.setdefault('__builtins__', __import__('builtins'))
+			try:
+				exec(code_obj, env, env)
+			except Exception:
+				return
+			owner_store = mirror_script_locals.setdefault(owner, {})
+			owner_store[scope_key] = env
 		def _const_env_for_owner (owner, scope_key = None):
 			env = {}
 			world_consts = print_const_env_by_owner.get('__world__')
@@ -5826,6 +6038,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			val = _eval_runtime_expr_value(
 				cond,
 				frame = frame,
+				const_env = _const_env_for_owner(owner, scope_key = scope_key),
 				extra_env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key),
 			)
 			if val is None:
@@ -5834,14 +6047,48 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 		try:
 			_probe_env = _eval_env_for_owner('__world__')
 			_probe_sim = _probe_env.get('sim', _probe_env.get('physics'))
+			# When we can execute real script updates in the mirror, disable the
+			# legacy interpreted velocity fallback to avoid conflicting control.
+			if mirror_update_scripts and hasattr(_probe_sim, 'velocity_script'):
+				try:
+					_probe_sim.velocity_script = None
+				except Exception:
+					pass
 			print(f"[{script_label}:mirror] sim={type(_probe_sim).__name__}")
 		except Exception:
 			pass
 		while proc.poll() is None:
 			frame += 1
+			if frame == 1:
+				for script_info in mirror_init_scripts:
+					_run_mirror_script(script_info, frame = frame)
 			if callable(mirror_step) and frame > 1:
+				_step_probe_owner = '__world__'
+				_step_probe_scope = None
+				if update_calls:
+					_step_probe_owner = update_calls[0].get('owner_name') or '__world__'
+					_step_probe_scope = update_calls[0].get('scope_key')
+				_step_probe_sim = None
+				_pre_vs = None
+				_pre_vy = None
+				_pre_y = None
+				try:
+					_step_probe_env = _eval_env_for_owner(_step_probe_owner, frame = frame, scope_key = _step_probe_scope)
+					_step_probe_sim = _step_probe_env.get('sim', _step_probe_env.get('physics'))
+					if _step_probe_sim is not None:
+						_pre_vs = getattr(_step_probe_sim, 'velocity_script', None)
+						_pre_vy = getattr(_step_probe_sim, 'vy', None)
+						_pre_y = getattr(_step_probe_sim, 'y', None)
+				except Exception:
+					pass
 				try:
 					mirror_step()
+				except Exception:
+					pass
+				try:
+					_post_vs = getattr(_step_probe_sim, 'velocity_script', None) if _step_probe_sim is not None else None
+					_post_vy = getattr(_step_probe_sim, 'vy', None) if _step_probe_sim is not None else None
+					_post_y = getattr(_step_probe_sim, 'y', None) if _step_probe_sim is not None else None
 				except Exception:
 					pass
 			if not init_printed:
@@ -5860,6 +6107,8 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					)
 					print(f"[{script_label}:init:runtime] {owner} {text}")
 				init_printed = True
+			for script_info in mirror_update_scripts:
+				_run_mirror_script(script_info, frame = frame)
 			for info in update_calls:
 				if not _should_emit(info, frame):
 					continue
@@ -5902,6 +6151,8 @@ _GBC_DEFAULT_BG_COLORS = [
 	(52, 104, 86),
 	(8, 24, 32),
 ]
+_GBC_POSITION_BIAS = 32768
+_GBC_POSITION_MASK = 0xFFFF
 
 def _gba_complement_check (rom : bytearray):
 	chk = 0
@@ -6338,12 +6589,15 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	script_left_delta = 0
 	script_right_delta = 0
 	script_jump_y = None
+	script_jump_vy_max = None
 	if script_spec is not None:
 		script_base_vx = max(-127, min(127, int(script_spec.get('base_vx', 0))))
 		script_left_delta = max(-8, min(8, int(script_spec.get('left_delta', 0))))
 		script_right_delta = max(-8, min(8, int(script_spec.get('right_delta', 0))))
 		if script_spec.get('jump_y', None) is not None:
 			script_jump_y = max(-8, min(8, int(script_spec.get('jump_y', 0))))
+		if script_spec.get('jump_vy_max', None) is not None:
+			script_jump_vy_max = max(-127, min(127, int(script_spec.get('jump_vy_max', 0))))
 	collider_count = max(0, min(31, int(collider_count)))
 	sprite_tile_count = max(1, min(16, int(sprite_tile_count)))
 	sprite_tiles_w = max(1, min(4, int(sprite_tiles_w)))
@@ -6501,12 +6755,23 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			emit(0xE6, 0x01)  # and $01 (A; active low)
 			emit(0xFE, 0x00)  # cp $00 (pressed)
 			jr_not_a = jr(0x20)  # jr nz, no_jump
+			jr_jump_guard_skip = None
+			if script_jump_vy_max is not None:
+				# Script condition `vel[1] <= n` uses script-space Y-up velocity.
+				# Internal phase1 stores Y-down velocity, so compare `vy >= -n`.
+				jump_internal_min_vy = max(-127, min(127, int(-int(script_jump_vy_max))))
+				emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
+				emit(0xEE, 0x80)  # xor $80 (signed -> unsigned bias)
+				emit(0xFE, (int(jump_internal_min_vy) ^ 0x80) & 0xFF)  # cp (min_vy^$80)
+				jr_jump_guard_skip = jr(0x38)  # jr c, no_jump (vy < min_vy)
 			ld_a_imm((-int(script_jump_y)) & 0xFF)  # script-space up -> internal down
 			emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
 			ld_a_imm(0x00)
 			emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
 			no_jump_addr = len(code)
 			patch_jr(jr_not_a, no_jump_addr)
+			if jr_jump_guard_skip is not None:
+				patch_jr(jr_jump_guard_skip, no_jump_addr)
 	# x += sign_extend(vx)
 	emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 	emit(0x47)  # ld b,a (vx)
@@ -6550,10 +6815,10 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	# Runtime collider pass: resolve downward contacts against authored collider AABBs.
 	if collider_count > 0:
 		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)  # ld a,(x_hi)
-		emit(0xB7)  # or a
+		emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 		jr_skip_collider_world_x = jr(0x20)  # jr nz, no collider step
 		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)  # ld a,(y_hi)
-		emit(0xB7)  # or a
+		emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 		jr_skip_collider_world_y = jr(0x20)  # jr nz, no collider step
 		emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
 		emit(0xB7)  # or a
@@ -6622,10 +6887,10 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		patch_jr(jr_skip_collider_neg, collider_skip_addr)
 	# Hide sprite when body is outside the local 0..255 OAM addressable area.
 	emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
-	emit(0xB7)  # or a
+	emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 	jr_oam_hide_x = jr(0x20)  # jr nz, hide sprite
 	emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
-	emit(0xB7)  # or a
+	emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 	jr_oam_hide_y = jr(0x20)  # jr nz, hide sprite
 	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
 	emit(0xFE, 160)  # cp 160
@@ -6912,12 +7177,15 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		script_left_delta = 0
 		script_right_delta = 0
 		script_jump_y = None
+		script_jump_vy_max = None
 		if script_spec is not None:
 			script_base_vx = max(-127, min(127, int(script_spec.get('base_vx', 0))))
 			script_left_delta = max(-8, min(8, int(script_spec.get('left_delta', 0))))
 			script_right_delta = max(-8, min(8, int(script_spec.get('right_delta', 0))))
 			if script_spec.get('jump_y', None) is not None:
 				script_jump_y = max(-8, min(8, int(script_spec.get('jump_y', 0))))
+			if script_spec.get('jump_vy_max', None) is not None:
+				script_jump_vy_max = max(-127, min(127, int(script_spec.get('jump_vy_max', 0))))
 		if grav_step_x != 0:
 			grav_mag_x = max(1, min(32, abs(int(grav_step_x))))
 			emit(0xFA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)  # ld a,(gacc_x)
@@ -6968,12 +7236,23 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				emit(0xE6, 0x01)  # and $01 (A; active low)
 				emit(0xFE, 0x00)  # cp $00 (pressed)
 				jr_not_a = jr(0x20)  # jr nz, no_jump
+				jr_jump_guard_skip = None
+				if script_jump_vy_max is not None:
+					# Script condition `vel[1] <= n` uses script-space Y-up velocity.
+					# Internal phase1 stores Y-down velocity, so compare `vy >= -n`.
+					jump_internal_min_vy = max(-127, min(127, int(-int(script_jump_vy_max))))
+					emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
+					emit(0xEE, 0x80)  # xor $80 (signed -> unsigned bias)
+					emit(0xFE, (int(jump_internal_min_vy) ^ 0x80) & 0xFF)  # cp (min_vy^$80)
+					jr_jump_guard_skip = jr(0x38)  # jr c, no_jump (vy < min_vy)
 				ld_a_imm((-int(script_jump_y)) & 0xFF)
 				emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
 				ld_a_imm(0x00)
 				emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
 				no_jump_addr = len(code)
 				patch_jr(jr_not_a, no_jump_addr)
+				if jr_jump_guard_skip is not None:
+					patch_jr(jr_jump_guard_skip, no_jump_addr)
 		# x += sign_extend(vx)
 		emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 		emit(0x47)  # ld b,a (vx)
@@ -7017,10 +7296,10 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		if collider_count > 0:
 			# Runtime collider pass: resolve downward contacts against authored collider AABBs.
 			emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)  # ld a,(x_hi)
-			emit(0xB7)  # or a
+			emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 			jr_skip_collider_world_x = jr(0x20)  # jr nz, no collider step
 			emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)  # ld a,(y_hi)
-			emit(0xB7)  # or a
+			emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 			jr_skip_collider_world_y = jr(0x20)  # jr nz, no collider step
 			emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
 			emit(0xB7)  # or a
@@ -7090,10 +7369,10 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		# Update metasprite OAM from solved body position.
 		oam_base = max(0, min(39, int(body.get('oam_base', 0))))
 		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
-		emit(0xB7)  # or a
+		emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 		jr_oam_hide_x = jr(0x20)  # jr nz, hide sprite
 		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
-		emit(0xB7)  # or a
+		emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 		jr_oam_hide_y = jr(0x20)  # jr nz, hide sprite
 		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
 		emit(0xFE, 160)  # cp 160
@@ -7516,6 +7795,8 @@ class _GbcPhase1MirrorSim:
 		self.offscreen_bottom_y = max(145, min(252, int(offscreen_bottom_y)))
 		self.velocity_script = velocity_script if isinstance(velocity_script, dict) else None
 		self.dead = False
+	def _to_local (self, v):
+		return int(v) - _GBC_POSITION_BIAS
 	def _step_gravity_axis (self, step, acc, vel):
 		if step == 0:
 			return acc, vel
@@ -7527,14 +7808,16 @@ class _GbcPhase1MirrorSim:
 		vel = max(-127, min(127, int(vel)))
 		return int(acc), int(vel)
 	def _is_supported (self):
-		feet_y = int(self.y) + int(self.sprite_h_px)
+		local_y = self._to_local(self.y)
+		local_x = self._to_local(self.x)
+		feet_y = int(local_y) + int(self.sprite_h_px)
 		for cx, cy, cw, _ch in self.collider_rects:
 			if feet_y != int(cy):
 				continue
 			right = int(cx) + int(cw)
-			if (int(self.x) + int(self.sprite_w_px)) <= int(cx):
+			if (int(local_x) + int(self.sprite_w_px)) <= int(cx):
 				continue
-			if int(self.x) >= right:
+			if int(local_x) >= right:
 				continue
 			return True
 		return False
@@ -7554,9 +7837,16 @@ class _GbcPhase1MirrorSim:
 			self.vx = max(-127, min(127, int(vx)))
 			jump_y = self.velocity_script.get('jump_y', None)
 			if jump_y is not None and bool(len(keys) > _RUNTIME_KEY_INDEX['A'] and keys[_RUNTIME_KEY_INDEX['A']]):
-				# Script-space Y is up, internal velocity is Y-down.
-				self.vy = max(-127, min(127, int(-int(jump_y))))
-				self.gacc_y = 0
+				jump_vy_max = self.velocity_script.get('jump_vy_max', None)
+				can_jump = True
+				if jump_vy_max is not None:
+					# Match script-space guard semantics: vel[1] is Y-up.
+					script_vy = int(-int(self.vy))
+					can_jump = bool(script_vy <= int(jump_vy_max))
+				if can_jump:
+					# Script-space Y is up, internal velocity is Y-down.
+					self.vy = max(-127, min(127, int(-int(jump_y))))
+					self.gacc_y = 0
 		self.x = (int(self.x) + int(self.vx)) & 0xFFFF
 		# Keep resting bodies stable on top of colliders instead of re-accelerating each frame.
 		if self.vy >= 0 and self._is_supported():
@@ -7567,17 +7857,19 @@ class _GbcPhase1MirrorSim:
 			self.y = (int(self.y) + int(self.vy)) & 0xFFFF
 		# Match phase1 runtime: only resolve downward contacts.
 		if self.vy > 0:
+			local_x = self._to_local(self.x)
+			local_y = self._to_local(self.y)
 			for cx, cy, cw, _ch in self.collider_rects:
 				right = int(cx) + int(cw)
-				if (self.x + self.sprite_w_px) <= int(cx):
+				if (local_x + self.sprite_w_px) <= int(cx):
 					continue
-				if self.x >= right:
+				if local_x >= right:
 					continue
-				if self.y >= int(cy):
+				if local_y >= int(cy):
 					continue
-				if (self.y + self.sprite_h_px) < int(cy):
+				if (local_y + self.sprite_h_px) < int(cy):
 					continue
-				self.y = max(0, int(cy) - self.sprite_h_px)
+				self.y = (_GBC_POSITION_BIAS + max(0, int(cy) - self.sprite_h_px)) & _GBC_POSITION_MASK
 				self.vy = 0
 				self.gacc_y = 0
 				break
@@ -7589,22 +7881,17 @@ class _GbcPhase1MirrorSim:
 		except Exception:
 			pass
 	def get_linear_velocity (self, _rigidBody):
-		# Include fractional gravity accumulator so reads are not stuck at 0 between integer steps.
-		vx_f = float(self.vx)
-		vy_f = float(self.vy)
-		if self.grav_step_x != 0:
-			vx_f += (1.0 if self.grav_step_x > 0 else -1.0) * (float(self.gacc_x) / 16.0)
-		if self.grav_step_y != 0:
-			vy_f += (1.0 if self.grav_step_y > 0 else -1.0) * (float(self.gacc_y) / 16.0)
-		return [vx_f, -vy_f]
+		# Mirror script-facing velocities as integer steps to avoid feedback when
+		# scripts read-then-write velocity every frame.
+		return [float(self.vx), -float(self.vy)]
 	def set_rigid_body_position (self, _rigidBody, pos, wakeUp = True):
 		try:
-			self.x = max(0, min(65535, int(round(float(pos[0])))))
-			self.y = max(0, min(65535, int(round(-float(pos[1])))))
+			self.x = (int(round(float(pos[0]))) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
+			self.y = (int(round(-float(pos[1]))) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
 		except Exception:
 			pass
 	def get_rigid_body_position (self, _rigidBody):
-		return [float(self.x), -float(self.y)]
+		return [float(self.x - _GBC_POSITION_BIAS), -float(self.y - _GBC_POSITION_BIAS)]
 	def set_rigid_body_rotation (self, _rigidBody, rot, wakeUp = True):
 		return None
 	def get_rigid_body_rotation (self, _rigidBody):
@@ -7671,6 +7958,16 @@ def _ast_numeric_vec2_literal (node):
 		return None
 	return [float(vx), float(vy)]
 
+def _ast_is_this_id_expr (node):
+	if hasattr(ast, 'Index') and isinstance(node, ast.Index):
+		node = node.value
+	return (
+		isinstance(node, ast.Attribute)
+		and isinstance(node.value, ast.Name)
+		and node.value.id == 'this'
+		and node.attr == 'id'
+	)
+
 def _extract_rigidbody_name_expr (node):
 	if isinstance(node, ast.Name):
 		return ('name_ref', node.id)
@@ -7682,6 +7979,8 @@ def _extract_rigidbody_name_expr (node):
 				key = node.slice.value
 			elif hasattr(ast, 'Index') and isinstance(node.slice, ast.Index) and isinstance(node.slice.value, ast.Constant):
 				key = node.slice.value.value
+			elif _ast_is_this_id_expr(node.slice):
+				return ('this_id', None)
 			if isinstance(key, str):
 				return ('key', key)
 	if isinstance(node, ast.Call):
@@ -7689,6 +7988,8 @@ def _extract_rigidbody_name_expr (node):
 			arg0 = node.args[0]
 			if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
 				return ('key', arg0.value)
+			if _ast_is_this_id_expr(arg0):
+				return ('this_id', None)
 	return (None, None)
 
 def _extract_gbc_phase1_init_velocity_from_code (code : str, target_keys : set):
@@ -7710,7 +8011,7 @@ def _extract_gbc_phase1_init_velocity_from_code (code : str, target_keys : set):
 			vel_value = _ast_numeric_vec2_literal(stmt.value) if stmt.value is not None else None
 			for target in list(stmt.targets or []):
 				if isinstance(target, ast.Name):
-					if rb_kind in ('name_ref', 'key'):
+					if rb_kind in ('name_ref', 'key', 'this_id'):
 						aliases[target.id] = (rb_kind, rb_value)
 					else:
 						aliases.pop(target.id, None)
@@ -7724,7 +8025,7 @@ def _extract_gbc_phase1_init_velocity_from_code (code : str, target_keys : set):
 			rb_value = None
 			if stmt.value is not None:
 				rb_kind, rb_value = _extract_rigidbody_name_expr(stmt.value)
-			if rb_kind in ('name_ref', 'key'):
+			if rb_kind in ('name_ref', 'key', 'this_id'):
 				aliases[stmt.target.id] = (rb_kind, rb_value)
 			else:
 				aliases.pop(stmt.target.id, None)
@@ -7750,10 +8051,11 @@ def _extract_gbc_phase1_init_velocity_from_code (code : str, target_keys : set):
 			rb_kind, rb_value = _extract_rigidbody_name_expr(call.args[0])
 			if rb_kind == 'name_ref' and rb_value in aliases:
 				rb_kind, rb_value = aliases[rb_value]
-			if rb_kind != 'key' or not isinstance(rb_value, str):
-				continue
-			if rb_value not in target_keys:
-				continue
+			if rb_kind != 'this_id':
+				if rb_kind != 'key' or not isinstance(rb_value, str):
+					continue
+				if rb_value not in target_keys:
+					continue
 			vel = call.args[1]
 			if isinstance(vel, ast.Name) and vel.id in vel_aliases:
 				vx = float(vel_aliases[vel.id][0])
@@ -7849,6 +8151,54 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 		if isinstance(key, ast.Attribute) and isinstance(key.value, ast.Name) and key.value.id == 'pygame':
 			return key.attr
 		return None
+	def _subscript_const_index (_node):
+		if not isinstance(_node, ast.Subscript):
+			return None
+		idx = _node.slice
+		if hasattr(ast, 'Index') and isinstance(idx, ast.Index):
+			idx = idx.value
+		if isinstance(idx, ast.Constant) and isinstance(idx.value, int):
+			return int(idx.value)
+		return None
+	def _extract_jump_test_details (_test, _keys_aliases, _vel_alias_name, _consts):
+		'''Parse jump tests like `keys[K_A]` and `keys[K_A] and vel[1] <= 0`.'''
+		parts = []
+		if isinstance(_test, ast.BoolOp) and isinstance(_test.op, ast.And):
+			parts = list(_test.values or [])
+		else:
+			parts = [_test]
+		key_name = None
+		jump_vy_max = None
+		for part in parts:
+			part_key = _subscript_key_name(part)
+			if part_key is not None:
+				if isinstance(getattr(part, 'value', None), ast.Name) and part.value.id in _keys_aliases:
+					key_name = part_key
+					continue
+				return (None, None)
+			if isinstance(part, ast.Compare) and len(list(part.ops or [])) == 1 and len(list(part.comparators or [])) == 1:
+				op = part.ops[0]
+				lhs = part.left
+				rhs = part.comparators[0]
+				lhs_idx = _subscript_const_index(lhs)
+				rhs_idx = _subscript_const_index(rhs)
+				lhs_is_vel_y = isinstance(lhs, ast.Subscript) and isinstance(lhs.value, ast.Name) and lhs.value.id == _vel_alias_name and lhs_idx == 1
+				rhs_is_vel_y = isinstance(rhs, ast.Subscript) and isinstance(rhs.value, ast.Name) and rhs.value.id == _vel_alias_name and rhs_idx == 1
+				if lhs_is_vel_y and isinstance(op, (ast.Lt, ast.LtE)):
+					c = _ast_small_int(rhs, _consts)
+					if isinstance(c, int):
+						upper = (c - 1) if isinstance(op, ast.Lt) else c
+						jump_vy_max = upper if jump_vy_max is None else min(jump_vy_max, upper)
+						continue
+				if rhs_is_vel_y and isinstance(op, (ast.Gt, ast.GtE)):
+					c = _ast_small_int(lhs, _consts)
+					if isinstance(c, int):
+						upper = (c - 1) if isinstance(op, ast.Gt) else c
+						jump_vy_max = upper if jump_vy_max is None else min(jump_vy_max, upper)
+						continue
+			# Unknown dynamic guard: don't infer this branch for phase-1 script extraction.
+			return (None, None)
+		return (key_name, jump_vy_max)
 	def _parse_update_code (_code, _target_keys):
 		try:
 			tree = ast.parse(_code or '')
@@ -7863,6 +8213,7 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 		left_delta = 0
 		right_delta = 0
 		jump_y = None
+		jump_vy_max = None
 		target_hit = False
 		for stmt in _walk_statically_reachable_stmts(getattr(tree, 'body', [])):
 			if isinstance(stmt, ast.Assign):
@@ -7883,7 +8234,7 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 								pass
 					if isinstance(target, ast.Name):
 						rb_kind, rb_value = _extract_rigidbody_name_expr(stmt.value)
-						if rb_kind in ('name_ref', 'key'):
+						if rb_kind in ('name_ref', 'key', 'this_id'):
 							aliases[target.id] = (rb_kind, rb_value)
 						elif not (isinstance(stmt.value, ast.List) and len(stmt.value.elts) >= 2):
 							aliases.pop(target.id, None)
@@ -7914,15 +8265,13 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 						rb_kind, rb_value = _extract_rigidbody_name_expr(call.args[0])
 						if rb_kind == 'name_ref' and rb_value in aliases:
 							rb_kind, rb_value = aliases[rb_value]
-						if rb_kind == 'key' and isinstance(rb_value, str) and rb_value in _target_keys:
+						if rb_kind == 'this_id' or (rb_kind == 'key' and isinstance(rb_value, str) and rb_value in _target_keys):
 							target_hit = True
 							if isinstance(call.args[1], ast.Name):
 								vel_alias_name = call.args[1].id
 			elif isinstance(stmt, ast.If):
-				key_name = _subscript_key_name(stmt.test)
+				key_name, jump_guard_vy_max = _extract_jump_test_details(stmt.test, keys_aliases, vel_alias_name, consts)
 				if key_name is None:
-					continue
-				if not isinstance(stmt.test.value, ast.Name) or (stmt.test.value.id not in keys_aliases):
 					continue
 				for inner in _walk_statically_reachable_stmts(list(stmt.body or [])):
 					if isinstance(inner, ast.AugAssign) and isinstance(inner.target, ast.Subscript):
@@ -7958,6 +8307,11 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 							j = _ast_small_int(inner.value, consts)
 							if isinstance(j, int) and key_name == 'K_A':
 								jump_y = j
+								if isinstance(jump_guard_vy_max, int):
+									if jump_vy_max is None:
+										jump_vy_max = int(jump_guard_vy_max)
+									else:
+										jump_vy_max = min(int(jump_vy_max), int(jump_guard_vy_max))
 		if not target_hit:
 			return None
 		if not base_vx_found:
@@ -7967,6 +8321,7 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 			'left_delta' : max(-8, min(8, int(left_delta))),
 			'right_delta' : max(-8, min(8, int(right_delta))),
 			'jump_y' : None if jump_y is None else max(-8, min(8, int(jump_y))),
+			'jump_vy_max' : None if jump_vy_max is None else max(-127, min(127, int(jump_vy_max))),
 		}
 	if sprite_ob is None:
 		return None
@@ -8459,7 +8814,7 @@ def _gba_try_import_pyrapier2d ():
 	print('GBA export: PyRapier2d import resolved to', mod_file or '<namespace package>', 'without Simulation; skipping Rapier bake.')
 	return None
 
-def _build_runtime_print_physics_env (world, scene_obs):
+def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions : bool = False):
 	if not bool(getattr(world, 'usePhysics', True)):
 		return {}
 	py_rapier = _gba_try_import_pyrapier2d()
@@ -8537,6 +8892,52 @@ def _build_runtime_print_physics_env (world, scene_obs):
 				key = ob.name + str(idx)
 				colliders_named.setdefault(key, collider_handle)
 				colliders_named.setdefault('_' + key, collider_handle)
+	if use_gbc_signed_positions:
+		def _wrap_get_pos (_fn):
+			def _wrapped (*args, **kwargs):
+				try:
+					pos = _fn(*args, **kwargs)
+					return [
+						float(pos[0]) - float(_GBC_POSITION_BIAS),
+						-(float(pos[1]) - float(_GBC_POSITION_BIAS)),
+					]
+				except Exception:
+					return [0.0, 0.0]
+			return _wrapped
+		def _wrap_set_pos (_fn):
+			def _wrapped (*args, **kwargs):
+				args_list = list(args)
+				if len(args_list) >= 2:
+					try:
+						pos = args_list[1]
+						args_list[1] = [
+							(float(pos[0]) + float(_GBC_POSITION_BIAS)) % 65536.0,
+							((-float(pos[1])) + float(_GBC_POSITION_BIAS)) % 65536.0,
+						]
+					except Exception:
+						pass
+				return _fn(*tuple(args_list), **kwargs)
+			return _wrapped
+		if hasattr(sim, 'get_rigid_body_position'):
+			try:
+				sim.get_rigid_body_position = _wrap_get_pos(sim.get_rigid_body_position)
+			except Exception:
+				pass
+		if hasattr(sim, 'set_rigid_body_position'):
+			try:
+				sim.set_rigid_body_position = _wrap_set_pos(sim.set_rigid_body_position)
+			except Exception:
+				pass
+		if hasattr(sim, 'get_collider_position'):
+			try:
+				sim.get_collider_position = _wrap_get_pos(sim.get_collider_position)
+			except Exception:
+				pass
+		if hasattr(sim, 'set_collider_position'):
+			try:
+				sim.set_collider_position = _wrap_set_pos(sim.set_collider_position)
+			except Exception:
+				pass
 	return {
 		'sim' : sim,
 		'physics' : sim,
@@ -8773,7 +9174,7 @@ def _gba_build_runtime_code_linked (script_runtime : dict, bitmap_rom_offset : i
 			print('GBA export: failed to read gba-py assembly for linking:', e)
 			return None
 	script_asm = re.sub(
-		r'\n\t\.weak py2gba_builtin_print\n\t\.thumb_func\npy2gba_builtin_print:\n\tbx\tlr\n',
+		r'\n\t\.weak py2gb(?:a)?_builtin_print\n\t\.thumb_func\npy2gb(?:a)?_builtin_print:\n\tbx\tlr\n',
 		'\n',
 		script_asm,
 		flags = re.MULTILINE,
@@ -8781,9 +9182,9 @@ def _gba_build_runtime_code_linked (script_runtime : dict, bitmap_rom_offset : i
 	init_calls = '\n'.join('\tbl\t' + sym for sym in init_symbols) if init_symbols else '\t@ no init script calls'
 	update_calls = '\n'.join('\tbl\t' + sym for sym in update_symbols) if update_symbols else '\t@ no update script calls'
 	main_loop_body = '\n'.join([
-		'\tbl\tpy2gba_wait_vblank',
+		'\tbl\tpy2gb_wait_vblank',
 		'\t@ no baked frame playback; keep VRAM live between updates',
-		'\tbl\tpy2gba_call_update',
+		'\tbl\tpy2gb_call_update',
 	])
 	frame_base_rom = 0x08000000 + bitmap_rom_offset
 	frame_stride = 240 * 160 * 2
@@ -8810,63 +9211,65 @@ gba_thumb_entry:
 \tldr\tr6, =0x0203FFFC
 \tldr\tr7, =0x{frame_base_rom:08X}
 \tstr\tr7, [r6]
-\tbl\tpy2gba_blit_frame
-\tbl\tpy2gba_call_init
+\tbl\tpy2gb_blit_frame
+\tbl\tpy2gb_call_init
 gba_main_loop:
 {main_loop_body}
 \tb\tgba_main_loop
 
 .thumb_func
-py2gba_wait_vblank:
+py2gb_wait_vblank:
 \tldr\tr1, =0x04000006
-py2gba_wait_vblank_end:
+py2gb_wait_vblank_end:
 \tldrh\tr0, [r1]
 \tcmp\tr0, #160
-\tbhs\tpy2gba_wait_vblank_end
-py2gba_wait_vblank_start:
+\tbhs\tpy2gb_wait_vblank_end
+py2gb_wait_vblank_start:
 \tldrh\tr0, [r1]
 \tcmp\tr0, #160
-\tblo\tpy2gba_wait_vblank_start
+\tblo\tpy2gb_wait_vblank_start
 \tbx\tlr
 
 .thumb_func
-py2gba_blit_frame:
+py2gb_blit_frame:
 \tpush\t{{r4-r7, lr}}
 \tldr\tr6, =0x0203FFFC
 \tldr\tr1, [r6]
 \tldr\tr2, =0x06000000
 \tldr\tr3, =240 * 160 * 2
-py2gba_blit_copy_loop:
+py2gb_blit_copy_loop:
 \tldr\tr4, [r1]
 \tstr\tr4, [r2]
 \tadds\tr1, #4
 \tadds\tr2, #4
 \tsubs\tr3, #4
-\tbne\tpy2gba_blit_copy_loop
+\tbne\tpy2gb_blit_copy_loop
 \tldr\tr0, =0x{frame_stride:08X}
 \tadds\tr1, r0
 \tldr\tr0, =0x{frame_end_rom:08X}
 \tcmp\tr1, r0
-\tblo\tpy2gba_blit_store
+\tblo\tpy2gb_blit_store
 \tldr\tr1, =0x{frame_base_rom:08X}
-py2gba_blit_store:
+py2gb_blit_store:
 \tstr\tr1, [r6]
 \tpop\t{{r4-r7, pc}}
 
 .thumb_func
-py2gba_call_init:
+py2gb_call_init:
 \tpush\t{{lr}}
 {init_calls}
 \tpop\t{{pc}}
 
 .thumb_func
-py2gba_call_update:
+py2gb_call_update:
 \tpush\t{{lr}}
 {update_calls}
 \tpop\t{{pc}}
 
+.global py2gb_builtin_print
 .global py2gba_builtin_print
 .thumb_func
+py2gb_builtin_print:
 py2gba_builtin_print:
 \tpush\t{{r1-r7, lr}}
 \tldr\tr1, =0x04FFF780
@@ -8875,27 +9278,27 @@ py2gba_builtin_print:
 \tldrh\tr2, [r1]
 \tldr\tr3, =0x00001DEA
 \tcmp\tr2, r3
-\tbne\tpy2gba_print_done
+\tbne\tpy2gb_print_done
 \tldr\tr1, =0x04FFF600
 \tadds\tr2, r0, #0
 \tmovs\tr6, #0
-py2gba_print_copy:
+py2gb_print_copy:
 \tcmp\tr6, #255
-\tbhs\tpy2gba_print_copy_end
+\tbhs\tpy2gb_print_copy_end
 \tldrb\tr3, [r2]
 \tstrb\tr3, [r1]
 \tadds\tr2, #1
 \tadds\tr1, #1
 \tadds\tr6, #1
 \tcmp\tr3, #0
-\tbne\tpy2gba_print_copy
-\tb\tpy2gba_print_after_copy
-py2gba_print_copy_end:
+\tbne\tpy2gb_print_copy
+\tb\tpy2gb_print_after_copy
+py2gb_print_copy_end:
 \tmovs\tr3, #0
 \tstrb\tr3, [r1]
-py2gba_print_after_copy:
+py2gb_print_after_copy:
 \tsubs\tr1, #1
-\tldr\tr4, =py2gba_print_counter
+\tldr\tr4, =py2gb_print_counter
 \tldrb\tr5, [r4]
 \tadds\tr5, #1
 \tstrb\tr5, [r4]
@@ -8905,7 +9308,7 @@ py2gba_print_after_copy:
 \tmovs\tr3, #91
 \tstrb\tr3, [r1]
 \tadds\tr1, #1
-\tldr\tr6, =py2gba_hex_chars
+\tldr\tr6, =py2gb_hex_chars
 \tlsrs\tr7, r5, #4
 \tldrb\tr7, [r6, r7]
 \tstrb\tr7, [r1]
@@ -8927,13 +9330,13 @@ py2gba_print_after_copy:
 \tldr\tr2, =0x00000103
 \tstrh\tr2, [r1]
 \t
-py2gba_print_done:
+py2gb_print_done:
 \tpop\t{{r1-r7, pc}}
 
 \t.align 2
-py2gba_print_counter:
+py2gb_print_counter:
 \t.word 0
-py2gba_hex_chars:
+py2gb_hex_chars:
 \t.ascii "0123456789ABCDEF"
 '''
 	full_asm = runtime_asm + '\n\n' + script_asm
@@ -9014,7 +9417,7 @@ def _gb_runtime_is_stubbed (script_runtime):
 		asm_txt = open(asm_path, 'r', encoding = 'utf-8').read(512)
 	except Exception:
 		return False
-	return 'py2gba pygame-aware stub backend' in asm_txt
+	return ('py2gb pygame-aware stub backend' in asm_txt) or ('py2gba pygame-aware stub backend' in asm_txt)
 
 def BuildGba (world):
 	PreBuild ()
@@ -9062,7 +9465,7 @@ def BuildGba (world):
 				)
 			if _gb_runtime_is_stubbed(script_runtime):
 				raise RuntimeError(
-					'GBA dynamic physics requires a full py2gba compiler/runtime; the current py2gba backend is a pygame stub. '
+					'GBA dynamic physics requires a full py2gb compiler/runtime; the current py2gb backend is a pygame stub. '
 					'Install/use full Py2Gb toolchain to execute real update logic on-device.'
 				)
 		frame_count = 1
@@ -9184,7 +9587,9 @@ def BuildGbc (world):
 						palette4 = sprite_pal,
 					)
 					init_pos = GetImagePosition(sprite_ob)
-					init_x, init_y = _gba_to_gbc_cover_point(float(init_pos.x), float(init_pos.y))
+					init_x_local, init_y_local = _gba_to_gbc_cover_point(float(init_pos.x), float(init_pos.y))
+					init_x = (int(init_x_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
+					init_y = (int(init_y_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
 					init_vx, init_vy = _extract_gbc_phase1_init_velocity(world, sprite_ob)
 					velocity_script = _extract_gbc_phase1_velocity_script(world, sprite_ob)
 					gravity_scale = float(getattr(sprite_ob, 'gravityScale', 1.0))
@@ -9249,7 +9654,9 @@ def BuildGbc (world):
 					palette4 = sprite_pal,
 				)
 				init_pos = GetImagePosition(sprite_ob)
-				init_x, init_y = _gba_to_gbc_cover_point(float(init_pos.x), float(init_pos.y))
+				init_x_local, init_y_local = _gba_to_gbc_cover_point(float(init_pos.x), float(init_pos.y))
+				init_x = (int(init_x_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
+				init_y = (int(init_y_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
 				init_vx, init_vy = _extract_gbc_phase1_init_velocity(world, sprite_ob)
 				velocity_script = _extract_gbc_phase1_velocity_script(world, sprite_ob)
 				init_vx = max(-127, min(127, int(init_vx)))
@@ -9307,7 +9714,7 @@ def BuildGbc (world):
 			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
 			if has_physics:
 				if use_multi_body_runtime:
-					runtime_print_env = _build_runtime_print_physics_env(world, scene_obs)
+					runtime_print_env = _build_runtime_print_physics_env(world, scene_obs, use_gbc_signed_positions = True)
 				else:
 					runtime_print_env = _build_gbc_phase1_print_env(
 						sprite_ob,
