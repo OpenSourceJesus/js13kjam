@@ -8351,9 +8351,13 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			patch_jr(jr_skip_body_pair_world_y, body_pair_eval_addr)
 			patch_jr(jr_skip_body_pair_offscreen_bottom, body_pair_eval_addr)
 			jp_body_pair_done_patches = []
+			self_mass_q = max(1, min(255, int(body.get('mass_q', 1))))
 			for other_idx, other_body in enumerate(bodies):
 				if other_idx == body_idx:
 					continue
+				other_mass_q = max(1, min(255, int(other_body.get('mass_q', 1))))
+				vertical_push_shift = _gbc_pair_transfer_shift(self_mass_q, other_mass_q, damping = 0.5)
+				horizontal_push_shift = _gbc_pair_transfer_shift(self_mass_q, other_mass_q, damping = 1.0)
 				other_base = 0xC100 + other_idx * 8
 				other_y_addr = other_base + 0
 				other_vy_addr = other_base + 1
@@ -8420,8 +8424,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				# Transfer a reduced downward impulse to the impacted body so
 				# dynamic-dynamic stacks can push each other (not just Player).
 				emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(self_vy)
-				emit(0xCB, 0x3F)  # srl a
-				emit(0xCB, 0x3F)  # srl a (quarter impulse, keep positive)
+				for _ in range(max(0, int(vertical_push_shift))):
+					emit(0xCB, 0x3F)  # srl a
 				emit(0x47)  # ld b,a (candidate other_vy)
 				emit(0xFA, other_vy_addr & 0xFF, (other_vy_addr >> 8) & 0xFF)  # ld a,(other_vy)
 				emit(0xCB, 0x7F)  # bit 7,a
@@ -8468,14 +8472,24 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 					emit(0xAF)  # xor a
 					side_pair_store_right_x_addr = len(code)
 					emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
-					emit(0xAF)  # xor a
-					emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
-					emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
-					# Transfer a stronger rightward impulse to the pushed body.
-					emit(0x3E, 0xF0)  # ld a,-16 (rightward in invert_dir runtime)
+					# Transfer rightward push using mass-scaled self velocity.
+					emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # ld a,(self_vx)
+					emit(0x2F)  # cpl
+					emit(0x3C)  # inc a (|self_vx|, expected right-moving)
+					for _ in range(max(0, int(horizontal_push_shift))):
+						emit(0xCB, 0x3F)  # srl a
+					emit(0xB7)  # or a
+					jr_side_pair_right_impulse_nonzero = jr(0x20)  # jr nz, keep
+					emit(0x3C)  # inc a (minimum push 1)
+					side_pair_right_impulse_nonzero_addr = len(code)
+					patch_jr(jr_side_pair_right_impulse_nonzero, side_pair_right_impulse_nonzero_addr)
+					emit(0x2F)  # cpl
+					emit(0x3C)  # inc a (back to signed negative)
 					emit(0xEA, other_vx_addr & 0xFF, (other_vx_addr >> 8) & 0xFF)
 					emit(0xAF)  # xor a
 					emit(0xEA, other_gacc_x_addr & 0xFF, (other_gacc_x_addr >> 8) & 0xFF)
+					emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+					emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
 					emit(0xC3, 0x00, 0x00)  # jp body_pair_done
 					jp_body_pair_done_patches.append(len(code) - 2)
 					side_pair_left_addr = len(code)
@@ -8484,14 +8498,20 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 					emit(0xFA, other_x_addr & 0xFF, (other_x_addr >> 8) & 0xFF)
 					emit(0xC6, int(other_sprite_w_px) & 0xFF)  # add other_w
 					emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
-					emit(0xAF)  # xor a
-					emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
-					emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
-					# Transfer a stronger leftward impulse to the pushed body.
-					emit(0x3E, 0x10)  # ld a,+16 (leftward in invert_dir runtime)
+					# Transfer leftward push using mass-scaled self velocity.
+					emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # ld a,(self_vx)
+					for _ in range(max(0, int(horizontal_push_shift))):
+						emit(0xCB, 0x3F)  # srl a
+					emit(0xB7)  # or a
+					jr_side_pair_left_impulse_nonzero = jr(0x20)  # jr nz, keep
+					emit(0x3C)  # inc a (minimum push 1)
+					side_pair_left_impulse_nonzero_addr = len(code)
+					patch_jr(jr_side_pair_left_impulse_nonzero, side_pair_left_impulse_nonzero_addr)
 					emit(0xEA, other_vx_addr & 0xFF, (other_vx_addr >> 8) & 0xFF)
 					emit(0xAF)  # xor a
 					emit(0xEA, other_gacc_x_addr & 0xFF, (other_gacc_x_addr >> 8) & 0xFF)
+					emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+					emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
 					emit(0xC3, 0x00, 0x00)  # jp body_pair_done
 					jp_body_pair_done_patches.append(len(code) - 2)
 				next_pair_addr = len(code)
@@ -8690,6 +8710,7 @@ def _gbc_build_dynamic_physics_rom_multi (canvas_160x144, body_specs, bg_palette
 			'sprite_tile_base' : total_tile_count,
 			'oam_base' : total_oam_count,
 			'palette_idx' : palette_idx,
+			'mass_q' : max(1, min(255, int(spec.get('mass_q', 1)))),
 		}
 		bodies.append(body)
 		total_tile_count += tile_count
@@ -8908,6 +8929,131 @@ def _gbc_to_gba_cover_len (v : float):
 	if abs(scale) <= 1e-12:
 		return float(v)
 	return float(v) / float(scale)
+
+def _gbc_collider_attaches_to_rigid (collider_ob, rigid_ob):
+	if collider_ob is None or rigid_ob is None:
+		return False
+	if collider_ob == rigid_ob:
+		return True
+	rigid_name = str(getattr(rigid_ob, 'name', '') or '')
+	for i in range(MAX_ATTACH_COLLIDER_CNT):
+		if not bool(getattr(collider_ob, 'attach%i' % i, False)):
+			continue
+		attach_ob = getattr(collider_ob, 'attachTo%i' % i, None)
+		if attach_ob == rigid_ob:
+			return True
+		if attach_ob is not None and str(getattr(attach_ob, 'name', '') or '') == rigid_name:
+			return True
+	return False
+
+def _gbc_estimate_collider_area (ob):
+	shape = str(getattr(ob, 'colliderShapeType', '') or '')
+	if shape in ('cuboid', 'roundCuboid'):
+		size = getattr(ob, 'colliderSize', (0.0, 0.0))
+		return abs(float(size[0]) * float(size[1]))
+	if shape == 'ball':
+		r = abs(float(getattr(ob, 'colliderRadius', 0.0)))
+		return math.pi * r * r
+	if shape == 'capsule':
+		r = abs(float(getattr(ob, 'colliderCapsuleRadius', 0.0)))
+		h = abs(float(getattr(ob, 'colliderCapsuleHeight', 0.0)))
+		return (2.0 * r * h) + (math.pi * r * r)
+	if shape in ('triangle', 'roundTriangle'):
+		p0 = getattr(ob, 'colliderTrianglePnt0', (0.0, 0.0))
+		p1 = getattr(ob, 'colliderTrianglePnt1', (0.0, 0.0))
+		p2 = getattr(ob, 'colliderTrianglePnt2', (0.0, 0.0))
+		return abs(
+			(float(p0[0]) * (float(p1[1]) - float(p2[1])) +
+			float(p1[0]) * (float(p2[1]) - float(p0[1])) +
+			float(p2[0]) * (float(p0[1]) - float(p1[1]))) * 0.5
+		)
+	if shape == 'segment':
+		p0 = getattr(ob, 'colliderSegmentPnt0', (0.0, 0.0))
+		p1 = getattr(ob, 'colliderSegmentPnt1', (0.0, 0.0))
+		dx = float(p1[0]) - float(p0[0])
+		dy = float(p1[1]) - float(p0[1])
+		return max(0.0, math.sqrt(dx * dx + dy * dy) * 0.25)
+	if shape in ('polyline', 'trimesh', 'convexHull', 'roundConvexHull'):
+		points = []
+		if shape == 'polyline':
+			for i in range(MAX_SHAPE_PNTS):
+				if bool(getattr(ob, 'useColliderPolylinePnt%i' % i, False)):
+					p = getattr(ob, 'colliderPolylinePnt%i' % i, None)
+					if p is not None:
+						points.append((float(p[0]), float(p[1])))
+		elif shape == 'trimesh':
+			for i in range(MAX_SHAPE_PNTS):
+				if bool(getattr(ob, 'useColliderTrimeshPnt%i' % i, False)):
+					p = getattr(ob, 'colliderTrimeshPnt%i' % i, None)
+					if p is not None:
+						points.append((float(p[0]), float(p[1])))
+		else:
+			for i in range(MAX_SHAPE_PNTS):
+				if bool(getattr(ob, 'useColliderConvexHullPnt%i' % i, False)):
+					p = getattr(ob, 'colliderConvexHullPnt%i' % i, None)
+					if p is not None:
+						points.append((float(p[0]), float(p[1])))
+		if len(points) >= 2:
+			xs = [p[0] for p in points]
+			ys = [p[1] for p in points]
+			return abs((max(xs) - min(xs)) * (max(ys) - min(ys)))
+		return 0.0
+	if shape == 'heightfield':
+		heights = []
+		for i in range(MAX_SHAPE_PNTS):
+			if bool(getattr(ob, 'useColliderHeight%i' % i, False)):
+				heights.append(abs(float(getattr(ob, 'colliderHeight%i' % i, 0.0))))
+		scale = getattr(ob, 'colliderHeightfieldScale', (1.0, 1.0))
+		scale_x = abs(float(scale[0])) if len(scale) > 0 else 1.0
+		scale_y = abs(float(scale[1])) if len(scale) > 1 else 1.0
+		if heights:
+			return max(0.0, (sum(heights) / max(1, len(heights))) * scale_x * scale_y)
+		return max(0.0, scale_x * scale_y)
+	if shape == 'halfspace':
+		return 16.0
+	return 0.0
+
+def _gbc_estimate_runtime_body_mass (scene_obs, rigid_ob):
+	mass = 0.0
+	for ob in list(scene_obs or []):
+		if not getattr(ob, 'exportOb', False) or ob.hide_get():
+			continue
+		if not getattr(ob, 'colliderExists', False):
+			continue
+		if not getattr(ob, 'colliderEnable', True):
+			continue
+		if getattr(ob, 'isSensor', False):
+			continue
+		if not _gbc_collider_attaches_to_rigid(ob, rigid_ob):
+			continue
+		density = float(getattr(ob, 'density', 1.0))
+		if density <= 0.0:
+			density = 1.0
+		area = float(_gbc_estimate_collider_area(ob))
+		if area <= 0.0:
+			area = 0.25
+		mass += area * density
+	if mass <= 0.0:
+		# Bodies without colliders should still be movable.
+		return 0.05
+	return float(mass)
+
+def _gbc_mass_to_q8 (mass):
+	return max(1, min(255, int(round(max(0.05, float(mass)) * 4.0))))
+
+def _gbc_pair_transfer_shift (src_mass_q : int, dst_mass_q : int, damping : float = 1.0):
+	src = max(1.0, float(src_mass_q))
+	dst = max(1.0, float(dst_mass_q))
+	desired = max(0.0, min(1.0, (src / (src + dst)) * float(damping)))
+	best_shift = 0
+	best_err = 1e9
+	for shift in range(0, 5):
+		factor = 1.0 / float(1 << shift)
+		err = abs(factor - desired)
+		if err < best_err:
+			best_err = err
+			best_shift = shift
+	return int(best_shift)
 
 def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignored_names = None, scroll_x_gba : float = 0.0, scroll_y_gba : float = 0.0, preconverted_names = None, debug_rows = None):
 	rects = []
@@ -11379,6 +11525,11 @@ def BuildGbc (world):
 				canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
 				_, _, _, bg_palette_bank = _gbc_encode_tiles_and_map(canvas_gbc)
 				body_specs = []
+				body_mass_q = {}
+				for rigid_ob in rigid_sprite_obs:
+					body_mass_q[str(getattr(rigid_ob, 'name', '') or '')] = _gbc_mass_to_q8(
+						_gbc_estimate_runtime_body_mass(physics_scene_obs, rigid_ob)
+					)
 				for sprite_ob in rigid_sprite_obs:
 					sprite_rgba = _gba_apply_tint_opacity_to_rgba(image_surfaces.get(sprite_ob.name), list(sprite_ob.tint), sprite_ob.color[3])
 					sprite_pal = _gbc_palette4_from_rgba(sprite_rgba)
@@ -11418,6 +11569,7 @@ def BuildGbc (world):
 						grav_step_x = 1 if effective_x > 0 else -1
 					if abs(effective_down) > 1e-6 and grav_step_y == 0:
 						grav_step_y = 1 if effective_down > 0 else -1
+					mass_q = int(body_mass_q.get(sprite_name, 1))
 					body_specs.append({
 						'name' : sprite_ob.name,
 						'sprite_tile_bytes' : sprite_tile,
@@ -11431,6 +11583,7 @@ def BuildGbc (world):
 						'grav_step_x' : int(grav_step_x),
 						'grav_step_y' : int(grav_step_y),
 						'velocity_script' : velocity_script,
+						'mass_q' : int(mass_q),
 					})
 				body_specs_runtime = list(body_specs)
 				dropped_body_specs = []
@@ -11479,7 +11632,8 @@ def BuildGbc (world):
 							str(spec.get('name', '?')) +
 							':iv=' + str([spec.get('init_vx', 0), spec.get('init_vy', 0)]) +
 							',g=' + str([spec.get('grav_step_x', 0), spec.get('grav_step_y', 0)]) +
-							',vs=' + ('1' if isinstance(spec.get('velocity_script', None), dict) else '0')
+							',vs=' + ('1' if isinstance(spec.get('velocity_script', None), dict) else '0') +
+							',m=' + str(spec.get('mass_q', 1))
 							for spec in body_specs_runtime
 						]) if body_specs else '<none>'
 					),
