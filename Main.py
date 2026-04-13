@@ -650,6 +650,116 @@ def GatherPrefabs ():
 			if defn:
 				prefabs[coll.name] = defn
 
+def _collect_gbc_spawn_prefab_requests ():
+	'''Best-effort static scan for spawn_prefab(...) calls in gbc-py scripts.
+	Returns a list of dicts: {'prefab_name': str, 'pos': [x, y] or None, 'rot': float}.
+	'''
+	requests = []
+	def _ast_number (node):
+		if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+			return float(node.value)
+		if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+			inner = _ast_number(node.operand)
+			if inner is None:
+				return None
+			return inner if isinstance(node.op, ast.UAdd) else -inner
+		return None
+	def _ast_string (node):
+		if isinstance(node, ast.Constant) and isinstance(node.value, str):
+			return str(node.value)
+		return None
+	def _ast_pos2 (node):
+		if isinstance(node, (ast.List, ast.Tuple)) and len(node.elts) >= 2:
+			x = _ast_number(node.elts[0])
+			y = _ast_number(node.elts[1])
+			if x is not None and y is not None:
+				return [float(x), float(y)]
+		if isinstance(node, ast.Dict):
+			x = None
+			y = None
+			for key, val in zip(node.keys, node.values):
+				k = _ast_string(key)
+				if k is None:
+					continue
+				kl = k.lower()
+				if kl == 'x':
+					x = _ast_number(val)
+				elif kl == 'y':
+					y = _ast_number(val)
+			if x is not None and y is not None:
+				return [float(x), float(y)]
+		if isinstance(node, ast.Call) and len(node.args) >= 2:
+			x = _ast_number(node.args[0])
+			y = _ast_number(node.args[1])
+			if x is not None and y is not None:
+				return [float(x), float(y)]
+		return None
+	def _find_kw (node, kw_name):
+		for kw in list(getattr(node, 'keywords', []) or []):
+			if str(getattr(kw, 'arg', '') or '') == kw_name:
+				return kw.value
+		return None
+	def _scan_code (code_txt):
+		raw = str(code_txt or '')
+		if raw.strip() == '':
+			return
+		try:
+			tree = ast.parse(raw)
+		except Exception:
+			return
+		for node in ast.walk(tree):
+			if not isinstance(node, ast.Call):
+				continue
+			if not (isinstance(node.func, ast.Name) and node.func.id == 'spawn_prefab'):
+				continue
+			first = node.args[0] if len(node.args) > 0 else _find_kw(node, 'prefab_name')
+			name = _ast_string(first)
+			if name is None:
+				continue
+			name = str(name).strip()
+			if name == '':
+				continue
+			pos_node = _find_kw(node, 'pos')
+			rot_node = _find_kw(node, 'rot')
+			# Support both signatures:
+			# - spawn_prefab(name, instance_id, pos, rot, ...)
+			# - spawn_prefab(name, pos, rot, ...)
+			if len(node.args) > 2:
+				pos_node = node.args[2] if pos_node is None else pos_node
+				if len(node.args) > 3:
+					rot_node = node.args[3] if rot_node is None else rot_node
+			elif len(node.args) > 1:
+				second_pos = _ast_pos2(node.args[1])
+				if second_pos is not None:
+					pos_node = node.args[1] if pos_node is None else pos_node
+					if len(node.args) > 2:
+						rot_node = node.args[2] if rot_node is None else rot_node
+			pos = _ast_pos2(pos_node) if pos_node is not None else None
+			rot = _ast_number(rot_node)
+			if rot is None:
+				rot = 0.0
+			requests.append({
+				'prefab_name' : name,
+				'pos' : pos,
+				'rot' : float(rot),
+			})
+	for ob in bpy.data.objects:
+		if not ob.exportOb or ob.hide_get():
+			continue
+		for scriptInfo in GetScripts(ob):
+			scriptTxt = scriptInfo[0]
+			_type = scriptInfo[2]
+			if _type == 'gbc-py':
+				_scan_code(scriptTxt)
+	world = bpy.context.world
+	if world:
+		for scriptInfo in GetScripts(world):
+			scriptTxt = scriptInfo[0]
+			_type = scriptInfo[2]
+			if _type == 'gbc-py':
+				_scan_code(scriptTxt)
+	return requests
+
 def GetInstancedObjects (scene):
 	sceneObs = set(scene.collection.all_objects)
 	return sceneObs
@@ -3385,6 +3495,44 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 	prev_export = exportType
 	exportType = 'gbc'
 	script_entries = []
+	in_prefab_coll = set()
+	in_non_prefab_coll = set()
+	for coll in bpy.data.collections:
+		export_prefab = bool(getattr(coll, 'exportPrefab', False))
+		for ob in coll.all_objects:
+			if export_prefab:
+				in_prefab_coll.add(ob)
+			else:
+				in_non_prefab_coll.add(ob)
+	# Objects that exist only inside prefab template collections should not run
+	# local gbc-py scripts unless actually spawned at runtime.
+	template_only_obs = set(in_prefab_coll - in_non_prefab_coll)
+	spawn_template_obs = set()
+	try:
+		for call in _collect_gbc_spawn_prefab_requests():
+			prefab_name = str(call.get('prefab_name', '') or '')
+			if prefab_name == '':
+				continue
+			coll = bpy.data.collections.get(prefab_name)
+			if not coll or not getattr(coll, 'exportPrefab', False):
+				continue
+			for ob in coll.all_objects:
+				spawn_template_obs.add(ob)
+		# Scene collection instances implicitly spawn prefab children too.
+		for inst_ob in list(getattr(bpy.data, 'objects', []) or []):
+			if not getattr(inst_ob, 'exportOb', False) or inst_ob.hide_get():
+				continue
+			if getattr(inst_ob, 'instance_type', None) != 'COLLECTION':
+				continue
+			coll = getattr(inst_ob, 'instance_collection', None)
+			if not coll or not getattr(coll, 'exportPrefab', False):
+				continue
+			for ob in coll.all_objects:
+				spawn_template_obs.add(ob)
+	except Exception:
+		spawn_template_obs = set()
+	template_local_scripts_skipped = 0
+	template_local_scripts_spawn_included = 0
 	if world:
 		for scriptInfo in GetScripts(world):
 			scriptTxt = scriptInfo[0]
@@ -3407,6 +3555,17 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 	for ob in bpy.data.objects:
 		if not ob.exportOb or ob.hide_get():
 			continue
+		if ob in template_only_obs and ob not in spawn_template_obs:
+			for scriptInfo in GetScripts(ob):
+				_type = scriptInfo[2]
+				if _type == 'gbc-py':
+					template_local_scripts_skipped += 1
+			continue
+		elif ob in template_only_obs and ob in spawn_template_obs:
+			for scriptInfo in GetScripts(ob):
+				_type = scriptInfo[2]
+				if _type == 'gbc-py':
+					template_local_scripts_spawn_included += 1
 		for scriptInfo in GetScripts(ob):
 			scriptTxt = scriptInfo[0]
 			is_init = scriptInfo[1]
@@ -3459,6 +3618,8 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				spawn_calls.append(owner + '@<text-hit>')
 	_append_gbc_trace_lines([
 		'[gbc-trace] ExportGbcPyAssembly:scripts=' + str(len(script_entries)),
+		'[gbc-trace] ExportGbcPyAssembly:template_local_scripts_skipped=' + str(template_local_scripts_skipped),
+		'[gbc-trace] ExportGbcPyAssembly:template_local_scripts_spawn_included=' + str(template_local_scripts_spawn_included),
 		'[gbc-trace] ExportGbcPyAssembly:spawn_prefab_callers=' + (', '.join(spawn_calls) if spawn_calls else '<none>'),
 	])
 	global_members_prefix = _build_gbc_global_members_prefix(script_entries)
@@ -3470,6 +3631,10 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 		entry for entry in script_entries
 		if (not bool(entry.get('is_global'))) or _entry_has_spawn_prefab_call(entry)
 	]
+	_append_gbc_trace_lines([
+		'[gbc-trace] ExportGbcPyAssembly:runtime_script_entries=' + str(len(runtime_script_entries)),
+		'[gbc-trace] ExportGbcPyAssembly:py2gb_backend=' + ('available' if bool(_py2gb_export_gba_py_assembly) else 'missing'),
+	])
 	if global_members_prefix != '':
 		for entry in runtime_script_entries:
 			code_txt = str(entry.get('code', '') or '')
@@ -5488,7 +5653,19 @@ function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides 
 		run_init_scripts (newId);
 		return result;
 	}
-	var rootWorld = [pos && pos.x != null ? pos.x : 0, pos && pos.y != null ? pos.y : 0];
+	var posX = 0;
+	var posY = 0;
+	if (Array.isArray(pos))
+	{
+		posX = pos.length > 0 && pos[0] != null ? pos[0] : 0;
+		posY = pos.length > 1 && pos[1] != null ? pos[1] : 0;
+	}
+	else if (pos && typeof pos === 'object')
+	{
+		posX = pos.x != null ? pos.x : 0;
+		posY = pos.y != null ? pos.y : 0;
+	}
+	var rootWorld = [posX, posY];
 	var rootRot = rot;
 	if (roots.length == 0)
 		return null;
@@ -6098,6 +6275,8 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				runtime_globals = __import__('builtins').globals()
 				if name in runtime_globals:
 					return str(runtime_globals[name])
+				if strict:
+					raise RuntimeError(f"NameError: name '{name}' is not defined")
 				return expr_eval
 			if isinstance(val, (int, float, bool, str)):
 				return str(val)
@@ -6123,6 +6302,8 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				runtime_globals = __import__('builtins').globals()
 				if name in runtime_globals:
 					return str(runtime_globals[name])
+				if strict:
+					raise RuntimeError(f"NameError: name '{name}' is not defined")
 			if strict and not re.fullmatch(r'[A-Za-z_]\w*', expr_eval):
 				raise RuntimeError(f"Invalid script print expression: {expr!r}")
 			# Keep runtime print mirroring non-fatal for dynamic/unavailable symbols.
@@ -8364,6 +8545,12 @@ def _gba_to_gbc_cover_point (x : float, y : float):
 	scale, x0, y0 = _gba_cover_transform(240, 160, 160, 144)
 	return int(round(float(x) * scale)) - x0, int(round(float(y) * scale)) - y0
 
+def _gbc_to_gba_cover_point (x : float, y : float):
+	scale, x0, y0 = _gba_cover_transform(240, 160, 160, 144)
+	if abs(scale) <= 1e-12:
+		return float(x), float(y)
+	return (float(x) + float(x0)) / float(scale), (float(y) + float(y0)) / float(scale)
+
 def _gba_to_gbc_cover_len (v : float):
 	scale, _, _ = _gba_cover_transform(240, 160, 160, 144)
 	return max(1, int(round(float(v) * scale)))
@@ -10413,10 +10600,138 @@ def BuildGbc (world):
 			if ob.type != 'EMPTY' or ob.empty_display_type != 'IMAGE' or not ob.data or not ob.data.filepath:
 				continue
 			gbc_imgs.append(ob)
+		scene_gbc_imgs = list(gbc_imgs)
+		fallback_spawn_entries = []
+		fallback_spawn_source_names = {}
+		fallback_draw_template_obs = []
+		fallback_surface_source_obs = []
+		if not bool(_py2gb_export_gba_py_assembly):
+			# Fallback path: when gbc-py backend is unavailable, honor direct
+			# spawn_prefab("CollectionName", ...) calls by baking explicit prefab
+			# spawns when the call arguments are statically resolvable.
+			fallback_spawn_calls = list(_collect_gbc_spawn_prefab_requests())
+			# Auto-spawn scene collection instances so prefab templates referenced
+			# by instance empties render even without explicit spawn_prefab calls.
+			for inst_ob in scene_instance_obs:
+				if not getattr(inst_ob, 'exportOb', False) or inst_ob.hide_get():
+					continue
+				if getattr(inst_ob, 'instance_type', None) != 'COLLECTION':
+					continue
+				inst_coll = getattr(inst_ob, 'instance_collection', None)
+				if not inst_coll or not getattr(inst_coll, 'exportPrefab', False):
+					continue
+				try:
+					wm_pos = inst_ob.matrix_world.to_translation()
+					wm_rot = inst_ob.matrix_world.to_euler('XYZ')
+					inst_x = float(wm_pos.x)
+					inst_y = float(wm_pos.y)
+					inst_rot = float(-math.degrees(wm_rot.z))
+				except Exception:
+					inst_x = float(getattr(inst_ob.location, 'x', 0.0))
+					inst_y = float(getattr(inst_ob.location, 'y', 0.0))
+					inst_rot = float(-math.degrees(getattr(inst_ob.rotation_euler, 'z', 0.0)))
+				fallback_spawn_calls.append({
+					'prefab_name' : str(inst_coll.name),
+					'pos' : [inst_x, inst_y],
+					'rot' : float(inst_rot),
+				})
+			requested_prefabs = sorted({ str(call.get('prefab_name', '') or '') for call in fallback_spawn_calls if str(call.get('prefab_name', '') or '') != '' })
+			added = []
+			baked = []
+			if fallback_spawn_calls:
+				seen = set(gbc_imgs)
+				for call_idx, call in enumerate(fallback_spawn_calls):
+					prefab_name = str(call.get('prefab_name', '') or '')
+					if prefab_name == '':
+						continue
+					coll = bpy.data.collections.get(prefab_name)
+					if not coll or not getattr(coll, 'exportPrefab', False):
+						continue
+					prefab_imgs = []
+					for ob in coll.all_objects:
+						if not ob.exportOb or ob.hide_get():
+							continue
+						if ob.type != 'EMPTY' or ob.empty_display_type != 'IMAGE' or not ob.data or not ob.data.filepath:
+							continue
+						prefab_imgs.append(ob)
+					if not prefab_imgs:
+						continue
+					spawn_pos = call.get('pos', None)
+					spawn_rot = float(call.get('rot', 0.0) or 0.0)
+					if spawn_pos is None:
+						# If static position cannot be resolved, preserve old behavior
+						# by including the template objects at their authored coords.
+						for ob in prefab_imgs:
+							if ob in seen:
+								continue
+							gbc_imgs.append(ob)
+							seen.add(ob)
+							fallback_draw_template_obs.append(ob)
+							added.append(ob.name)
+						continue
+					image_obs_by_name = {ob.name : ob for ob in prefab_imgs}
+					coll_set = set(coll.all_objects)
+					root_candidates = [ob for ob in prefab_imgs if ob.parent not in coll_set or ob.parent is None]
+					anchor_ob = root_candidates[0] if root_candidates else prefab_imgs[0]
+					anchor_pos = GetImagePosition(anchor_ob)
+					anchor_rot = math.degrees(anchor_ob.rotation_euler.z)
+					req_x_gbc = float(spawn_pos[0]) if len(spawn_pos) > 0 else 0.0
+					req_y_gbc = -float(spawn_pos[1]) if len(spawn_pos) > 1 else 0.0
+					# Fallback spawn calls come from gbc-py scripts; map their GBC
+					# screen-space coords into the 240x160 composite space.
+					req_x, req_y = _gbc_to_gba_cover_point(req_x_gbc, req_y_gbc)
+					def _spawn_proxy_for_template_node (template_id, world_x, world_y, world_rot):
+						src_ob = image_obs_by_name.get(template_id)
+						if src_ob is None:
+							return
+						proxy = type('SpawnImageProxy', (), {})()
+						proxy.name = '__gbc_spawn_%i_%s' %(call_idx, src_ob.name)
+						proxy.data = src_ob.data
+						proxy.scale = src_ob.scale
+						proxy.empty_display_size = src_ob.empty_display_size
+						proxy.tint = src_ob.tint
+						proxy.color = src_ob.color
+						proxy.location = src_ob.location
+						fallback_spawn_entries.append((proxy, {
+							'x' : float(world_x),
+							'y' : float(world_y),
+							'rot_deg' : float(world_rot),
+						}))
+						fallback_spawn_source_names[proxy.name] = src_ob.name
+						baked.append(proxy.name + '<-' + src_ob.name + '@gba(' + str(TryChangeToInt(world_x)) + ',' + str(TryChangeToInt(world_y)) + ')')
+						if src_ob not in fallback_surface_source_obs:
+							fallback_surface_source_obs.append(src_ob)
+					for ob in prefab_imgs:
+						src_pos = GetImagePosition(ob)
+						src_rot = math.degrees(ob.rotation_euler.z)
+						dx = float(src_pos.x) - float(anchor_pos.x)
+						dy = float(src_pos.y) - float(anchor_pos.y)
+						rad = math.radians(spawn_rot)
+						cos_r = math.cos(rad)
+						sin_r = math.sin(rad)
+						world_x = req_x + dx * cos_r - dy * sin_r
+						world_y = req_y + dx * sin_r + dy * cos_r
+						world_rot = spawn_rot + (src_rot - anchor_rot)
+						_spawn_proxy_for_template_node(ob.name, world_x, world_y, world_rot)
+			_append_gbc_trace_lines([
+				'[gbc-trace] BuildGbc:fallback_spawn_prefab_requests=' + (', '.join(sorted(requested_prefabs)) if requested_prefabs else '<none>'),
+				'[gbc-trace] BuildGbc:fallback_spawn_prefab_added=' + (', '.join(added) if added else '<none>'),
+				'[gbc-trace] BuildGbc:fallback_spawn_prefab_baked=' + (', '.join(baked) if baked else '<none>'),
+				'[gbc-trace] BuildGbc:fallback_spawn_prefab_calls=' + (
+					', '.join([
+						str(call.get('prefab_name', '?')) + '@pos=' + (str(call.get('pos')) if call.get('pos', None) is not None else '<dynamic>') + ',rot=' + str(call.get('rot', 0.0))
+						for call in fallback_spawn_calls
+					]) if fallback_spawn_calls else '<none>'
+				),
+			])
 		if not gbc_imgs:
 			print('GBC export: no image empties with Export object enabled; wrote blank screen.')
 		gbc_imgs.sort(key = lambda o: o.location.z)
-		for ob in gbc_imgs:
+		image_source_obs = list(gbc_imgs)
+		for ob in fallback_surface_source_obs:
+			if ob not in image_source_obs:
+				image_source_obs.append(ob)
+		for ob in image_source_obs:
 			img_path = os.path.join(TMP_DIR, GetFileName(ob.data.filepath))
 			prev_rot = ob.rotation_mode
 			ob.rotation_mode = 'XYZ'
@@ -10432,10 +10747,55 @@ def BuildGbc (world):
 			'[gbc-trace] BuildGbc:after ExportGbcPyAssembly',
 		])
 		image_surfaces = {}
-		for ob in gbc_imgs:
+		for ob in image_source_obs:
 			pix = _gba_load_saved_image_rgba(ob)
 			if pix is not None:
 				image_surfaces[ob.name] = pix
+		composite_imgs = list(scene_gbc_imgs)
+		for ob in fallback_draw_template_obs:
+			if ob not in composite_imgs:
+				composite_imgs.append(ob)
+		composite_transform_overrides = None
+		fallback_spawn_draw_debug = []
+		if fallback_spawn_entries:
+			composite_transform_overrides = {}
+			for proxy_ob, override in fallback_spawn_entries:
+				composite_imgs.append(proxy_ob)
+				composite_transform_overrides[proxy_ob.name] = dict(override)
+				source_name = fallback_spawn_source_names.get(proxy_ob.name)
+				if source_name in image_surfaces:
+					image_surfaces[proxy_ob.name] = image_surfaces[source_name]
+				surf = image_surfaces.get(proxy_ob.name)
+				has_surface = surf is not None
+				surf_w = int(surf.shape[1]) if has_surface else 0
+				surf_h = int(surf.shape[0]) if has_surface else 0
+				size = proxy_ob.scale * proxy_ob.empty_display_size
+				img_size = Vector(list(proxy_ob.data.size) + [0])
+				if img_size.x > img_size.y:
+					size.x *= img_size.x / img_size.y
+				else:
+					size.y *= img_size.y / img_size.x
+				tw = max(1, int(round(abs(size.x))))
+				th = max(1, int(round(abs(size.y))))
+				x_gba = float(override.get('x', 0.0))
+				y_gba = float(override.get('y', 0.0))
+				x_gbc, y_gbc = _gba_to_gbc_cover_point(x_gba, y_gba)
+				w_gbc = _gba_to_gbc_cover_len(tw)
+				h_gbc = _gba_to_gbc_cover_len(th)
+				visible = not ((x_gbc + w_gbc) <= 0 or x_gbc >= 160 or (y_gbc + h_gbc) <= 0 or y_gbc >= 144)
+				fallback_spawn_draw_debug.append(
+					proxy_ob.name + ':surf=' + ('1' if has_surface else '0') +
+					',src=' + str(source_name if source_name is not None else '?') +
+					',src_wh=' + str(surf_w) + 'x' + str(surf_h) +
+					',gba_xy=' + str([TryChangeToInt(x_gba), TryChangeToInt(y_gba)]) +
+					',gbc_xy=' + str([TryChangeToInt(x_gbc), TryChangeToInt(y_gbc)]) +
+					',gbc_wh=' + str([TryChangeToInt(w_gbc), TryChangeToInt(h_gbc)]) +
+					',visible=' + ('1' if visible else '0')
+				)
+		if fallback_spawn_draw_debug:
+			_append_gbc_trace_lines([
+				'[gbc-trace] BuildGbc:fallback_spawn_prefab_draw_debug=' + ', '.join(fallback_spawn_draw_debug),
+			])
 		has_physics = bool(getattr(world, 'usePhysics', True)) and _gb_scene_has_physics(scene_obs)
 		use_multi_body_runtime = False
 		if has_physics:
@@ -10455,7 +10815,8 @@ def BuildGbc (world):
 				gravity_y = float(g[1])
 			if len(rigid_sprite_obs) > 1:
 				use_multi_body_runtime = True
-				bg_imgs = [ob for ob in gbc_imgs if ob.name not in {s.name for s in rigid_sprite_obs}]
+				rigid_names = {s.name for s in rigid_sprite_obs}
+				bg_imgs = [ob for ob in composite_imgs if ob.name not in rigid_names]
 				_gba_apply_script_surface_ops(
 					image_surfaces,
 					script_runtime.get('surface_ops', []),
@@ -10467,6 +10828,7 @@ def BuildGbc (world):
 					world,
 					bg_imgs,
 					image_surfaces = image_surfaces,
+					transform_overrides = composite_transform_overrides,
 					script_runtime = bake_runtime,
 					frame = 1,
 				)
@@ -10533,7 +10895,7 @@ def BuildGbc (world):
 						break
 				if sprite_ob is None and rigid_sprite_obs:
 					sprite_ob = rigid_sprite_obs[0]
-				bg_imgs = [ob for ob in gbc_imgs if ob.name != sprite_ob.name]
+				bg_imgs = [ob for ob in composite_imgs if ob.name != sprite_ob.name]
 				_gba_apply_script_surface_ops(
 					image_surfaces,
 					script_runtime.get('surface_ops', []),
@@ -10545,6 +10907,7 @@ def BuildGbc (world):
 					world,
 					bg_imgs,
 					image_surfaces = image_surfaces,
+					transform_overrides = composite_transform_overrides,
 					script_runtime = bake_runtime,
 					frame = 1,
 				)
@@ -10618,8 +10981,9 @@ def BuildGbc (world):
 			)
 			canvas_gba_space = _gba_composite_scene(
 				world,
-				gbc_imgs,
+				composite_imgs,
 				image_surfaces = image_surfaces,
+				transform_overrides = composite_transform_overrides,
 				script_runtime = script_runtime,
 				frame = 1,
 			)
