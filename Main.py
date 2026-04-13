@@ -6838,6 +6838,14 @@ _GBC_POSITION_MASK = 0xFFFF
 _GBC_PHASE1_VELOCITY_ACCUM_DENOM = 60
 _GBC_PHASE1_GRAVITY_ACCUM_DENOM = 60
 
+def _gbc_clamp_signed_byte (v):
+	v = int(v)
+	if v > 127:
+		return 127
+	if v < -128:
+		return -128
+	return v
+
 def _gba_complement_check (rom : bytearray):
 	chk = 0
 	for b in rom[0xA0 : 0xBD]:
@@ -7355,13 +7363,14 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	script_jump_y = None
 	script_jump_vy_max = None
 	if script_spec is not None:
-		script_base_vx = int(script_spec.get('base_vx', 0))
-		script_left_delta = int(script_spec.get('left_delta', 0))
-		script_right_delta = int(script_spec.get('right_delta', 0))
+		# Script-space X is opposite phase1 internal X (step uses invert_dir = True).
+		script_base_vx = _gbc_clamp_signed_byte(-int(script_spec.get('base_vx', 0)))
+		script_left_delta = _gbc_clamp_signed_byte(-int(script_spec.get('left_delta', 0)))
+		script_right_delta = _gbc_clamp_signed_byte(-int(script_spec.get('right_delta', 0)))
 		if script_spec.get('jump_y', None) is not None:
-			script_jump_y = int(script_spec.get('jump_y', 0))
+			script_jump_y = _gbc_clamp_signed_byte(int(script_spec.get('jump_y', 0)))
 		if script_spec.get('jump_vy_max', None) is not None:
-			script_jump_vy_max = int(script_spec.get('jump_vy_max', 0))
+			script_jump_vy_max = _gbc_clamp_signed_byte(int(script_spec.get('jump_vy_max', 0)))
 	collider_count = max(0, min(31, int(collider_count)))
 	sprite_tile_count = max(1, min(16, int(sprite_tile_count)))
 	sprite_tiles_w = max(1, min(4, int(sprite_tiles_w)))
@@ -8115,13 +8124,14 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		script_jump_y = None
 		script_jump_vy_max = None
 		if script_spec is not None:
-			script_base_vx = int(script_spec.get('base_vx', 0))
-			script_left_delta = int(script_spec.get('left_delta', 0))
-			script_right_delta = int(script_spec.get('right_delta', 0))
+			# Script-space X is opposite phase1 internal X (step uses invert_dir = True).
+			script_base_vx = _gbc_clamp_signed_byte(-int(script_spec.get('base_vx', 0)))
+			script_left_delta = _gbc_clamp_signed_byte(-int(script_spec.get('left_delta', 0)))
+			script_right_delta = _gbc_clamp_signed_byte(-int(script_spec.get('right_delta', 0)))
 			if script_spec.get('jump_y', None) is not None:
-				script_jump_y = int(script_spec.get('jump_y', 0))
+				script_jump_y = _gbc_clamp_signed_byte(int(script_spec.get('jump_y', 0)))
 			if script_spec.get('jump_vy_max', None) is not None:
-				script_jump_vy_max = int(script_spec.get('jump_vy_max', 0))
+				script_jump_vy_max = _gbc_clamp_signed_byte(int(script_spec.get('jump_vy_max', 0)))
 		if grav_step_x != 0:
 			grav_mag_x = max(1, abs(int(grav_step_x)))
 			emit(0xFA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)  # ld a,(gacc_x)
@@ -8321,24 +8331,36 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			jr_skip_body_pair_offscreen_bottom = jr(0x30)  # jr nc, no body-body step
 			emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
 			emit(0xB7)  # or a
-			jr_skip_body_pair_pass = jr(0x28)  # jr z, no body-body step
+			jr_body_pair_check_vx_zero = jr(0x28)  # jr z, evaluate horizontal velocity gate
 			emit(0xCB, 0x7F)  # bit 7,a
-			jr_skip_body_pair_neg = jr(0x20)  # jr nz, no body-body step
+			jr_body_pair_check_vx_neg = jr(0x20)  # jr nz, evaluate horizontal velocity gate
+			emit(0x18, 0x00)  # jr body_pair_eval (vy > 0)
+			jr_body_pair_eval_from_vy = len(code) - 1
+			body_pair_check_vx_addr = len(code)
+			patch_jr(jr_body_pair_check_vx_zero, body_pair_check_vx_addr)
+			patch_jr(jr_body_pair_check_vx_neg, body_pair_check_vx_addr)
+			emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # ld a,(vx)
+			emit(0xB7)  # or a
+			jr_body_pair_check_vx_nonzero = jr(0x20)  # jr nz, body_pair_eval
 			emit(0xC3, 0x00, 0x00)  # jp body_pair_done
 			jp_body_pair_skip_patch = len(code) - 2
 			body_pair_eval_addr = len(code)
+			patch_jr(jr_body_pair_eval_from_vy, body_pair_eval_addr)
+			patch_jr(jr_body_pair_check_vx_nonzero, body_pair_eval_addr)
 			patch_jr(jr_skip_body_pair_world_x, body_pair_eval_addr)
 			patch_jr(jr_skip_body_pair_world_y, body_pair_eval_addr)
 			patch_jr(jr_skip_body_pair_offscreen_bottom, body_pair_eval_addr)
-			patch_jr(jr_skip_body_pair_pass, body_pair_eval_addr)
-			patch_jr(jr_skip_body_pair_neg, body_pair_eval_addr)
 			jp_body_pair_done_patches = []
 			for other_idx, other_body in enumerate(bodies):
 				if other_idx == body_idx:
 					continue
 				other_base = 0xC100 + other_idx * 8
 				other_y_addr = other_base + 0
+				other_vy_addr = other_base + 1
 				other_x_addr = other_base + 2
+				other_vx_addr = other_base + 3
+				other_gacc_y_addr = other_base + 4
+				other_gacc_x_addr = other_base + 5
 				other_y_hi_addr = other_base + 6
 				other_x_hi_addr = other_base + 7
 				other_sprite_tiles_w = max(1, min(4, int(other_body.get('sprite_tiles_w', 1))))
@@ -8346,34 +8368,48 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				other_sprite_w_px = max(8, min(32, other_sprite_tiles_w * 8))
 				emit(0xFA, other_x_hi_addr & 0xFF, (other_x_hi_addr >> 8) & 0xFF)  # ld a,(other_x_hi)
 				emit(0xFE, 0x80)  # cp $80
-				jr_next_pair_other_x_hi = jr(0x20)  # jr nz, next pair
+				emit(0xC2, 0x00, 0x00)  # jp nz, next pair
+				jp_next_pair_other_x_hi = len(code) - 2
 				emit(0xFA, other_y_hi_addr & 0xFF, (other_y_hi_addr >> 8) & 0xFF)  # ld a,(other_y_hi)
 				emit(0xFE, 0x80)  # cp $80
-				jr_next_pair_other_y_hi = jr(0x20)  # jr nz, next pair
+				emit(0xC2, 0x00, 0x00)  # jp nz, next pair
+				jp_next_pair_other_y_hi = len(code) - 2
 				emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)  # ld a,(x)
 				emit(0xC6, sprite_w_px & 0xFF)  # add a,sprite_w
 				emit(0x47)  # ld b,a (self_right)
 				emit(0xFA, other_x_addr & 0xFF, (other_x_addr >> 8) & 0xFF)  # ld a,(other_x)
 				emit(0xB8)  # cp b (other_x - self_right)
-				jr_next_pair_x_before = jr(0x30)  # jr nc, next (self_right <= other_x)
+				emit(0xD2, 0x00, 0x00)  # jp nc, next (self_right <= other_x)
+				jp_next_pair_x_before = len(code) - 2
 				emit(0xFA, other_x_addr & 0xFF, (other_x_addr >> 8) & 0xFF)  # ld a,(other_x)
 				emit(0xC6, other_sprite_w_px & 0xFF)  # add a,other_w
 				emit(0x47)  # ld b,a (other_right)
 				emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)  # ld a,(x)
 				emit(0xB8)  # cp b (self_x - other_right)
-				jr_next_pair_x_after = jr(0x30)  # jr nc, next (self_x >= other_right)
+				emit(0xD2, 0x00, 0x00)  # jp nc, next (self_x >= other_right)
+				jp_next_pair_x_after = len(code) - 2
 				emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # ld a,(y)
 				emit(0x47)  # ld b,a
 				emit(0xFA, other_y_addr & 0xFF, (other_y_addr >> 8) & 0xFF)  # ld a,(other_y)
 				emit(0xB8)  # cp b (other_y - self_y)
-				jr_next_pair_y_not_above = jr(0x38)  # jr c, next (other_y < self_y)
-				jr_next_pair_y_touch = jr(0x28)  # jr z, next (other_y == self_y)
+				emit(0xDA, 0x00, 0x00)  # jp c, next (other_y < self_y)
+				jp_next_pair_y_not_above = len(code) - 2
+				jr_next_pair_y_touch = jr(0x28)  # jr z, side-contact eval (other_y == self_y)
 				emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # ld a,(y)
 				emit(0xC6, sprite_h_px & 0xFF)  # add a,self_h
 				emit(0x47)  # ld b,a (self_bottom)
 				emit(0xFA, other_y_addr & 0xFF, (other_y_addr >> 8) & 0xFF)  # ld a,(other_y)
 				emit(0xB8)  # cp b (other_y - self_bottom)
-				jr_next_pair_y_above_top = jr(0x30)  # jr nc, next (self_bottom <= other_y)
+				emit(0xD2, 0x00, 0x00)  # jp nc, next (self_bottom <= other_y)
+				jp_next_pair_y_above_top = len(code) - 2
+				# If penetration is deep, this is likely side contact with slight
+				# vertical offset; route to side-resolve instead of top-snap.
+				emit(0x57)  # ld d,a (other_y)
+				emit(0x78)  # ld a,b (self_bottom)
+				emit(0x92)  # sub d (penetration = self_bottom - other_y)
+				emit(0xFE, 0x06)  # cp 6px
+				emit(0xD2, 0x00, 0x00)  # jp nc, side-contact eval
+				jp_pair_deep_overlap_side_patch = len(code) - 2
 				# Hit: snap current body on top of other body and clear fall velocity.
 				emit(0xFA, other_y_addr & 0xFF, (other_y_addr >> 8) & 0xFF)  # ld a,(other_y)
 				emit(0xD6, sprite_h_px & 0xFF)  # sub self_h
@@ -8381,20 +8417,97 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				emit(0xAF)  # xor a
 				store_pair_hit_y_addr = len(code)
 				emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+				# Transfer a reduced downward impulse to the impacted body so
+				# dynamic-dynamic stacks can push each other (not just Player).
+				emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(self_vy)
+				emit(0xCB, 0x3F)  # srl a
+				emit(0xCB, 0x3F)  # srl a (quarter impulse, keep positive)
+				emit(0x47)  # ld b,a (candidate other_vy)
+				emit(0xFA, other_vy_addr & 0xFF, (other_vy_addr >> 8) & 0xFF)  # ld a,(other_vy)
+				emit(0xCB, 0x7F)  # bit 7,a
+				jr_pair_keep_other_vy = jr(0x20)  # jr nz, keep candidate
+				emit(0xB8)  # cp b ; keep larger downward speed only
+				jr_pair_skip_transfer = jr(0x30)  # jr nc, skip transfer
+				pair_keep_other_vy_addr = len(code)
+				patch_jr(jr_pair_keep_other_vy, pair_keep_other_vy_addr)
+				emit(0x78)  # ld a,b
+				emit(0xEA, other_vy_addr & 0xFF, (other_vy_addr >> 8) & 0xFF)
+				emit(0xAF)  # xor a
+				emit(0xEA, other_gacc_y_addr & 0xFF, (other_gacc_y_addr >> 8) & 0xFF)
+				pair_skip_transfer_addr = len(code)
+				patch_jr(jr_pair_skip_transfer, pair_skip_transfer_addr)
 				emit(0xAF)  # xor a
 				emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
 				emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
 				emit(0xC3, 0x00, 0x00)  # jp body_pair_done
 				jp_body_pair_done_patches.append(len(code) - 2)
+				side_pair_eval_addr = len(code)
+				patch_jr(jr_next_pair_y_touch, side_pair_eval_addr)
+				patch_abs(jp_pair_deep_overlap_side_patch, side_pair_eval_addr)
+				jp_side_pair_next_if_vx_zero = None
+				jr_side_pair_store_right_x = None
+				side_pair_store_right_x_addr = None
+				if script_spec is None:
+					# Avoid reciprocal side-solves from passive bodies; this prevents
+					# jitter/teleport artifacts when player pushes dynamic props.
+					emit(0xC3, 0x00, 0x00)  # jp next_pair
+					jp_side_pair_unscripted_next = len(code) - 2
+				else:
+					jp_side_pair_unscripted_next = None
+					emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # ld a,(self_vx)
+					emit(0xB7)  # or a
+					emit(0xCA, 0x00, 0x00)  # jp z, next pair
+					jp_side_pair_next_if_vx_zero = len(code) - 2
+					emit(0xCB, 0x7F)  # bit 7,a
+					# Runtime X uses invert_dir=True; negative vx moves right.
+					jr_side_pair_left = jr(0x28)  # jr z, left-moving resolve
+					# Right-moving side contact: clamp self to the left side of other.
+					emit(0xFA, other_x_addr & 0xFF, (other_x_addr >> 8) & 0xFF)  # ld a,(other_x)
+					emit(0xD6, int(sprite_w_px) & 0xFF)  # sub self_w
+					jr_side_pair_store_right_x = jr(0x30)  # jr nc, store x
+					emit(0xAF)  # xor a
+					side_pair_store_right_x_addr = len(code)
+					emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+					emit(0xAF)  # xor a
+					emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+					emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
+					# Transfer a stronger rightward impulse to the pushed body.
+					emit(0x3E, 0xF0)  # ld a,-16 (rightward in invert_dir runtime)
+					emit(0xEA, other_vx_addr & 0xFF, (other_vx_addr >> 8) & 0xFF)
+					emit(0xAF)  # xor a
+					emit(0xEA, other_gacc_x_addr & 0xFF, (other_gacc_x_addr >> 8) & 0xFF)
+					emit(0xC3, 0x00, 0x00)  # jp body_pair_done
+					jp_body_pair_done_patches.append(len(code) - 2)
+					side_pair_left_addr = len(code)
+					patch_jr(jr_side_pair_left, side_pair_left_addr)
+					# Left-moving side contact: clamp self to the right side of other.
+					emit(0xFA, other_x_addr & 0xFF, (other_x_addr >> 8) & 0xFF)
+					emit(0xC6, int(other_sprite_w_px) & 0xFF)  # add other_w
+					emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+					emit(0xAF)  # xor a
+					emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+					emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
+					# Transfer a stronger leftward impulse to the pushed body.
+					emit(0x3E, 0x10)  # ld a,+16 (leftward in invert_dir runtime)
+					emit(0xEA, other_vx_addr & 0xFF, (other_vx_addr >> 8) & 0xFF)
+					emit(0xAF)  # xor a
+					emit(0xEA, other_gacc_x_addr & 0xFF, (other_gacc_x_addr >> 8) & 0xFF)
+					emit(0xC3, 0x00, 0x00)  # jp body_pair_done
+					jp_body_pair_done_patches.append(len(code) - 2)
 				next_pair_addr = len(code)
-				patch_jr(jr_next_pair_other_x_hi, next_pair_addr)
-				patch_jr(jr_next_pair_other_y_hi, next_pair_addr)
-				patch_jr(jr_next_pair_x_before, next_pair_addr)
-				patch_jr(jr_next_pair_x_after, next_pair_addr)
-				patch_jr(jr_next_pair_y_not_above, next_pair_addr)
-				patch_jr(jr_next_pair_y_touch, next_pair_addr)
-				patch_jr(jr_next_pair_y_above_top, next_pair_addr)
+				patch_abs(jp_next_pair_other_x_hi, next_pair_addr)
+				patch_abs(jp_next_pair_other_y_hi, next_pair_addr)
+				patch_abs(jp_next_pair_x_before, next_pair_addr)
+				patch_abs(jp_next_pair_x_after, next_pair_addr)
+				patch_abs(jp_next_pair_y_not_above, next_pair_addr)
+				patch_abs(jp_next_pair_y_above_top, next_pair_addr)
 				patch_jr(jr_store_pair_hit_y, store_pair_hit_y_addr)
+				if jp_side_pair_unscripted_next is not None:
+					patch_abs(jp_side_pair_unscripted_next, next_pair_addr)
+				if jp_side_pair_next_if_vx_zero is not None:
+					patch_abs(jp_side_pair_next_if_vx_zero, next_pair_addr)
+				if jr_side_pair_store_right_x is not None and side_pair_store_right_x_addr is not None:
+					patch_jr(jr_side_pair_store_right_x, side_pair_store_right_x_addr)
 			body_pair_done_addr = len(code)
 			for patch_pos in jp_body_pair_done_patches:
 				patch_abs(patch_pos, body_pair_done_addr)
@@ -8941,13 +9054,14 @@ class _GbcPhase1MirrorSim:
 		self.gacc_x, self.vx = self._step_gravity_axis(self.grav_step_x, self.gacc_x, self.vx)
 		if isinstance(self.velocity_script, dict):
 			keys = _runtime_key_state_snapshot()
-			vx = int(self.velocity_script.get('base_vx', 0))
-			right_delta = int(self.velocity_script.get('right_delta', 0))
-			left_delta = int(self.velocity_script.get('left_delta', 0))
+			# Script-space X is opposite phase1 internal X (step uses invert_dir = True).
+			vx = _gbc_clamp_signed_byte(-int(self.velocity_script.get('base_vx', 0)))
+			right_delta = _gbc_clamp_signed_byte(-int(self.velocity_script.get('right_delta', 0)))
+			left_delta = _gbc_clamp_signed_byte(-int(self.velocity_script.get('left_delta', 0)))
 			if bool(len(keys) > _RUNTIME_KEY_INDEX['RIGHT'] and keys[_RUNTIME_KEY_INDEX['RIGHT']]):
-				vx += right_delta
+				vx = _gbc_clamp_signed_byte(vx + right_delta)
 			if bool(len(keys) > _RUNTIME_KEY_INDEX['LEFT'] and keys[_RUNTIME_KEY_INDEX['LEFT']]):
-				vx += left_delta
+				vx = _gbc_clamp_signed_byte(vx + left_delta)
 			self.vx = int(vx)
 			jump_y = self.velocity_script.get('jump_y', None)
 			if jump_y is not None and bool(len(keys) > _RUNTIME_KEY_INDEX['A'] and keys[_RUNTIME_KEY_INDEX['A']]):
@@ -8991,15 +9105,16 @@ class _GbcPhase1MirrorSim:
 				break
 	def set_linear_velocity (self, _rigidBody, vel, wakeUp = True):
 		try:
-			# Mirror script-facing convention (Y-up) while internal phase1 state is Y-down.
-			self.vx = int(round(float(vel[0])))
-			self.vy = int(round(-float(vel[1])))
+			# Mirror script-facing convention:
+			# X is inverted in phase1 internals, Y is script-up/internal-down.
+			self.vx = _gbc_clamp_signed_byte(int(round(-float(vel[0]))))
+			self.vy = _gbc_clamp_signed_byte(int(round(-float(vel[1]))))
 		except Exception:
 			pass
 	def get_linear_velocity (self, _rigidBody):
 		# Mirror script-facing velocities as integer steps to avoid feedback when
 		# scripts read-then-write velocity every frame.
-		return [float(self.vx), -float(self.vy)]
+		return [-float(self.vx), -float(self.vy)]
 	def set_rigid_body_position (self, _rigidBody, pos, wakeUp = True):
 		try:
 			self.x = (int(round(float(pos[0]))) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
@@ -9448,12 +9563,12 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 		if not base_vy_found:
 			base_vy = 0
 		return {
-			'base_vx' : int(base_vx),
-			'base_vy' : int(base_vy),
-			'left_delta' : int(left_delta),
-			'right_delta' : int(right_delta),
-			'jump_y' : None if jump_y is None else int(jump_y),
-			'jump_vy_max' : None if jump_vy_max is None else int(jump_vy_max),
+			'base_vx' : _gbc_clamp_signed_byte(int(base_vx)),
+			'base_vy' : _gbc_clamp_signed_byte(int(base_vy)),
+			'left_delta' : _gbc_clamp_signed_byte(int(left_delta)),
+			'right_delta' : _gbc_clamp_signed_byte(int(right_delta)),
+			'jump_y' : None if jump_y is None else _gbc_clamp_signed_byte(int(jump_y)),
+			'jump_vy_max' : None if jump_vy_max is None else _gbc_clamp_signed_byte(int(jump_vy_max)),
 		}
 	if sprite_ob is None:
 		return None
@@ -11272,6 +11387,21 @@ def BuildGbc (world):
 					sprite_h = _gba_to_gbc_cover_len(sprite_h)
 					sprite_name = str(getattr(sprite_ob, 'name', '') or '')
 					sprite_max_tiles = 9 if sprite_name.startswith('__gbc_spawnphys_') else 16
+					init_x_src, init_y_src = _get_runtime_sprite_pos_gba(sprite_ob)
+					init_x_local, init_y_local = _gba_to_gbc_cover_point(float(init_x_src), float(init_y_src))
+					init_x = (int(init_x_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
+					init_y = (int(init_y_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
+					init_vx, init_vy = _extract_gbc_phase1_init_velocity(world, sprite_ob)
+					velocity_script = _extract_gbc_phase1_velocity_script(world, sprite_ob)
+					# Preserve detail for the controlled/scripted actor, but keep
+					# fallback/spawned rigid bodies lean so we can fit more bodies
+					# within the hard 40-entry OAM runtime budget.
+					if isinstance(velocity_script, dict):
+						sprite_max_tiles = 16
+					elif sprite_name.startswith('__gbc_spawnphys_'):
+						sprite_max_tiles = 6
+					else:
+						sprite_max_tiles = 9
 					sprite_tile, sprite_tiles_w, sprite_tiles_h = _gbc_encode_metasprite_rgba(
 						sprite_rgba,
 						int(round(sprite_w)),
@@ -11279,12 +11409,6 @@ def BuildGbc (world):
 						palette4 = sprite_pal,
 						max_tiles = sprite_max_tiles,
 					)
-					init_x_src, init_y_src = _get_runtime_sprite_pos_gba(sprite_ob)
-					init_x_local, init_y_local = _gba_to_gbc_cover_point(float(init_x_src), float(init_y_src))
-					init_x = (int(init_x_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
-					init_y = (int(init_y_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
-					init_vx, init_vy = _extract_gbc_phase1_init_velocity(world, sprite_ob)
-					velocity_script = _extract_gbc_phase1_velocity_script(world, sprite_ob)
 					gravity_scale = float(getattr(sprite_ob, 'gravityScale', 1.0))
 					effective_x = gravity_x * gravity_scale
 					effective_down = -gravity_y * gravity_scale
