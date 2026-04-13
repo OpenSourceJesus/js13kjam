@@ -4,6 +4,7 @@
 *.gba
 *.sav
 *.s
+*.log
 __pycache__
 .cursor
 Slime Jump

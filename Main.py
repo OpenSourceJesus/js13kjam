@@ -1,4 +1,4 @@
-import os, re, io, ast, sys, json, math, time, string, atexit, struct, shutil, contextlib, threading, subprocess, webbrowser
+import os, re, io, ast, sys, json, math, time, string, atexit, struct, shutil, contextlib, threading, subprocess, webbrowser, inspect
 import ctypes, ctypes.util
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
@@ -44,6 +44,52 @@ else:
 		BLENDER = 'blender'
 		POTRACE_PATH += 'linux-x86_64/potrace'
 		isLinux = True
+
+def _write_startup_probe ():
+	try:
+		paths = (
+			'/tmp/js13k_main_startup_probe.log',
+			os.path.join(TMP_DIR, 'js13k_main_startup_probe.log'),
+			os.path.join(_thisDir, 'js13k_main_startup_probe.log'),
+		)
+		msg = '[startup-probe] file=' + str(__file__) + ' cwd=' + str(os.getcwd()) + ' pid=' + str(os.getpid())
+		for p in paths:
+			try:
+				with open(p, 'a') as f:
+					f.write(msg + '\n')
+			except Exception:
+				pass
+	except Exception:
+		pass
+
+_write_startup_probe()
+
+def _get_gbc_trace_paths ():
+	paths = []
+	for p in (
+		'/tmp/js13k_gbc_trace.log',
+		os.path.join(TMP_DIR, 'js13k_gbc_trace.log'),
+		os.path.join(_thisDir, 'js13k_gbc_trace.log'),
+	):
+		if p not in paths:
+			paths.append(p)
+	return paths
+
+def _append_gbc_trace_lines (lines):
+	try:
+		rows = [str(x) for x in list(lines or [])]
+	except Exception:
+		rows = [str(lines)]
+	if rows == []:
+		return
+	for p in _get_gbc_trace_paths():
+		try:
+			with open(p, 'a') as f:
+				for row in rows:
+					f.write(row + '\n')
+		except Exception:
+			pass
+
 usePhysics = True
 dontMangleArg = ''
 startScriptPath = ''
@@ -122,11 +168,46 @@ _GB_GLOBAL_MEMBER_NODE_TYPES = (
 	ast.ImportFrom,
 	ast.Assign,
 	ast.AnnAssign,
-	ast.AugAssign,
 	ast.FunctionDef,
 	ast.AsyncFunctionDef,
 	ast.ClassDef,
 )
+
+def _get_ast_node_source_segment (code : str, lines : list, node):
+	segment = ast.get_source_segment(code, node)
+	if segment is None:
+		start = getattr(node, 'lineno', None)
+		end = getattr(node, 'end_lineno', None)
+		if isinstance(start, int) and isinstance(end, int) and start >= 1 and end >= start:
+			segment = '\n'.join(lines[start - 1 : end])
+	return segment
+
+def _build_gbc_global_assign_prefix (code : str, lines : list, node):
+	'''Build one-time initializer source for simple top-level gbc globals.'''
+	target_name = None
+	value_node = None
+	if isinstance(node, ast.Assign):
+		if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+			target_name = node.targets[0].id
+			value_node = node.value
+	elif isinstance(node, ast.AnnAssign):
+		if isinstance(node.target, ast.Name):
+			target_name = node.target.id
+			value_node = node.value
+	if not isinstance(target_name, str) or target_name == '':
+		return None
+	if not isinstance(value_node, ast.AST):
+		return 'global ' + target_name
+	value_segment = _get_ast_node_source_segment(code, lines, value_node)
+	if not isinstance(value_segment, str) or value_segment.strip() == '':
+		return None
+	return (
+		'global ' + target_name + '\n'
+		+ 'try:\n'
+		+ '\t' + target_name + '\n'
+		+ 'except:\n'
+		+ '\t' + target_name + ' = ' + value_segment.strip()
+	)
 
 def _extract_top_level_member_defs (code : str):
 	'''Return source text for top-level member definitions in a script.'''
@@ -139,12 +220,11 @@ def _extract_top_level_member_defs (code : str):
 	for node in list(getattr(tree, 'body', []) or []):
 		if not isinstance(node, _GB_GLOBAL_MEMBER_NODE_TYPES):
 			continue
-		segment = ast.get_source_segment(code, node)
+		segment = None
+		if isinstance(node, (ast.Assign, ast.AnnAssign)):
+			segment = _build_gbc_global_assign_prefix(code, lines, node)
 		if segment is None:
-			start = getattr(node, 'lineno', None)
-			end = getattr(node, 'end_lineno', None)
-			if isinstance(start, int) and isinstance(end, int) and start >= 1 and end >= start:
-				segment = '\n'.join(lines[start - 1 : end])
+			segment = _get_ast_node_source_segment(code, lines, node)
 		if isinstance(segment, str) and segment.strip() != '':
 			chunks.append(segment.strip('\n'))
 	return '\n\n'.join(chunks)
@@ -357,6 +437,85 @@ instancedCollectionObs = set ()
 collectionInstanceOffsetStack = []
 collectionInstanceTransformStack = []
 collectionInstanceCopyCounts = {}
+TRACE_EXPORT_EMITS = os.environ.get('JS13K_TRACE_EXPORT_EMITS', '1') != '0'
+exportTraceEvents = []
+
+def _get_export_trace_paths ():
+	paths = []
+	for p in (
+		os.path.join('/tmp', 'js13k_export_trace.log'),
+		os.path.join(TMP_DIR, 'js13k_export_trace.log'),
+		os.path.join(_thisDir, 'js13k_export_trace.log'),
+	):
+		if p not in paths:
+			paths.append(p)
+	return paths
+
+def _guess_export_entry_name (entry):
+	if isinstance(entry, list):
+		if len(entry) > 1 and isinstance(entry[1], str):
+			return entry[1]
+		if len(entry) > 0 and isinstance(entry[0], str):
+			return entry[0]
+		if len(entry) > 7 and isinstance(entry[7], str):
+			return entry[7]
+	return '<unknown>'
+
+def _trace_export_emit (bucket, entry, source):
+	if not TRACE_EXPORT_EMITS:
+		return
+	exportTraceEvents.append({
+		'bucket' : str(bucket),
+		'name' : _guess_export_entry_name(entry),
+		'source' : str(source),
+	})
+
+def _write_export_trace_log ():
+	if not TRACE_EXPORT_EMITS:
+		return
+	lines = []
+	if exportTraceEvents == []:
+		lines.append('[export-trace] no emitted entries for datas/prefabTemplateDatas')
+	else:
+		grouped = {}
+		for info in exportTraceEvents:
+			key = (info.get('bucket', ''), info.get('name', ''))
+			if key not in grouped:
+				grouped[key] = set()
+			grouped[key].add(info.get('source', ''))
+		lines.append('[export-trace] datas/prefabTemplateDatas emits:')
+		for bucket, name in sorted(grouped.keys()):
+			sources = ', '.join(sorted(grouped[(bucket, name)]))
+			lines.append('[export-trace] ' + str(bucket) + ' ' + str(name) + ' <- ' + str(sources))
+	for p in _get_export_trace_paths():
+		try:
+			open(p, 'w').write('\n'.join(lines) + '\n')
+			print('[export-trace] wrote ' + p)
+		except Exception as err:
+			print('[export-trace] failed to write ' + p + ': ' + str(err))
+
+def _write_export_trace_probe (stage):
+	msg = '[export-trace-probe] stage=' + str(stage) + ' file=' + str(__file__) + ' cwd=' + str(os.getcwd()) + ' pid=' + str(os.getpid())
+	for p in _get_export_trace_paths():
+		try:
+			probePath = p + '.probe'
+			with open(probePath, 'a') as f:
+				f.write(msg + '\n')
+		except Exception:
+			pass
+
+class _TrackedExportList(list):
+	def __init__ (self, bucket):
+		super().__init__()
+		self.bucket = str(bucket)
+	def append (self, entry):
+		caller = inspect.currentframe().f_back
+		source = caller.f_code.co_name + ':' + str(caller.f_lineno) if caller else '<unknown>'
+		_trace_export_emit(self.bucket, entry, source)
+		return super().append(entry)
+	def extend (self, values):
+		for entry in list(values):
+			self.append(entry)
 
 def GetObjectsInCollectionRecursive (coll):
 	obSet = set()
@@ -3219,6 +3378,10 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 def ExportGbcPyAssembly (world, gbc_out_path : str):
 	'''Collect gbc-py scripts from world and exported objects; write translated assembly next to the .gbc.'''
 	global exportType
+	_append_gbc_trace_lines([
+		'[gbc-trace] ExportGbcPyAssembly:start out=' + str(gbc_out_path),
+		'[gbc-trace] ExportGbcPyAssembly:blend=' + str(getattr(bpy.data, 'filepath', '')),
+	])
 	prev_export = exportType
 	exportType = 'gbc'
 	script_entries = []
@@ -3262,29 +3425,78 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 					'owner_name' : ob.name,
 					'symbol_hint' : ob.name + '_' + getattr(script, 'name', 'script'),
 				})
+	def _entry_has_spawn_prefab_call (_entry):
+		raw = str(_entry.get('raw_code', _entry.get('code', '')) or '')
+		try:
+			tree = ast.parse(raw)
+			for node in ast.walk(tree):
+				if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'spawn_prefab':
+					return True
+		except Exception:
+			return bool(re.search(r'\bspawn_prefab\s*\(', raw))
+		return False
+	spawn_calls = []
+	for entry in script_entries:
+		raw = str(entry.get('raw_code', entry.get('code', '')) or '')
+		owner = str(entry.get('owner_name', '__world__'))
+		hits = []
+		try:
+			tree = ast.parse(raw)
+			for node in ast.walk(tree):
+				if not isinstance(node, ast.Call):
+					continue
+				if isinstance(node.func, ast.Name) and node.func.id == 'spawn_prefab':
+					hits.append(int(getattr(node, 'lineno', -1)))
+		except Exception:
+			# Fallback to loose text hit when code is syntactically invalid.
+			if re.search(r'\bspawn_prefab\s*\(', raw):
+				hits.append(-1)
+		if hits:
+			if any(h > 0 for h in hits):
+				lines = ','.join([str(h) for h in hits if h > 0])
+				spawn_calls.append(owner + '@L' + lines)
+			else:
+				spawn_calls.append(owner + '@<text-hit>')
+	_append_gbc_trace_lines([
+		'[gbc-trace] ExportGbcPyAssembly:scripts=' + str(len(script_entries)),
+		'[gbc-trace] ExportGbcPyAssembly:spawn_prefab_callers=' + (', '.join(spawn_calls) if spawn_calls else '<none>'),
+	])
 	global_members_prefix = _build_gbc_global_members_prefix(script_entries)
+	# Scripts marked "global" are definition providers for the shared prefix.
+	# They normally should not execute as standalone runtime scripts each frame.
+	# Exception: keep global scripts that explicitly call spawn_prefab(...), so
+	# authors can drive prefab spawns from shared/global gbc-py scripts.
+	runtime_script_entries = [
+		entry for entry in script_entries
+		if (not bool(entry.get('is_global'))) or _entry_has_spawn_prefab_call(entry)
+	]
 	if global_members_prefix != '':
-		for entry in script_entries:
+		for entry in runtime_script_entries:
 			code_txt = str(entry.get('code', '') or '')
 			raw_code_txt = str(entry.get('raw_code', code_txt) or '')
 			entry['code'] = global_members_prefix + '\n' + code_txt if code_txt.strip() != '' else global_members_prefix
 			entry['raw_code'] = global_members_prefix + '\n' + raw_code_txt if raw_code_txt.strip() != '' else global_members_prefix
 	exportType = prev_export
 	if _py2gb_export_gba_py_assembly:
-		runtime = _run_py2gb_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gbc_out_path, strict_print_exprs = True)
-		runtime = _augment_runtime_with_dynamic_circles(runtime, script_entries)
+		runtime = _run_py2gb_export_with_resolved_logs(_py2gb_export_gba_py_assembly, runtime_script_entries, gbc_out_path, strict_print_exprs = True)
+		runtime = _augment_runtime_with_dynamic_circles(runtime, runtime_script_entries)
 		return runtime
 	runtime = {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'init_display_ops' : [], 'update_display_ops' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
-	runtime = _augment_runtime_with_dynamic_circles(runtime, script_entries)
+	runtime = _augment_runtime_with_dynamic_circles(runtime, runtime_script_entries)
+	_append_gbc_trace_lines([
+		'[gbc-trace] ExportGbcPyAssembly:end runtime_script_count=' + str(runtime.get('script_count', 0) if isinstance(runtime, dict) else 0),
+	])
 	return runtime
 
 def GetBlenderData ():
-	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs, collectionInstanceCopyCounts
+	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs, collectionInstanceCopyCounts, exportTraceEvents
+	_write_export_trace_probe('GetBlenderData:start')
 	vars = []
 	attributes = {}
 	pivots = {}
 	exportedObs = []
-	datas = []
+	exportTraceEvents = []
+	datas = _TrackedExportList('datas')
 	clrs = {}
 	pathsDatas = []
 	imgs = {}
@@ -3303,7 +3515,7 @@ def GetBlenderData ():
 	renderCode = []
 	prefabs = {}
 	templateScripts = {}
-	prefabTemplateDatas = []
+	prefabTemplateDatas = _TrackedExportList('prefabTemplateDatas')
 	prefabPathsDatas = []
 	collectionInstanceCopyCounts = {}
 	instancedObjects = GetInstancedObjects(bpy.context.scene)
@@ -3369,6 +3581,8 @@ def GetBlenderData ():
 				else:
 					if script not in updateCode:
 						updateCode.append(scriptTxt)
+	_write_export_trace_log()
+	_write_export_trace_probe('GetBlenderData:end')
 	return (datas, initCode, updateCode)
 
 buildInfo = {
@@ -5864,7 +6078,26 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				eval_locals,
 			)
 			if val is None and re.fullmatch(r'[A-Za-z_]\w*', expr_eval) and expr_eval not in eval_locals:
-				# Unresolved simple names should not silently become "None".
+				# Unresolved simple names should probe runtime globals/scopes before
+				# falling back to literal text.
+				name = expr_eval
+				if name in extra_env:
+					return str(extra_env[name])
+				all_script_locals = __import__('builtins').globals().get('scriptLocals', {})
+				if isinstance(all_script_locals, dict):
+					for scope in all_script_locals.values():
+						if isinstance(scope, dict):
+							# New layout: scriptLocals[owner][scriptKey] = locals dict.
+							if any(isinstance(v, dict) for v in scope.values()):
+								for nested in scope.values():
+									if isinstance(nested, dict) and name in nested:
+										return str(nested[name])
+							elif name in scope:
+								# Legacy layout: scriptLocals[owner] = locals dict.
+								return str(scope[name])
+				runtime_globals = __import__('builtins').globals()
+				if name in runtime_globals:
+					return str(runtime_globals[name])
 				return expr_eval
 			if isinstance(val, (int, float, bool, str)):
 				return str(val)
@@ -5880,8 +6113,13 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				all_script_locals = __import__('builtins').globals().get('scriptLocals', {})
 				if isinstance(all_script_locals, dict):
 					for scope in all_script_locals.values():
-						if isinstance(scope, dict) and name in scope:
-							return str(scope[name])
+						if isinstance(scope, dict):
+							if any(isinstance(v, dict) for v in scope.values()):
+								for nested in scope.values():
+									if isinstance(nested, dict) and name in nested:
+										return str(nested[name])
+							elif name in scope:
+								return str(scope[name])
 				runtime_globals = __import__('builtins').globals()
 				if name in runtime_globals:
 					return str(runtime_globals[name])
@@ -6104,6 +6342,22 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			K_B = _RUNTIME_KEY_INDEX['B']
 			K_START = _RUNTIME_KEY_INDEX['START']
 			K_SELECT = _RUNTIME_KEY_INDEX['SELECT']
+			class _NoopSurface:
+				def __getattr__ (self, _name):
+					return (lambda *args, **kwargs: None)
+			class _DisplayShim:
+				def __init__ (self, surface):
+					self._surface = surface
+				def get_surface (self):
+					return self._surface
+			class _DrawShim:
+				@staticmethod
+				def circle (*_args, **_kwargs):
+					return None
+			def __init__ (self):
+				self._surface = self._NoopSurface()
+				self.display = self._DisplayShim(self._surface)
+				self.draw = self._DrawShim()
 			class time:
 				@staticmethod
 				def get_ticks ():
@@ -6112,6 +6366,8 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				@staticmethod
 				def get_pressed ():
 					return _runtime_key_state_snapshot()
+			def __getattr__ (self, _name):
+				return (lambda *args, **kwargs: None)
 		def _run_mirror_script (script_info, frame = None):
 			if not isinstance(script_info, dict):
 				return
@@ -10109,11 +10365,47 @@ def BuildGba (world):
 def BuildGbc (world):
 	PreBuild ()
 	try:
+		_append_gbc_trace_lines([
+			'[gbc-trace] BuildGbc:start blend=' + str(getattr(bpy.data, 'filepath', '')),
+			'[gbc-trace] BuildGbc:cwd=' + str(os.getcwd()),
+		])
 		try:
 			import numpy
 		except ImportError:
 			raise RuntimeError('GBC export needs NumPy.')
-		scene_obs = list(bpy.context.scene.collection.all_objects)
+		scene_obs_all = list(bpy.context.scene.collection.all_objects)
+		instanced_template_obs = GetInstancedCollectionTemplateObjects(bpy.context.scene)
+		in_prefab_coll = set()
+		in_non_prefab_coll = set()
+		for coll in bpy.data.collections:
+			export_prefab = bool(getattr(coll, 'exportPrefab', False))
+			for ob in coll.all_objects:
+				if export_prefab:
+					in_prefab_coll.add(ob)
+				else:
+					in_non_prefab_coll.add(ob)
+		# Match main export behavior: template-only prefab objects should not be
+		# rendered/exported directly unless they are explicitly instanced copies.
+		template_only_obs = set(in_prefab_coll - in_non_prefab_coll)
+		scene_obs = [
+			ob for ob in scene_obs_all
+			if ob not in instanced_template_obs and ob not in template_only_obs
+		]
+		scene_instance_obs = [
+			ob for ob in scene_obs
+			if getattr(ob, 'instance_type', None) == 'COLLECTION' and getattr(ob, 'instance_collection', None)
+		]
+		_append_gbc_trace_lines([
+			'[gbc-trace] BuildGbc:scene_objects_all=' + str(len(scene_obs_all)),
+			'[gbc-trace] BuildGbc:scene_objects_filtered=' + str(len(scene_obs)),
+			'[gbc-trace] BuildGbc:template_only_count=' + str(len(template_only_obs)),
+			'[gbc-trace] BuildGbc:instanced_template_count=' + str(len(instanced_template_obs)),
+			'[gbc-trace] BuildGbc:collection_instance_count=' + str(len(scene_instance_obs)),
+			'[gbc-trace] BuildGbc:collection_instances=' + (
+				', '.join([str(ob.name) + '->' + str(getattr(getattr(ob, 'instance_collection', None), 'name', '?')) for ob in scene_instance_obs])
+				if scene_instance_obs else '<none>'
+			),
+		])
 		gbc_imgs = []
 		for ob in scene_obs:
 			if not ob.exportOb or ob.hide_get():
@@ -10136,6 +10428,9 @@ def BuildGbc (world):
 		elif not out.lower().endswith('.gbc'):
 			out += '.gbc'
 		script_runtime = ExportGbcPyAssembly(world, out)
+		_append_gbc_trace_lines([
+			'[gbc-trace] BuildGbc:after ExportGbcPyAssembly',
+		])
 		image_surfaces = {}
 		for ob in gbc_imgs:
 			pix = _gba_load_saved_image_rgba(ob)
@@ -10334,6 +10629,9 @@ def BuildGbc (world):
 		MakeFolderForFile(out)
 		open(out, 'wb').write(rom)
 		print('Saved GBC ROM:', out, '(%i bytes)' %len(rom))
+		_append_gbc_trace_lines([
+			'[gbc-trace] BuildGbc:end rom=' + str(out),
+		])
 		rom_path = os.path.abspath(out)
 		try:
 			proc = subprocess.Popen(
@@ -11429,8 +11727,8 @@ class WorldPanel (bpy.types.Panel):
 			row = self.layout.row()
 			row.prop(ctx.world, 'script%i' %i)
 			row.prop(ctx.world, 'initScript%i' %i)
-			row.prop(ctx.world, 'scriptType%i' %i)
 			row.prop(ctx.world, 'scriptIsGlobal%i' %i)
+			row.prop(ctx.world, 'scriptType%i' %i)
 			row.prop(ctx.world, 'scriptDisable%i' %i)
 		self.layout.operator('world.html_export', icon = 'CONSOLE')
 		self.layout.operator('world.exe_export', icon = 'CONSOLE')
