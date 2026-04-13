@@ -114,8 +114,54 @@ def GetScripts (ob):
 		if not getattr(ob, 'scriptDisable%i' %i):
 			txt = getattr(ob, 'script%i' %i)
 			if txt:
-				scripts.append((txt.as_string(), getattr(ob, 'initScript%i' %i), getattr(ob, 'scriptType%i' %i), txt))
+				scripts.append((txt.as_string(), getattr(ob, 'initScript%i' %i), getattr(ob, 'scriptType%i' %i), txt, getattr(ob, 'scriptIsGlobal%i' %i, False)))
 	return scripts
+
+_GB_GLOBAL_MEMBER_NODE_TYPES = (
+	ast.Import,
+	ast.ImportFrom,
+	ast.Assign,
+	ast.AnnAssign,
+	ast.AugAssign,
+	ast.FunctionDef,
+	ast.AsyncFunctionDef,
+	ast.ClassDef,
+)
+
+def _extract_top_level_member_defs (code : str):
+	'''Return source text for top-level member definitions in a script.'''
+	try:
+		tree = ast.parse(code)
+	except Exception:
+		return ''
+	lines = code.splitlines()
+	chunks = []
+	for node in list(getattr(tree, 'body', []) or []):
+		if not isinstance(node, _GB_GLOBAL_MEMBER_NODE_TYPES):
+			continue
+		segment = ast.get_source_segment(code, node)
+		if segment is None:
+			start = getattr(node, 'lineno', None)
+			end = getattr(node, 'end_lineno', None)
+			if isinstance(start, int) and isinstance(end, int) and start >= 1 and end >= start:
+				segment = '\n'.join(lines[start - 1 : end])
+		if isinstance(segment, str) and segment.strip() != '':
+			chunks.append(segment.strip('\n'))
+	return '\n\n'.join(chunks)
+
+def _build_gbc_global_members_prefix (script_entries : list):
+	'''Build a reusable gbc-py source prefix from scripts marked as global.'''
+	parts = []
+	for entry in list(script_entries or []):
+		if not bool(entry.get('is_global')):
+			continue
+		raw_code = str(entry.get('raw_code', entry.get('code', '')) or '')
+		members = _extract_top_level_member_defs(raw_code)
+		if members.strip() != '':
+			parts.append(members.strip())
+	if not parts:
+		return ''
+	return '\n\n'.join(parts).strip() + '\n'
 
 def TryChangeToInt (f : float):
 	if int(f) == f:
@@ -2916,6 +2962,7 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	for entry_idx, entry in enumerate(entries):
 		code = entry.get('code', '')
 		raw_code = entry.get('raw_code', code)
+		analysis_code = str(raw_code if str(raw_code).strip() != '' else code)
 		is_init = bool(entry.get('is_init'))
 		owner_name = entry.get('owner_name') or '__world__'
 		scope_key = str((owner_name, bool(is_init), entry.get('symbol_hint') or '', int(entry_idx)))
@@ -2925,7 +2972,7 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			'rb_alias' : {},
 			'vel_env' : {},
 		}
-		extracted = _extract_dynamic_draw_circles_from_script(code, is_init)
+		extracted = _extract_dynamic_draw_circles_from_script(analysis_code, is_init)
 		for circle in extracted:
 			target_type = circle.get('target_type')
 			if target_type == 'display_surface':
@@ -2948,7 +2995,7 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 				})
 			else:
 				continue
-		extracted_scrolls = _extract_dynamic_surface_scroll_ops_from_script(code, is_init)
+		extracted_scrolls = _extract_dynamic_surface_scroll_ops_from_script(analysis_code, is_init)
 		for scroll in extracted_scrolls:
 			target_type = scroll.get('target_type')
 			if target_type == 'display_surface':
@@ -2978,7 +3025,7 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			else:
 				continue
 		for info in _extract_print_calls_from_script(
-			code,
+			analysis_code,
 			is_init,
 			owner_name,
 			const_env = env['const_env'],
@@ -3013,7 +3060,9 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			'owner_name' : owner_name,
 			'is_init' : bool(is_init),
 			# Mirror runner resolves print output itself; avoid duplicate script prints.
-			'code' : _strip_print_calls_from_python(raw_code),
+			# Analyze/execute prefixed Python source so shared global members are
+			# visible during runtime print evaluation as well.
+			'code' : _strip_print_calls_from_python(analysis_code),
 		})
 	# Prefer parser-rebuilt print metadata for script owner/phase pairs we handled,
 	# while preserving backend-provided print calls for any untouched pairs.
@@ -3164,7 +3213,8 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 	if _py2gb_export_gba_py_assembly:
 		runtime = _run_py2gb_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gba_out_path, strict_print_exprs = False)
 		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
-	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'init_display_ops' : [], 'update_display_ops' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
+	runtime = {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'init_display_ops' : [], 'update_display_ops' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
+	return _augment_runtime_with_dynamic_circles(runtime, script_entries)
 
 def ExportGbcPyAssembly (world, gbc_out_path : str):
 	'''Collect gbc-py scripts from world and exported objects; write translated assembly next to the .gbc.'''
@@ -3178,6 +3228,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			is_init = scriptInfo[1]
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
+			is_global = bool(scriptInfo[4]) if len(scriptInfo) > 4 else False
 			if _type == 'gbc-py':
 				raw_script_txt = scriptTxt
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, '__world__')
@@ -3185,6 +3236,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 					'code' : scriptTxt,
 					'raw_code' : raw_script_txt,
 					'is_init' : is_init,
+					'is_global' : is_global,
 					'script_obj' : script,
 					'owner_name' : '__world__',
 					'symbol_hint' : 'world_' + getattr(script, 'name', 'script'),
@@ -3197,6 +3249,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			is_init = scriptInfo[1]
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
+			is_global = bool(scriptInfo[4]) if len(scriptInfo) > 4 else False
 			if _type == 'gbc-py':
 				raw_script_txt = scriptTxt
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, ob.name)
@@ -3204,15 +3257,26 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 					'code' : scriptTxt,
 					'raw_code' : raw_script_txt,
 					'is_init' : is_init,
+					'is_global' : is_global,
 					'script_obj' : script,
 					'owner_name' : ob.name,
 					'symbol_hint' : ob.name + '_' + getattr(script, 'name', 'script'),
 				})
+	global_members_prefix = _build_gbc_global_members_prefix(script_entries)
+	if global_members_prefix != '':
+		for entry in script_entries:
+			code_txt = str(entry.get('code', '') or '')
+			raw_code_txt = str(entry.get('raw_code', code_txt) or '')
+			entry['code'] = global_members_prefix + '\n' + code_txt if code_txt.strip() != '' else global_members_prefix
+			entry['raw_code'] = global_members_prefix + '\n' + raw_code_txt if raw_code_txt.strip() != '' else global_members_prefix
 	exportType = prev_export
 	if _py2gb_export_gba_py_assembly:
 		runtime = _run_py2gb_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gbc_out_path, strict_print_exprs = True)
-		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
-	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'init_display_ops' : [], 'update_display_ops' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
+		runtime = _augment_runtime_with_dynamic_circles(runtime, script_entries)
+		return runtime
+	runtime = {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'init_display_ops' : [], 'update_display_ops' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
+	runtime = _augment_runtime_with_dynamic_circles(runtime, script_entries)
+	return runtime
 
 def GetBlenderData ():
 	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs, collectionInstanceCopyCounts
@@ -10982,6 +11046,11 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 		bpy.props.EnumProperty(name = 'Type', items = SCRIPT_TYPE_ITEMS)
 	)
 	setattr(
+		bpy.types.World,
+		'scriptIsGlobal%i' %i,
+		bpy.props.BoolProperty(name = 'Is global')
+	)
+	setattr(
 		bpy.types.Object,
 		'script%i' %i,
 		bpy.props.PointerProperty(name = 'Script%i' %i, type = bpy.types.Text, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'script%i' %i))
@@ -11361,6 +11430,7 @@ class WorldPanel (bpy.types.Panel):
 			row.prop(ctx.world, 'script%i' %i)
 			row.prop(ctx.world, 'initScript%i' %i)
 			row.prop(ctx.world, 'scriptType%i' %i)
+			row.prop(ctx.world, 'scriptIsGlobal%i' %i)
 			row.prop(ctx.world, 'scriptDisable%i' %i)
 		self.layout.operator('world.html_export', icon = 'CONSOLE')
 		self.layout.operator('world.exe_export', icon = 'CONSOLE')
