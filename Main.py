@@ -2228,6 +2228,84 @@ def _extract_dynamic_draw_circles_from_stmts (stmts, is_init : bool, parent_cond
 			circles.extend(_extract_dynamic_draw_circles_from_stmts(stmt.orelse, is_init, else_cond))
 	return circles
 
+def _extract_surface_scroll_dxdy_nodes (call_node):
+	if not isinstance(call_node, ast.Call):
+		return None, None
+	args = list(call_node.args or [])
+	dx_node = None
+	dy_node = None
+	if len(args) >= 2:
+		dx_node = args[0]
+		dy_node = args[1]
+	elif len(args) == 1:
+		first = args[0]
+		if isinstance(first, (ast.Tuple, ast.List)) and len(list(first.elts or [])) >= 2:
+			dx_node = first.elts[0]
+			dy_node = first.elts[1]
+		else:
+			dx_node = first
+			dy_node = ast.Constant(value = 0)
+	for kw in list(call_node.keywords or []):
+		if kw.arg == 'dx':
+			dx_node = kw.value
+		elif kw.arg == 'dy':
+			dy_node = kw.value
+	return dx_node, dy_node
+
+def _extract_dynamic_surface_scroll_ops_from_script (code : str, is_init : bool):
+	try:
+		tree = ast.parse(code or '')
+	except Exception:
+		return []
+	return _extract_dynamic_surface_scroll_ops_from_stmts(getattr(tree, 'body', []), is_init, parent_condition = None)
+
+def _extract_dynamic_surface_scroll_ops_from_stmts (stmts, is_init : bool, parent_condition = None):
+	scroll_ops = []
+	for stmt in list(stmts or []):
+		if isinstance(stmt, ast.Expr):
+			node = stmt.value
+			if (
+				isinstance(node, ast.Call)
+				and isinstance(node.func, ast.Attribute)
+				and node.func.attr == 'scroll'
+			):
+				target = node.func.value
+				target_type = None
+				if _is_display_get_surface_call(target):
+					target_type = 'display_surface'
+				elif _is_this_surface_member(target):
+					target_type = 'this_surface'
+				if target_type:
+					dx_node, dy_node = _extract_surface_scroll_dxdy_nodes(node)
+					if (
+						dx_node is not None
+						and dy_node is not None
+						and (_has_dynamic_runtime_expr(dx_node) or _has_dynamic_runtime_expr(dy_node))
+					):
+						scroll = {
+							'dx' : _serialize_script_expr(dx_node),
+							'dy' : _serialize_script_expr(dy_node),
+							'is_init' : bool(is_init),
+							'target_type' : target_type,
+						}
+						if parent_condition is not None:
+							scroll['condition'] = parent_condition
+						scroll_ops.append(scroll)
+		if isinstance(stmt, ast.If):
+			truth = _literal_truthy_from_ast_node(stmt.test)
+			if truth is True:
+				scroll_ops.extend(_extract_dynamic_surface_scroll_ops_from_stmts(stmt.body, is_init, parent_condition))
+				continue
+			if truth is False:
+				scroll_ops.extend(_extract_dynamic_surface_scroll_ops_from_stmts(stmt.orelse, is_init, parent_condition))
+				continue
+			test_expr = _serialize_script_expr(stmt.test)
+			body_cond = _combine_expr_conditions(parent_condition, test_expr)
+			else_cond = _combine_expr_conditions(parent_condition, _negate_expr_condition(test_expr))
+			scroll_ops.extend(_extract_dynamic_surface_scroll_ops_from_stmts(stmt.body, is_init, body_cond))
+			scroll_ops.extend(_extract_dynamic_surface_scroll_ops_from_stmts(stmt.orelse, is_init, else_cond))
+	return scroll_ops
+
 def _is_print_call (call_node):
 	return isinstance(call_node, ast.Call) and isinstance(call_node.func, ast.Name) and call_node.func.id == 'print'
 
@@ -2824,6 +2902,8 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	# (for example `if False:`) do not leak into baked fallback rendering.
 	init_draw = []
 	update_draw = []
+	init_display_ops = [op for op in list(script_runtime.get('init_display_ops') or []) if isinstance(op, dict)]
+	update_display_ops = [op for op in list(script_runtime.get('update_display_ops') or []) if isinstance(op, dict)]
 	surface_ops = []
 	for op in list(script_runtime.get('surface_ops') or []):
 		if isinstance(op, dict) and op.get('op') == 'draw_circle_surface_member':
@@ -2874,6 +2954,35 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 					'width' : circle.get('width') or 0.0,
 					'condition' : circle.get('condition'),
 				})
+			else:
+				continue
+		extracted_scrolls = _extract_dynamic_surface_scroll_ops_from_script(code, is_init)
+		for scroll in extracted_scrolls:
+			target_type = scroll.get('target_type')
+			if target_type == 'display_surface':
+				op = {
+					'op' : 'scroll_display_surface',
+					'dx' : scroll.get('dx') if scroll.get('dx') is not None else 0.0,
+					'dy' : scroll.get('dy') if scroll.get('dy') is not None else 0.0,
+				}
+				if scroll.get('condition') is not None:
+					op['condition'] = scroll.get('condition')
+				if is_init:
+					init_display_ops.append(op)
+				else:
+					update_display_ops.append(op)
+			elif target_type == 'this_surface':
+				op = {
+					'op' : 'scroll_surface_member',
+					'owner_name' : owner_name,
+					'member' : 'surface',
+					'is_init' : bool(is_init),
+					'dx' : scroll.get('dx') if scroll.get('dx') is not None else 0.0,
+					'dy' : scroll.get('dy') if scroll.get('dy') is not None else 0.0,
+				}
+				if scroll.get('condition') is not None:
+					op['condition'] = scroll.get('condition')
+				surface_ops.append(op)
 			else:
 				continue
 		for info in _extract_print_calls_from_script(
@@ -2935,6 +3044,8 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		print_calls.append(info)
 	script_runtime['init_draw_circles'] = init_draw
 	script_runtime['update_draw_circles'] = update_draw
+	script_runtime['init_display_ops'] = init_display_ops
+	script_runtime['update_display_ops'] = update_display_ops
 	script_runtime['surface_ops'] = surface_ops
 	script_runtime['print_calls'] = print_calls
 	script_runtime['print_const_env_by_scope'] = print_const_env_by_scope
@@ -3061,7 +3172,7 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 	if _py2gb_export_gba_py_assembly:
 		runtime = _run_py2gb_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gba_out_path, strict_print_exprs = False)
 		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
-	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
+	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'init_display_ops' : [], 'update_display_ops' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
 
 def ExportGbcPyAssembly (world, gbc_out_path : str):
 	'''Collect gbc-py scripts from world and exported objects; write translated assembly next to the .gbc.'''
@@ -3109,7 +3220,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 	if _py2gb_export_gba_py_assembly:
 		runtime = _run_py2gb_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gbc_out_path, strict_print_exprs = True)
 		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
-	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
+	return {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'init_display_ops' : [], 'update_display_ops' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
 
 def GetBlenderData ():
 	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs, collectionInstanceCopyCounts
@@ -6556,7 +6667,7 @@ def _gbc_palette4_from_rgba (rgba):
 		return _GBC_DEFAULT_BG_COLORS[: 4]
 	return _gbc_quantize_palette4(pix, lock_extremes = True)
 
-def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None):
+def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0):
 	code = bytearray()
 	def emit(*vals):
 		code.extend(vals)
@@ -6618,6 +6729,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	dead_addr = 0xC116
 	y_hi_addr = 0xC117
 	x_hi_addr = 0xC118
+	scroll_x_addr = 0xC119
+	scroll_y_addr = 0xC11A
 	emit(0xF3)  # di
 	emit(0x31, 0xFE, 0xFF)  # ld sp, $FFFE
 	emit(0xAF)  # xor a
@@ -6665,21 +6778,26 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
 	ld_a_imm(0)
 	emit(0xEA, dead_addr & 0xFF, (dead_addr >> 8) & 0xFF)
+	ld_a_imm(init_scroll_x)
+	emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	ld_a_imm(init_scroll_y)
+	emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
 	for row in range(sprite_tiles_h):
 		for col in range(sprite_tiles_w):
 			idx = row * sprite_tiles_w + col
 			if idx >= sprite_tile_count:
 				continue
 			base = 0xFE00 + idx * 4
-			ld_a_imm(init_y + row * 8 + 16)
+			ld_a_imm(init_y + init_scroll_y + row * 8 + 16)
 			emit(0xEA, base & 0xFF, (base >> 8) & 0xFF)  # OAM y
-			ld_a_imm(init_x + col * 8 + 8)
+			ld_a_imm(init_x + init_scroll_x + col * 8 + 8)
 			emit(0xEA, (base + 1) & 0xFF, ((base + 1) >> 8) & 0xFF)  # OAM x
 			ld_a_imm(idx)
 			emit(0xEA, (base + 2) & 0xFF, ((base + 2) >> 8) & 0xFF)  # tile idx
 			ld_a_imm(0x08)  # OBJ tile bank 1
 			emit(0xEA, (base + 3) & 0xFF, ((base + 3) >> 8) & 0xFF)
-	emit(0xAF); ldh_imm_a(0x42); ldh_imm_a(0x43)  # SCY/SCX
+	ld_a_imm((-int(init_scroll_y)) & 0xFF); ldh_imm_a(0x42)
+	ld_a_imm((-int(init_scroll_x)) & 0xFF); ldh_imm_a(0x43)
 	ld_a_imm(0x93)  # LCDC on with OBJ
 	ldh_imm_a(0x40)
 	emit(0xFB)  # ei
@@ -6705,6 +6823,21 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	emit(0xC9)
 	update_live_addr = len(code)
 	patch_jr(jr_not_dead, update_live_addr)
+	# Runtime display scroll: accumulate scripted per-frame scroll and map to SCY/SCX.
+	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	emit(0xC6, int(scroll_step_x) & 0xFF)
+	emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	emit(0x2F)  # cpl
+	emit(0x3C)  # inc a
+	ldh_imm_a(0x43)  # SCX = -scroll_x
+	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	emit(0xC6, int(scroll_step_y) & 0xFF)
+	emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	emit(0x2F)  # cpl
+	emit(0x3C)  # inc a
+	ldh_imm_a(0x42)  # SCY = -scroll_y
 	# Integrate gravity to velocity with a 1/16 accumulator.
 	if grav_step_x != 0:
 		grav_mag_x = max(1, min(32, abs(int(grav_step_x))))
@@ -6946,9 +7079,15 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 				continue
 			base = 0xFE00 + idx * 4
 			emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+			emit(0x47)  # ld b,a (base y)
+			emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+			emit(0x80)  # add a,b
 			emit(0xC6, (16 + row * 8) & 0xFF)
 			emit(0xEA, base & 0xFF, (base >> 8) & 0xFF)
 			emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+			emit(0x47)  # ld b,a (base x)
+			emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+			emit(0x80)  # add a,b
 			emit(0xC6, (8 + col * 8) & 0xFF)
 			emit(0xEA, (base + 1) & 0xFF, ((base + 1) >> 8) & 0xFF)
 	emit(0xC9)
@@ -6993,7 +7132,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	patch_call(call_copy_bg_attr_patch, copy_addr)
 	return bytes(code)
 
-def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette4, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None):
+def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette4, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0):
 	tile_data_len = 384 * 16
 	tilemap_len = 32 * 32
 	attrmap_len = 32 * 32
@@ -7023,13 +7162,13 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	rom_size = 0x8000
 	sprite_tile_count = max(1, min(16, int((len(sprite_tile_bytes) if sprite_tile_bytes else 0) // 16)))
 	collider_count = len(collider_payload) // 4
-	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script)
+	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y)
 	bg_data_addr = code_start + len(probe)
 	if bg_data_addr & 0xF:
 		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
 	sprite_data_addr = bg_data_addr + len(bg_payload)
 	collider_data_addr = sprite_data_addr + sprite_tile_count * 16
-	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script)
+	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y)
 	total_need = collider_data_addr + len(collider_payload)
 	if total_need > rom_size:
 		raise RuntimeError('GBC dynamic physics export exceeds 32KB ROM size.')
@@ -7059,12 +7198,14 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	print('GBC export: runtime mode = dynamic physics phase1, runtime colliders =', collider_count)
 	return bytes(rom)
 
-def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, bodies, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0):
+def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, bodies, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0):
 	code = bytearray()
 	if bodies is None:
 		bodies = []
 	else:
 		bodies = list(bodies)
+	scroll_x_addr = 0xC0F0
+	scroll_y_addr = 0xC0F1
 	def emit(*vals):
 		code.extend(vals)
 	def jr(op):
@@ -7117,6 +7258,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		call_copy_sprite_patch = None
 	emit(0xAF)
 	ldh_imm_a(0x4F)  # VBK = 0
+	ld_a_imm(init_scroll_x); emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	ld_a_imm(init_scroll_y); emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
 	# Seed body state and OAM metasprites.
 	for body_idx, body in enumerate(bodies):
 		base = 0xC100 + body_idx * 8
@@ -7158,15 +7301,16 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				if base_oam >= 40:
 					continue
 				oam_addr = 0xFE00 + base_oam * 4
-				ld_a_imm(init_y + row * 8 + 16)
+				ld_a_imm(init_y + init_scroll_y + row * 8 + 16)
 				emit(0xEA, oam_addr & 0xFF, (oam_addr >> 8) & 0xFF)  # OAM y
-				ld_a_imm(init_x + col * 8 + 8)
+				ld_a_imm(init_x + init_scroll_x + col * 8 + 8)
 				emit(0xEA, (oam_addr + 1) & 0xFF, ((oam_addr + 1) >> 8) & 0xFF)  # OAM x
 				ld_a_imm(sprite_tile_base + tile_idx)
 				emit(0xEA, (oam_addr + 2) & 0xFF, ((oam_addr + 2) >> 8) & 0xFF)  # tile idx
 				ld_a_imm(attr)
 				emit(0xEA, (oam_addr + 3) & 0xFF, ((oam_addr + 3) >> 8) & 0xFF)  # attrs
-	emit(0xAF); ldh_imm_a(0x42); ldh_imm_a(0x43)  # SCY/SCX
+	ld_a_imm((-int(init_scroll_y)) & 0xFF); ldh_imm_a(0x42)
+	ld_a_imm((-int(init_scroll_x)) & 0xFF); ldh_imm_a(0x43)
 	ld_a_imm(0x93)  # LCDC on with OBJ
 	ldh_imm_a(0x40)
 	emit(0xFB)  # ei
@@ -7177,6 +7321,21 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 	call_update_patch = len(code) - 2
 	jr_loop = jr(0x18)
 	update_addr = len(code)
+	# Runtime display scroll shared across all bodies.
+	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	emit(0xC6, int(scroll_step_x) & 0xFF)
+	emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	emit(0x2F)  # cpl
+	emit(0x3C)  # inc a
+	ldh_imm_a(0x43)  # SCX = -scroll_x
+	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	emit(0xC6, int(scroll_step_y) & 0xFF)
+	emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	emit(0x2F)  # cpl
+	emit(0x3C)  # inc a
+	ldh_imm_a(0x42)  # SCY = -scroll_y
 	for body_idx, body in enumerate(bodies):
 		base = 0xC100 + body_idx * 8
 		y_addr = base + 0
@@ -7458,9 +7617,15 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 					continue
 				oam_addr = 0xFE00 + base_oam * 4
 				emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+				emit(0x47)  # ld b,a (base y)
+				emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+				emit(0x80)  # add a,b
 				emit(0xC6, (16 + row * 8) & 0xFF)
 				emit(0xEA, oam_addr & 0xFF, (oam_addr >> 8) & 0xFF)
 				emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+				emit(0x47)  # ld b,a (base x)
+				emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+				emit(0x80)  # add a,b
 				emit(0xC6, (8 + col * 8) & 0xFF)
 				emit(0xEA, (oam_addr + 1) & 0xFF, ((oam_addr + 1) >> 8) & 0xFF)
 		oam_done_addr = len(code)
@@ -7508,7 +7673,7 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 	patch_call(call_copy_bg_attr_patch, copy_addr)
 	return bytes(code)
 
-def _gbc_build_dynamic_physics_rom_multi (canvas_160x144, body_specs, bg_palette_bank, collider_rects = None):
+def _gbc_build_dynamic_physics_rom_multi (canvas_160x144, body_specs, bg_palette_bank, collider_rects = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0):
 	tile_data_len = 384 * 16
 	tilemap_len = 32 * 32
 	attrmap_len = 32 * 32
@@ -7597,13 +7762,13 @@ def _gbc_build_dynamic_physics_rom_multi (canvas_160x144, body_specs, bg_palette
 	code_start = 0x150
 	rom_size = 0x8000
 	collider_count = len(collider_payload) // 4
-	probe = _gbc_build_dynamic_physics_program_multi(0, tile_data_len, tilemap_len, attrmap_len, 0, total_tile_count, bodies, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count)
+	probe = _gbc_build_dynamic_physics_program_multi(0, tile_data_len, tilemap_len, attrmap_len, 0, total_tile_count, bodies, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y)
 	bg_data_addr = code_start + len(probe)
 	if bg_data_addr & 0xF:
 		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
 	sprite_data_addr = bg_data_addr + len(bg_payload)
 	collider_data_addr = sprite_data_addr + len(sprite_payload)
-	code = _gbc_build_dynamic_physics_program_multi(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, total_tile_count, bodies, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count)
+	code = _gbc_build_dynamic_physics_program_multi(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, total_tile_count, bodies, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y)
 	total_need = collider_data_addr + len(collider_payload)
 	if total_need > rom_size:
 		raise RuntimeError('GBC dynamic multi-body export exceeds 32KB ROM size.')
@@ -7770,7 +7935,7 @@ def _gba_to_gbc_cover_len (v : float):
 	scale, _, _ = _gba_cover_transform(240, 160, 160, 144)
 	return max(1, int(round(float(v) * scale)))
 
-def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignored_names = None):
+def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignored_names = None, scroll_x_gba : float = 0.0, scroll_y_gba : float = 0.0):
 	rects = []
 	ignored = set()
 	if isinstance(ignored_name, str) and ignored_name:
@@ -7790,8 +7955,8 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 		if getattr(ob, 'isSensor', False):
 			continue
 		shape = str(getattr(ob, 'colliderShapeType', ''))
-		cx = float(ob.location.x) + float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[0])
-		cy = -float(ob.location.y) - float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[1])
+		cx = float(ob.location.x) + float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[0]) + float(scroll_x_gba)
+		cy = -float(ob.location.y) - float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[1]) + float(scroll_y_gba)
 		w = 0.0
 		h = 0.0
 		if shape in ('cuboid', 'roundCuboid'):
@@ -8532,6 +8697,30 @@ def _gba_blit_rgba (canvas, src, x : int, y : int, tint_rgb, opacity : float):
 	alpha = patch[:, :, 3 : 4]
 	dst[:] = (1.0 - alpha) * dst + alpha * patch
 
+def _gba_scroll_rgba_in_place (surf, dx : int, dy : int):
+	if surf is None:
+		return
+	try:
+		dx = int(dx)
+		dy = int(dy)
+	except Exception:
+		return
+	if dx == 0 and dy == 0:
+		return
+	h, w = surf.shape[0], surf.shape[1]
+	dst_x0 = max(0, dx)
+	dst_y0 = max(0, dy)
+	dst_x1 = min(w, w + dx)
+	dst_y1 = min(h, h + dy)
+	if dst_x0 >= dst_x1 or dst_y0 >= dst_y1:
+		return
+	src_x0 = dst_x0 - dx
+	src_y0 = dst_y0 - dy
+	src_x1 = src_x0 + (dst_x1 - dst_x0)
+	src_y1 = src_y0 + (dst_y1 - dst_y0)
+	src = surf.copy()
+	surf[dst_y0 : dst_y1, dst_x0 : dst_x1] = src[src_y0 : src_y1, src_x0 : src_x1]
+
 def _gba_load_saved_image_rgba (ob):
 	try:
 		import numpy as np
@@ -8571,6 +8760,11 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list, fr
 			continue
 		if (not is_init) and not include_update:
 			continue
+		cond = op.get('condition')
+		if cond is not None and cond != '':
+			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
+			if cond_val is None or abs(float(cond_val)) <= 1e-9:
+				continue
 		owner_name = op.get('owner_name')
 		if not owner_name:
 			continue
@@ -8658,6 +8852,18 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list, fr
 				frame = frame,
 				start_time = start_time,
 			)
+		elif _type == 'scroll_surface_member' and member:
+			surf = members.get(member)
+			if surf is None:
+				continue
+			dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
+			dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
+			try:
+				dx = int(round(float(0.0 if dx_val is None else dx_val)))
+				dy = int(round(float(0.0 if dy_val is None else dy_val)))
+			except Exception:
+				continue
+			_gba_scroll_rgba_in_place(surf, dx, dy)
 	for owner_name in list(image_surfaces.keys()):
 		override = owner_members.get(owner_name, {}).get('surface')
 		if override is not None:
@@ -8672,6 +8878,42 @@ def _gba_apply_display_draw_circles (canvas, script_runtime, frame : int = None,
 		_gba_draw_circle_from_script(canvas, circle, frame = frame, start_time = start_time)
 	for circle in list(runtime.get('update_draw_circles') or []):
 		_gba_draw_circle_from_script(canvas, circle, frame = frame, start_time = start_time)
+	for op in list(runtime.get('init_display_ops') or []):
+		if not isinstance(op, dict):
+			continue
+		if str(op.get('op') or '') != 'scroll_display_surface':
+			continue
+		cond = op.get('condition')
+		if cond is not None and cond != '':
+			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
+			if cond_val is None or abs(float(cond_val)) <= 1e-9:
+				continue
+		dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
+		dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
+		try:
+			dx = int(round(float(0.0 if dx_val is None else dx_val)))
+			dy = int(round(float(0.0 if dy_val is None else dy_val)))
+		except Exception:
+			continue
+		_gba_scroll_rgba_in_place(canvas, dx, dy)
+	for op in list(runtime.get('update_display_ops') or []):
+		if not isinstance(op, dict):
+			continue
+		if str(op.get('op') or '') != 'scroll_display_surface':
+			continue
+		cond = op.get('condition')
+		if cond is not None and cond != '':
+			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
+			if cond_val is None or abs(float(cond_val)) <= 1e-9:
+				continue
+		dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
+		dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
+		try:
+			dx = int(round(float(0.0 if dx_val is None else dx_val)))
+			dy = int(round(float(0.0 if dy_val is None else dy_val)))
+		except Exception:
+			continue
+		_gba_scroll_rgba_in_place(canvas, dx, dy)
 	return canvas
 
 def _gba_composite_scene (world, image_empties, image_surfaces = None, transform_overrides = None, script_runtime = None, frame : int = None):
@@ -9175,10 +9417,65 @@ def _gba_has_update_visuals (script_runtime):
 	runtime = script_runtime or {}
 	if list(runtime.get('update_draw_circles') or []):
 		return True
+	if list(runtime.get('update_display_ops') or []):
+		return True
 	for op in list(runtime.get('surface_ops') or []):
 		if not bool(op.get('is_init', True)):
 			return True
 	return False
+
+def _gba_eval_display_scroll_offset (script_runtime, frame : int = 1, start_time : float = None, include_update : bool = False):
+	runtime = script_runtime or {}
+	ops = []
+	ops.extend(list(runtime.get('init_display_ops') or []))
+	if include_update:
+		ops.extend(list(runtime.get('update_display_ops') or []))
+	dx_total = 0
+	dy_total = 0
+	for op in ops:
+		if not isinstance(op, dict):
+			continue
+		if str(op.get('op') or '') != 'scroll_display_surface':
+			continue
+		cond = op.get('condition')
+		if cond is not None and cond != '':
+			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
+			if cond_val is None or abs(float(cond_val)) <= 1e-9:
+				continue
+		dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
+		dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
+		try:
+			dx_total += int(round(float(0.0 if dx_val is None else dx_val)))
+			dy_total += int(round(float(0.0 if dy_val is None else dy_val)))
+		except Exception:
+			continue
+	return int(dx_total), int(dy_total)
+
+def _gba_get_runtime_display_scroll_profile (script_runtime, frame : int = 1, start_time : float = None):
+	init_dx, init_dy = _gba_eval_display_scroll_offset(
+		script_runtime,
+		frame = frame,
+		start_time = start_time,
+		include_update = False,
+	)
+	total_dx, total_dy = _gba_eval_display_scroll_offset(
+		script_runtime,
+		frame = frame,
+		start_time = start_time,
+		include_update = True,
+	)
+	return {
+		'init_dx' : int(init_dx),
+		'init_dy' : int(init_dy),
+		'step_dx' : int(total_dx - init_dx),
+		'step_dy' : int(total_dy - init_dy),
+	}
+
+def _gba_runtime_without_display_scroll (script_runtime):
+	runtime = dict(script_runtime or {})
+	runtime['init_display_ops'] = []
+	runtime['update_display_ops'] = []
+	return runtime
 
 def _gba_generate_script_only_frames (world, image_empties, image_surfaces, script_runtime):
 	if not _gba_has_update_visuals(script_runtime):
@@ -9599,6 +9896,8 @@ def BuildGbc (world):
 		has_physics = bool(getattr(world, 'usePhysics', True)) and _gb_scene_has_physics(scene_obs)
 		use_multi_body_runtime = False
 		if has_physics:
+			scroll_profile = _gba_get_runtime_display_scroll_profile(script_runtime, frame = 1)
+			bake_runtime = _gba_runtime_without_display_scroll(script_runtime)
 			rigid_sprite_obs = [
 				ob for ob in gbc_imgs
 				if getattr(ob, 'rigidBodyExists', False) and getattr(ob, 'rigidBodyEnable', True)
@@ -9625,7 +9924,7 @@ def BuildGbc (world):
 					world,
 					bg_imgs,
 					image_surfaces = image_surfaces,
-					script_runtime = script_runtime,
+					script_runtime = bake_runtime,
 					frame = 1,
 				)
 				canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
@@ -9673,7 +9972,16 @@ def BuildGbc (world):
 						'velocity_script' : velocity_script,
 					})
 				collider_rects = _gbc_collect_runtime_colliders(scene_obs, ignored_names = set([ob.name for ob in rigid_sprite_obs]))
-				rom = _gbc_build_dynamic_physics_rom_multi(canvas_gbc, body_specs, bg_palette_bank, collider_rects = collider_rects)
+				rom = _gbc_build_dynamic_physics_rom_multi(
+					canvas_gbc,
+					body_specs,
+					bg_palette_bank,
+					collider_rects = collider_rects,
+					init_scroll_x = scroll_profile.get('init_dx', 0),
+					init_scroll_y = scroll_profile.get('init_dy', 0),
+					scroll_step_x = scroll_profile.get('step_dx', 0),
+					scroll_step_y = scroll_profile.get('step_dy', 0),
+				)
 			else:
 				sprite_ob = None
 				for ob in rigid_sprite_obs:
@@ -9694,7 +10002,7 @@ def BuildGbc (world):
 					world,
 					bg_imgs,
 					image_surfaces = image_surfaces,
-					script_runtime = script_runtime,
+					script_runtime = bake_runtime,
 					frame = 1,
 				)
 				canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
@@ -9737,7 +10045,26 @@ def BuildGbc (world):
 					print('GBC export: phase1 found no constant gbc-py set_linear_velocity seed for sprite; defaulting to [0, 0].')
 				if isinstance(velocity_script, dict):
 					print('GBC export: phase1 interpreted gbc-py velocity script =', velocity_script)
-				rom = _gbc_build_dynamic_physics_rom(canvas_gbc, sprite_tile, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bank, sprite_pal, collider_rects = collider_rects, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script)
+				rom = _gbc_build_dynamic_physics_rom(
+					canvas_gbc,
+					sprite_tile,
+					sprite_tiles_w,
+					sprite_tiles_h,
+					init_x,
+					init_y,
+					bg_palette_bank,
+					sprite_pal,
+					collider_rects = collider_rects,
+					grav_step_x = grav_step_x,
+					grav_step_y = grav_step_y,
+					init_vx = init_vx,
+					init_vy = init_vy,
+					velocity_script = velocity_script,
+					init_scroll_x = scroll_profile.get('init_dx', 0),
+					init_scroll_y = scroll_profile.get('init_dy', 0),
+					scroll_step_x = scroll_profile.get('step_dx', 0),
+					scroll_step_y = scroll_profile.get('step_dy', 0),
+				)
 		else:
 			_gba_apply_script_surface_ops(
 				image_surfaces,
