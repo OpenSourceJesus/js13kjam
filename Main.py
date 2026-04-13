@@ -5628,18 +5628,12 @@ function spawn_prefab (prefabName, instanceId, pos, rot = 0, attributeOverrides 
 		if (nodeDef && spawnedNode)
 		{
 			var childIds = nodeDef.children;
-			if (childIds && childIds.length > 0)
-			{
-				var childTemplateIds = {};
-				for (var c = 0; c < childIds.length; c ++)
-					childTemplateIds[childIds[c]] = true;
-				for (var c = spawnedNode.children.length - 1; c >= 0; c --)
-				{
-					var existingChild = spawnedNode.children[c];
-					if (childTemplateIds[existingChild.id])
-						existingChild.remove();
-				}
-			}
+			// copy_node performs a deep clone, so prefab descendants from the
+			// template can remain as visual-only children with stale IDs.
+			// Always rebuild descendants from nodeDef so each child gets proper
+			// instance IDs, scripts, and physics registrations.
+			for (var c = spawnedNode.children.length - 1; c >= 0; c --)
+				spawnedNode.children[c].remove();
 			for (var i = 0; i < childIds.length; i ++)
 			{
 				var childTemplateId = childIds[i];
@@ -8227,6 +8221,100 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			patch_jr(jr_skip_collider_offscreen_bottom, collider_skip_addr)
 			patch_jr(jr_skip_collider_pass, collider_skip_addr)
 			patch_jr(jr_skip_collider_neg, collider_skip_addr)
+		if len(bodies) > 1:
+			# Runtime body-body floor pass: resolve downward contacts against
+			# other dynamic body AABBs so spawned dynamic prefabs can land on
+			# Player and vice-versa in multi-body mode.
+			emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)  # ld a,(x_hi)
+			emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
+			jr_skip_body_pair_world_x = jr(0x20)  # jr nz, no body-body step
+			emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)  # ld a,(y_hi)
+			emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
+			jr_skip_body_pair_world_y = jr(0x20)  # jr nz, no body-body step
+			# Ignore body snaps once the body has gone offscreen at the bottom.
+			emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # ld a,(y)
+			emit(0xFE, int(offscreen_bottom_y) & 0xFF)  # cp offscreen_bottom_y
+			jr_skip_body_pair_offscreen_bottom = jr(0x30)  # jr nc, no body-body step
+			emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
+			emit(0xB7)  # or a
+			jr_skip_body_pair_pass = jr(0x28)  # jr z, no body-body step
+			emit(0xCB, 0x7F)  # bit 7,a
+			jr_skip_body_pair_neg = jr(0x20)  # jr nz, no body-body step
+			emit(0xC3, 0x00, 0x00)  # jp body_pair_done
+			jp_body_pair_skip_patch = len(code) - 2
+			body_pair_eval_addr = len(code)
+			patch_jr(jr_skip_body_pair_world_x, body_pair_eval_addr)
+			patch_jr(jr_skip_body_pair_world_y, body_pair_eval_addr)
+			patch_jr(jr_skip_body_pair_offscreen_bottom, body_pair_eval_addr)
+			patch_jr(jr_skip_body_pair_pass, body_pair_eval_addr)
+			patch_jr(jr_skip_body_pair_neg, body_pair_eval_addr)
+			jp_body_pair_done_patches = []
+			for other_idx, other_body in enumerate(bodies):
+				if other_idx == body_idx:
+					continue
+				other_base = 0xC100 + other_idx * 8
+				other_y_addr = other_base + 0
+				other_x_addr = other_base + 2
+				other_y_hi_addr = other_base + 6
+				other_x_hi_addr = other_base + 7
+				other_sprite_tiles_w = max(1, min(4, int(other_body.get('sprite_tiles_w', 1))))
+				other_sprite_tiles_h = max(1, min(4, int(other_body.get('sprite_tiles_h', 1))))
+				other_sprite_w_px = max(8, min(32, other_sprite_tiles_w * 8))
+				emit(0xFA, other_x_hi_addr & 0xFF, (other_x_hi_addr >> 8) & 0xFF)  # ld a,(other_x_hi)
+				emit(0xFE, 0x80)  # cp $80
+				jr_next_pair_other_x_hi = jr(0x20)  # jr nz, next pair
+				emit(0xFA, other_y_hi_addr & 0xFF, (other_y_hi_addr >> 8) & 0xFF)  # ld a,(other_y_hi)
+				emit(0xFE, 0x80)  # cp $80
+				jr_next_pair_other_y_hi = jr(0x20)  # jr nz, next pair
+				emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)  # ld a,(x)
+				emit(0xC6, sprite_w_px & 0xFF)  # add a,sprite_w
+				emit(0x47)  # ld b,a (self_right)
+				emit(0xFA, other_x_addr & 0xFF, (other_x_addr >> 8) & 0xFF)  # ld a,(other_x)
+				emit(0xB8)  # cp b (other_x - self_right)
+				jr_next_pair_x_before = jr(0x30)  # jr nc, next (self_right <= other_x)
+				emit(0xFA, other_x_addr & 0xFF, (other_x_addr >> 8) & 0xFF)  # ld a,(other_x)
+				emit(0xC6, other_sprite_w_px & 0xFF)  # add a,other_w
+				emit(0x47)  # ld b,a (other_right)
+				emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)  # ld a,(x)
+				emit(0xB8)  # cp b (self_x - other_right)
+				jr_next_pair_x_after = jr(0x30)  # jr nc, next (self_x >= other_right)
+				emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # ld a,(y)
+				emit(0x47)  # ld b,a
+				emit(0xFA, other_y_addr & 0xFF, (other_y_addr >> 8) & 0xFF)  # ld a,(other_y)
+				emit(0xB8)  # cp b (other_y - self_y)
+				jr_next_pair_y_not_above = jr(0x38)  # jr c, next (other_y < self_y)
+				jr_next_pair_y_touch = jr(0x28)  # jr z, next (other_y == self_y)
+				emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # ld a,(y)
+				emit(0xC6, sprite_h_px & 0xFF)  # add a,self_h
+				emit(0x47)  # ld b,a (self_bottom)
+				emit(0xFA, other_y_addr & 0xFF, (other_y_addr >> 8) & 0xFF)  # ld a,(other_y)
+				emit(0xB8)  # cp b (other_y - self_bottom)
+				jr_next_pair_y_above_top = jr(0x30)  # jr nc, next (self_bottom <= other_y)
+				# Hit: snap current body on top of other body and clear fall velocity.
+				emit(0xFA, other_y_addr & 0xFF, (other_y_addr >> 8) & 0xFF)  # ld a,(other_y)
+				emit(0xD6, sprite_h_px & 0xFF)  # sub self_h
+				jr_store_pair_hit_y = jr(0x30)  # jr nc, store_y
+				emit(0xAF)  # xor a
+				store_pair_hit_y_addr = len(code)
+				emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+				emit(0xAF)  # xor a
+				emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+				emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
+				emit(0xC3, 0x00, 0x00)  # jp body_pair_done
+				jp_body_pair_done_patches.append(len(code) - 2)
+				next_pair_addr = len(code)
+				patch_jr(jr_next_pair_other_x_hi, next_pair_addr)
+				patch_jr(jr_next_pair_other_y_hi, next_pair_addr)
+				patch_jr(jr_next_pair_x_before, next_pair_addr)
+				patch_jr(jr_next_pair_x_after, next_pair_addr)
+				patch_jr(jr_next_pair_y_not_above, next_pair_addr)
+				patch_jr(jr_next_pair_y_touch, next_pair_addr)
+				patch_jr(jr_next_pair_y_above_top, next_pair_addr)
+				patch_jr(jr_store_pair_hit_y, store_pair_hit_y_addr)
+			body_pair_done_addr = len(code)
+			for patch_pos in jp_body_pair_done_patches:
+				patch_abs(patch_pos, body_pair_done_addr)
+			patch_abs(jp_body_pair_skip_patch, body_pair_done_addr)
 		# Update metasprite OAM from solved body position.
 		oam_base = max(0, min(39, int(body.get('oam_base', 0))))
 		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
@@ -8618,7 +8706,13 @@ def _gba_to_gbc_cover_len (v : float):
 	scale, _, _ = _gba_cover_transform(240, 160, 160, 144)
 	return max(1, int(round(float(v) * scale)))
 
-def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignored_names = None, scroll_x_gba : float = 0.0, scroll_y_gba : float = 0.0):
+def _gbc_to_gba_cover_len (v : float):
+	scale, _, _ = _gba_cover_transform(240, 160, 160, 144)
+	if abs(scale) <= 1e-12:
+		return float(v)
+	return float(v) / float(scale)
+
+def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignored_names = None, scroll_x_gba : float = 0.0, scroll_y_gba : float = 0.0, preconverted_names = None, debug_rows = None):
 	rects = []
 	ignored = set()
 	if isinstance(ignored_name, str) and ignored_name:
@@ -8626,6 +8720,10 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 	for name in list(ignored_names or []):
 		if isinstance(name, str) and name:
 			ignored.add(name)
+	preconverted = set()
+	for name in list(preconverted_names or []):
+		if isinstance(name, str) and name:
+			preconverted.add(name)
 	for ob in scene_obs or []:
 		if not getattr(ob, 'exportOb', False) or ob.hide_get():
 			continue
@@ -8638,8 +8736,8 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 		if getattr(ob, 'isSensor', False):
 			continue
 		shape = str(getattr(ob, 'colliderShapeType', ''))
-		cx = float(ob.location.x) + float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[0]) + float(scroll_x_gba)
-		cy = -float(ob.location.y) - float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[1]) + float(scroll_y_gba)
+		cx_raw = float(ob.location.x) + float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[0])
+		cy_raw = -float(ob.location.y) - float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[1])
 		w = 0.0
 		h = 0.0
 		if shape in ('cuboid', 'roundCuboid'):
@@ -8663,6 +8761,15 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 			continue
 		if w <= 0.0 or h <= 0.0:
 			continue
+		if ob.name in preconverted:
+			cx = float(cx_raw) + float(scroll_x_gba)
+			cy = float(cy_raw) + float(scroll_y_gba)
+		else:
+			cx, cy = _gbc_to_gba_cover_point(cx_raw, cy_raw)
+			cx += float(scroll_x_gba)
+			cy += float(scroll_y_gba)
+			w = _gbc_to_gba_cover_len(w)
+			h = _gbc_to_gba_cover_len(h)
 		cx_gbc, cy_gbc = _gba_to_gbc_cover_point(cx, cy)
 		w_gbc = _gba_to_gbc_cover_len(w)
 		h_gbc = _gba_to_gbc_cover_len(h)
@@ -8673,6 +8780,14 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 		w_gbc = max(1, min(255 - left, int(w_gbc)))
 		h_gbc = max(1, min(255 - top, int(h_gbc)))
 		rects.append((left, top, w_gbc, h_gbc))
+		if isinstance(debug_rows, list):
+			debug_rows.append(
+				str(ob.name) +
+				':pre=' + ('1' if ob.name in preconverted else '0') +
+				',raw=' + str([TryChangeToInt(cx_raw), TryChangeToInt(cy_raw)]) +
+				',gba=' + str([TryChangeToInt(cx), TryChangeToInt(cy)]) +
+				',gbc=' + str([left, top, w_gbc, h_gbc])
+			)
 	return rects
 
 class _GbcPhase1MirrorSim:
@@ -10677,6 +10792,7 @@ def BuildGbc (world):
 		fallback_draw_template_obs = []
 		fallback_surface_source_obs = []
 		fallback_spawn_physics_obs = []
+		fallback_spawn_physics_debug = []
 		if not bool(_py2gb_export_gba_py_assembly):
 			# Fallback path: when gbc-py backend is unavailable, honor direct
 			# spawn_prefab("CollectionName", ...) calls by baking explicit prefab
@@ -10707,6 +10823,30 @@ def BuildGbc (world):
 					'pos' : [inst_x, inst_y],
 					'rot' : float(inst_rot),
 				})
+			raw_spawn_call_count = len(fallback_spawn_calls)
+			deduped_spawn_calls = []
+			seen_spawn_keys = set()
+			for call in fallback_spawn_calls:
+				prefab_name = str(call.get('prefab_name', '') or '')
+				pos_val = call.get('pos', None)
+				rot_val = float(call.get('rot', 0.0) or 0.0)
+				if pos_val is None:
+					# Dynamic/unresolved calls cannot be safely deduped by pose.
+					deduped_spawn_calls.append(call)
+					continue
+				x = float(pos_val[0]) if len(pos_val) > 0 else 0.0
+				y = float(pos_val[1]) if len(pos_val) > 1 else 0.0
+				key = (
+					prefab_name,
+					round(x, 4),
+					round(y, 4),
+					round(rot_val, 4),
+				)
+				if key in seen_spawn_keys:
+					continue
+				seen_spawn_keys.add(key)
+				deduped_spawn_calls.append(call)
+			fallback_spawn_calls = deduped_spawn_calls
 			requested_prefabs = sorted({ str(call.get('prefab_name', '') or '') for call in fallback_spawn_calls if str(call.get('prefab_name', '') or '') != '' })
 			added = []
 			baked = []
@@ -10782,6 +10922,7 @@ def BuildGbc (world):
 					def _spawn_proxy_for_physics (src_ob, world_x, world_y, world_rot):
 						proxy = type('SpawnPhysicsProxy', (), {})()
 						proxy.name = '__gbc_spawnphys_%i_%s' %(call_idx, src_ob.name)
+						proxy.drawProxyName = '__gbc_spawn_%i_%s' %(call_idx, src_ob.name)
 						proxy.exportOb = True
 						proxy.type = src_ob.type
 						proxy.empty_display_type = getattr(src_ob, 'empty_display_type', '')
@@ -10835,6 +10976,12 @@ def BuildGbc (world):
 						proxy.hide_get = (lambda : False)
 						fallback_spawn_physics_obs.append(proxy)
 						fallback_spawn_physics_source_names[proxy.name] = src_ob.name
+						fallback_spawn_physics_debug.append(
+							proxy.name + '<-' + src_ob.name +
+							':rb=' + ('1' if bool(getattr(src_ob, 'rigidBodyExists', False)) else '0') +
+							',co=' + ('1' if bool(getattr(src_ob, 'colliderExists', False)) else '0') +
+							',rot=' + str(TryChangeToInt(world_rot))
+						)
 					for ob in prefab_export_obs:
 						src_pos, src_rot = _get_fallback_pose(ob)
 						dx = float(src_pos.x) - float(anchor_pos.x)
@@ -10849,6 +10996,8 @@ def BuildGbc (world):
 						if bool(getattr(ob, 'rigidBodyExists', False)) or bool(getattr(ob, 'colliderExists', False)):
 							_spawn_proxy_for_physics(ob, world_x, world_y, world_rot)
 			_append_gbc_trace_lines([
+				'[gbc-trace] BuildGbc:fallback_spawn_prefab_call_count_raw=' + str(raw_spawn_call_count),
+				'[gbc-trace] BuildGbc:fallback_spawn_prefab_call_count_deduped=' + str(len(fallback_spawn_calls)),
 				'[gbc-trace] BuildGbc:fallback_spawn_prefab_requests=' + (', '.join(sorted(requested_prefabs)) if requested_prefabs else '<none>'),
 				'[gbc-trace] BuildGbc:fallback_spawn_prefab_added=' + (', '.join(added) if added else '<none>'),
 				'[gbc-trace] BuildGbc:fallback_spawn_prefab_baked=' + (', '.join(baked) if baked else '<none>'),
@@ -10890,10 +11039,19 @@ def BuildGbc (world):
 		for ob in fallback_draw_template_obs:
 			if ob not in composite_imgs:
 				composite_imgs.append(ob)
-		composite_transform_overrides = None
+		composite_transform_overrides = {}
+		def _gbc_authored_image_pos_to_gba (ob):
+			pos = GetImagePosition(ob)
+			return _gbc_to_gba_cover_point(float(pos.x), float(pos.y))
+		for ob in composite_imgs:
+			x_gba, y_gba = _gbc_authored_image_pos_to_gba(ob)
+			composite_transform_overrides[ob.name] = {
+				'x' : float(x_gba),
+				'y' : float(y_gba),
+				'rot_deg' : float(math.degrees(ob.rotation_euler.z)),
+			}
 		fallback_spawn_draw_debug = []
 		if fallback_spawn_entries:
-			composite_transform_overrides = {}
 			for proxy_ob, override in fallback_spawn_entries:
 				composite_imgs.append(proxy_ob)
 				composite_transform_overrides[proxy_ob.name] = dict(override)
@@ -10931,6 +11089,10 @@ def BuildGbc (world):
 			_append_gbc_trace_lines([
 				'[gbc-trace] BuildGbc:fallback_spawn_prefab_draw_debug=' + ', '.join(fallback_spawn_draw_debug),
 			])
+		if fallback_spawn_physics_debug:
+			_append_gbc_trace_lines([
+				'[gbc-trace] BuildGbc:fallback_spawn_prefab_physics_debug=' + ', '.join(fallback_spawn_physics_debug),
+			])
 		physics_scene_obs = list(scene_obs)
 		if fallback_spawn_physics_obs:
 			physics_scene_obs.extend(fallback_spawn_physics_obs)
@@ -10941,6 +11103,16 @@ def BuildGbc (world):
 				if src_name in image_surfaces:
 					image_surfaces[ph_ob.name] = image_surfaces[src_name]
 				physics_image_obs.append(ph_ob)
+		fallback_proxy_names = set()
+		for proxy_ob, _override in fallback_spawn_entries:
+			fallback_proxy_names.add(str(proxy_ob.name))
+		for ph_ob in fallback_spawn_physics_obs:
+			fallback_proxy_names.add(str(ph_ob.name))
+		def _get_runtime_sprite_pos_gba (sprite_ob):
+			if str(sprite_ob.name) in fallback_proxy_names:
+				pos = GetImagePosition(sprite_ob)
+				return float(pos.x), float(pos.y)
+			return _gbc_authored_image_pos_to_gba(sprite_ob)
 		has_physics = bool(getattr(world, 'usePhysics', True)) and _gb_scene_has_physics(physics_scene_obs)
 		use_multi_body_runtime = False
 		if has_physics:
@@ -10948,8 +11120,27 @@ def BuildGbc (world):
 			bake_runtime = _gba_runtime_without_display_scroll(script_runtime)
 			rigid_sprite_obs = [
 				ob for ob in physics_image_obs
-				if getattr(ob, 'rigidBodyExists', False) and getattr(ob, 'rigidBodyEnable', True)
+				if (
+					getattr(ob, 'rigidBodyExists', False) and
+					getattr(ob, 'rigidBodyEnable', True) and
+					str(getattr(ob, 'rigidBodyType', '')) == 'dynamic'
+				)
 			]
+			_append_gbc_trace_lines([
+				'[gbc-trace] BuildGbc:physics_scene_obs=' + str(len(physics_scene_obs)),
+				'[gbc-trace] BuildGbc:physics_image_obs=' + str(len(physics_image_obs)),
+				'[gbc-trace] BuildGbc:rigid_sprite_obs=' + str(len(rigid_sprite_obs)),
+				'[gbc-trace] BuildGbc:rigid_sprite_names=' + (
+					', '.join([str(ob.name) for ob in rigid_sprite_obs]) if rigid_sprite_obs else '<none>'
+				),
+				'[gbc-trace] BuildGbc:dynamic_sprite_sources=' + (
+					', '.join([
+						str(ob.name) + '<' + str(getattr(ob, 'rigidBodyType', '?')) + '>'
+						for ob in physics_image_obs
+						if getattr(ob, 'rigidBodyExists', False) and getattr(ob, 'rigidBodyEnable', True)
+					]) if physics_image_obs else '<none>'
+				),
+			])
 			if not rigid_sprite_obs:
 				raise RuntimeError('GBC dynamic physics phase1 requires at least one exported image empty with an enabled rigid body.')
 			gravity_x = 0.0
@@ -10960,8 +11151,17 @@ def BuildGbc (world):
 				gravity_y = float(g[1])
 			if len(rigid_sprite_obs) > 1:
 				use_multi_body_runtime = True
-				rigid_names = {s.name for s in rigid_sprite_obs}
+				rigid_names = set()
+				for s in rigid_sprite_obs:
+					rigid_names.add(s.name)
+					draw_name = str(getattr(s, 'drawProxyName', '') or '')
+					if draw_name != '':
+						rigid_names.add(draw_name)
 				bg_imgs = [ob for ob in composite_imgs if ob.name not in rigid_names]
+				_append_gbc_trace_lines([
+					'[gbc-trace] BuildGbc:multi_body_rigid_names=' + (', '.join(sorted(rigid_names)) if rigid_names else '<none>'),
+					'[gbc-trace] BuildGbc:multi_body_bg_imgs=' + (', '.join([str(ob.name) for ob in bg_imgs]) if bg_imgs else '<none>'),
+				])
 				_gba_apply_script_surface_ops(
 					image_surfaces,
 					script_runtime.get('surface_ops', []),
@@ -10986,14 +11186,17 @@ def BuildGbc (world):
 					sprite_w, sprite_h = _gba_get_image_size(sprite_ob)
 					sprite_w = _gba_to_gbc_cover_len(sprite_w)
 					sprite_h = _gba_to_gbc_cover_len(sprite_h)
+					sprite_name = str(getattr(sprite_ob, 'name', '') or '')
+					sprite_max_tiles = 9 if sprite_name.startswith('__gbc_spawnphys_') else 16
 					sprite_tile, sprite_tiles_w, sprite_tiles_h = _gbc_encode_metasprite_rgba(
 						sprite_rgba,
 						int(round(sprite_w)),
 						int(round(sprite_h)),
 						palette4 = sprite_pal,
+						max_tiles = sprite_max_tiles,
 					)
-					init_pos = GetImagePosition(sprite_ob)
-					init_x_local, init_y_local = _gba_to_gbc_cover_point(float(init_pos.x), float(init_pos.y))
+					init_x_src, init_y_src = _get_runtime_sprite_pos_gba(sprite_ob)
+					init_x_local, init_y_local = _gba_to_gbc_cover_point(float(init_x_src), float(init_y_src))
 					init_x = (int(init_x_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
 					init_y = (int(init_y_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
 					init_vx, init_vy = _extract_gbc_phase1_init_velocity(world, sprite_ob)
@@ -11021,10 +11224,83 @@ def BuildGbc (world):
 						'grav_step_y' : int(grav_step_y),
 						'velocity_script' : velocity_script,
 					})
-				collider_rects = _gbc_collect_runtime_colliders(physics_scene_obs, ignored_names = set([ob.name for ob in rigid_sprite_obs]))
+				body_specs_runtime = list(body_specs)
+				dropped_body_specs = []
+				total_tile_count = 0
+				total_oam_count = 0
+				for i, spec in enumerate(body_specs):
+					tile_bytes_raw = spec.get('sprite_tile_bytes', None)
+					tile_bytes = b'' if tile_bytes_raw is None else bytes(tile_bytes_raw)
+					tile_count = max(1, min(16, int(len(tile_bytes) // 16)))
+					sprite_tiles_w = max(1, min(4, int(spec.get('sprite_tiles_w', 1))))
+					sprite_tiles_h = max(1, min(4, int(spec.get('sprite_tiles_h', 1))))
+					if sprite_tiles_w * sprite_tiles_h > tile_count:
+						sprite_tiles_h = max(1, tile_count // sprite_tiles_w)
+					oam_need = max(1, min(16, sprite_tiles_w * sprite_tiles_h))
+					if total_tile_count + tile_count > 255 or total_oam_count + oam_need > 40:
+						dropped_body_specs = body_specs[i :]
+						body_specs_runtime = body_specs[: i]
+						break
+					total_tile_count += tile_count
+					total_oam_count += oam_need
+				if not body_specs_runtime:
+					raise RuntimeError('GBC dynamic multi-body export has no bodies within OAM/VRAM budget.')
+				active_body_names = set([str(spec.get('name', '')) for spec in body_specs_runtime])
+				active_rigid_names = set(active_body_names)
+				for s in rigid_sprite_obs:
+					if str(s.name) not in active_body_names:
+						continue
+					draw_name = str(getattr(s, 'drawProxyName', '') or '')
+					if draw_name != '':
+						active_rigid_names.add(draw_name)
+				if dropped_body_specs:
+					bg_imgs = [ob for ob in composite_imgs if ob.name not in active_rigid_names]
+					canvas_gba_space = _gba_composite_scene(
+						world,
+						bg_imgs,
+						image_surfaces = image_surfaces,
+						transform_overrides = composite_transform_overrides,
+						script_runtime = bake_runtime,
+						frame = 1,
+					)
+					canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
+					_, _, _, bg_palette_bank = _gbc_encode_tiles_and_map(canvas_gbc)
+				_append_gbc_trace_lines([
+					'[gbc-trace] BuildGbc:multi_body_specs=' + (
+						', '.join([
+							str(spec.get('name', '?')) +
+							':iv=' + str([spec.get('init_vx', 0), spec.get('init_vy', 0)]) +
+							',g=' + str([spec.get('grav_step_x', 0), spec.get('grav_step_y', 0)]) +
+							',vs=' + ('1' if isinstance(spec.get('velocity_script', None), dict) else '0')
+							for spec in body_specs_runtime
+						]) if body_specs else '<none>'
+					),
+					'[gbc-trace] BuildGbc:multi_body_runtime_bodies=' + (
+						', '.join([str(spec.get('name', '?')) for spec in body_specs_runtime]) if body_specs_runtime else '<none>'
+					),
+					'[gbc-trace] BuildGbc:multi_body_runtime_dropped=' + (
+						', '.join([str(spec.get('name', '?')) for spec in dropped_body_specs]) if dropped_body_specs else '<none>'
+					),
+					'[gbc-trace] BuildGbc:multi_body_rigid_names_runtime=' + (
+						', '.join(sorted(active_rigid_names)) if active_rigid_names else '<none>'
+					),
+					'[gbc-trace] BuildGbc:multi_body_bg_imgs_runtime=' + (
+						', '.join([str(ob.name) for ob in bg_imgs]) if bg_imgs else '<none>'
+					),
+				])
+				collider_debug_rows = []
+				collider_rects = _gbc_collect_runtime_colliders(
+					physics_scene_obs,
+					ignored_names = active_body_names,
+					preconverted_names = fallback_proxy_names,
+					debug_rows = collider_debug_rows,
+				)
+				_append_gbc_trace_lines([
+					'[gbc-trace] BuildGbc:multi_body_collider_debug=' + (', '.join(collider_debug_rows) if collider_debug_rows else '<none>'),
+				])
 				rom = _gbc_build_dynamic_physics_rom_multi(
 					canvas_gbc,
-					body_specs,
+					body_specs_runtime,
 					bg_palette_bank,
 					collider_rects = collider_rects,
 					init_scroll_x = scroll_profile.get('init_dx', 0),
@@ -11040,7 +11316,15 @@ def BuildGbc (world):
 						break
 				if sprite_ob is None and rigid_sprite_obs:
 					sprite_ob = rigid_sprite_obs[0]
-				bg_imgs = [ob for ob in composite_imgs if ob.name != sprite_ob.name]
+				sprite_names = {sprite_ob.name}
+				draw_name = str(getattr(sprite_ob, 'drawProxyName', '') or '')
+				if draw_name != '':
+					sprite_names.add(draw_name)
+				bg_imgs = [ob for ob in composite_imgs if ob.name not in sprite_names]
+				_append_gbc_trace_lines([
+					'[gbc-trace] BuildGbc:single_body_sprite_names=' + (', '.join(sorted(sprite_names)) if sprite_names else '<none>'),
+					'[gbc-trace] BuildGbc:single_body_bg_imgs=' + (', '.join([str(ob.name) for ob in bg_imgs]) if bg_imgs else '<none>'),
+				])
 				_gba_apply_script_surface_ops(
 					image_surfaces,
 					script_runtime.get('surface_ops', []),
@@ -11063,14 +11347,17 @@ def BuildGbc (world):
 				sprite_w, sprite_h = _gba_get_image_size(sprite_ob)
 				sprite_w = _gba_to_gbc_cover_len(sprite_w)
 				sprite_h = _gba_to_gbc_cover_len(sprite_h)
+				sprite_name = str(getattr(sprite_ob, 'name', '') or '')
+				sprite_max_tiles = 9 if sprite_name.startswith('__gbc_spawnphys_') else 16
 				sprite_tile, sprite_tiles_w, sprite_tiles_h = _gbc_encode_metasprite_rgba(
 					sprite_rgba,
 					int(round(sprite_w)),
 					int(round(sprite_h)),
 					palette4 = sprite_pal,
+					max_tiles = sprite_max_tiles,
 				)
-				init_pos = GetImagePosition(sprite_ob)
-				init_x_local, init_y_local = _gba_to_gbc_cover_point(float(init_pos.x), float(init_pos.y))
+				init_x_src, init_y_src = _get_runtime_sprite_pos_gba(sprite_ob)
+				init_x_local, init_y_local = _gba_to_gbc_cover_point(float(init_x_src), float(init_y_src))
 				init_x = (int(init_x_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
 				init_y = (int(init_y_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
 				init_vx, init_vy = _extract_gbc_phase1_init_velocity(world, sprite_ob)
@@ -11089,7 +11376,16 @@ def BuildGbc (world):
 					grav_step_y = 1 if effective_down > 0 else -1
 				grav_step_x = int(grav_step_x)
 				grav_step_y = int(grav_step_y)
-				collider_rects = _gbc_collect_runtime_colliders(physics_scene_obs, ignored_name = sprite_ob.name)
+				collider_debug_rows = []
+				collider_rects = _gbc_collect_runtime_colliders(
+					physics_scene_obs,
+					ignored_name = sprite_ob.name,
+					preconverted_names = fallback_proxy_names,
+					debug_rows = collider_debug_rows,
+				)
+				_append_gbc_trace_lines([
+					'[gbc-trace] BuildGbc:single_body_collider_debug=' + (', '.join(collider_debug_rows) if collider_debug_rows else '<none>'),
+				])
 				if init_vx != 0 or init_vy != 0:
 					print('GBC export: phase1 seeded sprite velocity from gbc-py script =', [init_vx, init_vy])
 				else:
