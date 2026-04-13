@@ -11,19 +11,11 @@ if os.path.isdir(PY2GB_PATH) and PY2GB_PATH not in sys.path:
 from MathUtil import *
 from SystemUtil import *
 try:
-	try:
-		from py2gb.blender_export import export_gba_py_assembly as _py2gb_export_gba_py_assembly
-		from py2gb.blender_export import normalize_gb_script_code as _py2gb_normalize_gb_script_code
-		from py2gb.blender_export import py2gb_asm as _py2gb_py2gb_asm
-		from py2gb.blender_export import is_runtime_script_binding_name as _py2gb_is_runtime_script_binding_name
-		from py2gb.blender_export import augment_runtime_physics_maps as _py2gb_augment_runtime_physics_maps
-	except Exception:
-		# Compatibility path: some renamed toolchains still expose py2gba module symbols.
-		from py2gba.blender_export import export_gba_py_assembly as _py2gb_export_gba_py_assembly
-		from py2gba.blender_export import normalize_gb_script_code as _py2gb_normalize_gb_script_code
-		from py2gba.blender_export import py2gba_asm as _py2gb_py2gb_asm
-		from py2gba.blender_export import is_runtime_script_binding_name as _py2gb_is_runtime_script_binding_name
-		from py2gba.blender_export import augment_runtime_physics_maps as _py2gb_augment_runtime_physics_maps
+	from py2gb.blender_export import export_gba_py_assembly as _py2gb_export_gba_py_assembly
+	from py2gb.blender_export import normalize_gb_script_code as _py2gb_normalize_gb_script_code
+	from py2gb.blender_export import py2gb_asm as _py2gb_py2gb_asm
+	from py2gb.blender_export import is_runtime_script_binding_name as _py2gb_is_runtime_script_binding_name
+	from py2gb.blender_export import augment_runtime_physics_maps as _py2gb_augment_runtime_physics_maps
 except Exception:
 	_py2gb_export_gba_py_assembly = None
 	_py2gb_normalize_gb_script_code = None
@@ -6264,6 +6256,8 @@ _GBC_DEFAULT_BG_COLORS = [
 ]
 _GBC_POSITION_BIAS = 32768
 _GBC_POSITION_MASK = 0xFFFF
+_GBC_PHASE1_VELOCITY_ACCUM_DENOM = 60
+_GBC_PHASE1_GRAVITY_ACCUM_DENOM = 60
 
 def _gba_complement_check (rom : bytearray):
 	chk = 0
@@ -6689,12 +6683,92 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0x11, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
 	def ld_bc_imm(v):
 		emit(0x01, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
+	def emit_subpixel_axis_step(pos_addr, pos_hi_addr, vel_addr, sub_acc_addr, invert_dir = False):
+		emit(0xFA, vel_addr & 0xFF, (vel_addr >> 8) & 0xFF)  # ld a,(vel)
+		emit(0xB7)  # or a
+		jr_vel_zero = jr(0x28)  # jr z, done
+		emit(0xCB, 0x7F)  # bit 7,a
+		jr_vel_neg = jr(0x20)  # jr nz, neg_path
+		# Positive velocity path.
+		emit(0x47)  # ld b,a (|vel|)
+		emit(0xFA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0x80)  # add a,b
+		emit(0xEA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		pos_loop_addr = len(code)
+		emit(0xFA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0xFE, int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM) & 0xFF)  # cp vel_accum
+		jr_pos_done = jr(0x38)  # jr c, pos_done
+		emit(0xD6, int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM) & 0xFF)  # sub vel_accum
+		emit(0xEA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0xFA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+		if not invert_dir:
+			emit(0x3C)  # inc a
+			emit(0xEA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+			jr_pos_no_carry = jr(0x20)  # jr nz, pos_after_hi
+			emit(0xFA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+			emit(0x3C)  # inc a
+			emit(0xEA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+		else:
+			emit(0x3D)  # dec a
+			emit(0xEA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+			emit(0xFE, 0xFF)  # cp $FF (borrow from low byte)
+			jr_pos_no_carry = jr(0x20)  # jr nz, pos_after_hi
+			emit(0xFA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+			emit(0x3D)  # dec a
+			emit(0xEA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+		pos_after_hi_addr = len(code)
+		patch_jr(jr_pos_no_carry, pos_after_hi_addr)
+		jr_pos_loop = jr(0x18)  # jr pos_loop
+		patch_jr(jr_pos_loop, pos_loop_addr)
+		pos_done_addr = len(code)
+		patch_jr(jr_pos_done, pos_done_addr)
+		jr_axis_done = jr(0x18)  # jr axis_done
+		# Negative velocity path.
+		neg_path_addr = len(code)
+		patch_jr(jr_vel_neg, neg_path_addr)
+		emit(0x2F)  # cpl
+		emit(0x3C)  # inc a
+		emit(0x47)  # ld b,a (|vel|)
+		emit(0xFA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0x80)  # add a,b
+		emit(0xEA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		neg_loop_addr = len(code)
+		emit(0xFA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0xFE, int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM) & 0xFF)  # cp vel_accum
+		jr_neg_done = jr(0x38)  # jr c, neg_done
+		emit(0xD6, int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM) & 0xFF)  # sub vel_accum
+		emit(0xEA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0xFA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+		if not invert_dir:
+			emit(0x3D)  # dec a
+			emit(0xEA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+			emit(0xFE, 0xFF)  # cp $FF (borrow from low byte)
+			jr_neg_no_borrow = jr(0x20)  # jr nz, neg_after_hi
+			emit(0xFA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+			emit(0x3D)  # dec a
+			emit(0xEA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+		else:
+			emit(0x3C)  # inc a
+			emit(0xEA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+			jr_neg_no_borrow = jr(0x20)  # jr nz, neg_after_hi
+			emit(0xFA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+			emit(0x3C)  # inc a
+			emit(0xEA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+		neg_after_hi_addr = len(code)
+		patch_jr(jr_neg_no_borrow, neg_after_hi_addr)
+		jr_neg_loop = jr(0x18)  # jr neg_loop
+		patch_jr(jr_neg_loop, neg_loop_addr)
+		neg_done_addr = len(code)
+		patch_jr(jr_neg_done, neg_done_addr)
+		axis_done_addr = len(code)
+		patch_jr(jr_axis_done, axis_done_addr)
+		patch_jr(jr_vel_zero, axis_done_addr)
 	init_x = max(0, min(65535, int(init_x)))
 	init_y = max(0, min(65535, int(init_y)))
-	init_vx = max(-127, min(127, int(init_vx)))
-	init_vy = max(-127, min(127, int(init_vy)))
-	grav_step_x = max(-32, min(32, int(grav_step_x)))
-	grav_step_y = max(-32, min(32, int(grav_step_y)))
+	init_vx = int(init_vx)
+	init_vy = int(init_vy)
+	grav_step_x = int(grav_step_x)
+	grav_step_y = int(grav_step_y)
 	script_spec = velocity_script if isinstance(velocity_script, dict) else None
 	script_base_vx = 0
 	script_left_delta = 0
@@ -6702,13 +6776,13 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	script_jump_y = None
 	script_jump_vy_max = None
 	if script_spec is not None:
-		script_base_vx = max(-127, min(127, int(script_spec.get('base_vx', 0))))
-		script_left_delta = max(-8, min(8, int(script_spec.get('left_delta', 0))))
-		script_right_delta = max(-8, min(8, int(script_spec.get('right_delta', 0))))
+		script_base_vx = int(script_spec.get('base_vx', 0))
+		script_left_delta = int(script_spec.get('left_delta', 0))
+		script_right_delta = int(script_spec.get('right_delta', 0))
 		if script_spec.get('jump_y', None) is not None:
-			script_jump_y = max(-8, min(8, int(script_spec.get('jump_y', 0))))
+			script_jump_y = int(script_spec.get('jump_y', 0))
 		if script_spec.get('jump_vy_max', None) is not None:
-			script_jump_vy_max = max(-127, min(127, int(script_spec.get('jump_vy_max', 0))))
+			script_jump_vy_max = int(script_spec.get('jump_vy_max', 0))
 	collider_count = max(0, min(31, int(collider_count)))
 	sprite_tile_count = max(1, min(16, int(sprite_tile_count)))
 	sprite_tiles_w = max(1, min(4, int(sprite_tiles_w)))
@@ -6731,6 +6805,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	x_hi_addr = 0xC118
 	scroll_x_addr = 0xC119
 	scroll_y_addr = 0xC11A
+	x_subacc_addr = 0xC11B
+	y_subacc_addr = 0xC11C
 	emit(0xF3)  # di
 	emit(0x31, 0xFE, 0xFF)  # ld sp, $FFFE
 	emit(0xAF)  # xor a
@@ -6782,6 +6858,10 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
 	ld_a_imm(init_scroll_y)
 	emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	ld_a_imm(int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2))
+	emit(0xEA, x_subacc_addr & 0xFF, (x_subacc_addr >> 8) & 0xFF)
+	ld_a_imm(int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2))
+	emit(0xEA, y_subacc_addr & 0xFF, (y_subacc_addr >> 8) & 0xFF)
 	for row in range(sprite_tiles_h):
 		for col in range(sprite_tiles_w):
 			idx = row * sprite_tiles_w + col
@@ -6838,21 +6918,35 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	emit(0x2F)  # cpl
 	emit(0x3C)  # inc a
 	ldh_imm_a(0x42)  # SCY = -scroll_y
-	# Integrate gravity to velocity with a 1/16 accumulator.
+	# Integrate gravity to velocity with a 1/60 accumulator every frame.
 	if grav_step_x != 0:
-		grav_mag_x = max(1, min(32, abs(int(grav_step_x))))
+		grav_mag_x = max(1, abs(int(grav_step_x)))
 		emit(0xFA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)  # ld a,(gacc_x)
 		emit(0xC6, grav_mag_x & 0xFF)  # add a, grav_mag_x
 		emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)  # store acc
-		emit(0xFE, 16)  # cp 16
+		emit(0xFE, int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM) & 0xFF)  # cp gravity_accum
 		jr_x_no_v = jr(0x38)  # jr c, no_vx_step
-		emit(0xD6, 16)  # sub 16
+		emit(0xD6, int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM) & 0xFF)  # sub gravity_accum
 		emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
 		emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # ld a,(vx)
 		emit(0x3C if grav_step_x > 0 else 0x3D)  # inc/dec a
 		emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # (vx)=a
 		x_no_v_addr = len(code)
 		patch_jr(jr_x_no_v, x_no_v_addr)
+	if grav_step_y != 0:
+		grav_mag_y = max(1, abs(int(grav_step_y)))
+		emit(0xFA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)  # ld a,(gacc_y)
+		emit(0xC6, grav_mag_y & 0xFF)  # add a, grav_mag_y
+		emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)  # store acc
+		emit(0xFE, int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM) & 0xFF)  # cp gravity_accum
+		jr_y_no_v = jr(0x38)  # jr c, no_vy_step
+		emit(0xD6, int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM) & 0xFF)  # sub gravity_accum
+		emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
+		emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
+		emit(0x3C if grav_step_y > 0 else 0x3D)  # inc/dec a
+		emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # (vy)=a
+		y_no_v_addr = len(code)
+		patch_jr(jr_y_no_v, y_no_v_addr)
 	if script_spec is not None:
 		# Apply interpreted gbc-py velocity script each frame.
 		ld_a_imm(script_base_vx)
@@ -6865,8 +6959,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			emit(0xFE, 0x00)  # cp $00 (pressed)
 			jr_right_skip = jr(0x20)  # jr nz, skip_right
 			emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
-			for _ in range(abs(int(script_right_delta))):
-				emit(0x3C if script_right_delta > 0 else 0x3D)
+			emit(0xC6, int(script_right_delta) & 0xFF)  # add a,delta (byte-wrapped)
 			emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 			right_skip_addr = len(code)
 			patch_jr(jr_right_skip, right_skip_addr)
@@ -6878,8 +6971,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			emit(0xFE, 0x00)  # cp $00 (pressed)
 			jr_left_skip = jr(0x20)  # jr nz, skip_left
 			emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
-			for _ in range(abs(int(script_left_delta))):
-				emit(0x3C if script_left_delta > 0 else 0x3D)
+			emit(0xC6, int(script_left_delta) & 0xFF)  # add a,delta (byte-wrapped)
 			emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 			left_skip_addr = len(code)
 			patch_jr(jr_left_skip, left_skip_addr)
@@ -6894,7 +6986,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			if script_jump_vy_max is not None:
 				# Script condition `vel[1] <= n` uses script-space Y-up velocity.
 				# Internal phase1 stores Y-down velocity, so compare `vy >= -n`.
-				jump_internal_min_vy = max(-127, min(127, int(-int(script_jump_vy_max))))
+				jump_internal_min_vy = int(-int(script_jump_vy_max))
 				emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
 				emit(0xEE, 0x80)  # xor $80 (signed -> unsigned bias)
 				emit(0xFE, (int(jump_internal_min_vy) ^ 0x80) & 0xFF)  # cp (min_vy^$80)
@@ -6907,46 +6999,9 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			patch_jr(jr_not_a, no_jump_addr)
 			if jr_jump_guard_skip is not None:
 				patch_jr(jr_jump_guard_skip, no_jump_addr)
-	# x += sign_extend(vx)
-	emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
-	emit(0x47)  # ld b,a (vx)
-	emit(0x78)  # ld a,b
-	emit(0x87)  # add a,a ; carry = sign bit of vx
-	emit(0x9F)  # sbc a,a ; a = 0x00 or 0xFF
-	emit(0x4F)  # ld c,a (vx sign extension)
-	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
-	emit(0x80)  # add a,b
-	emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
-	emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
-	emit(0x89)  # adc a,c
-	emit(0xEA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
-	if grav_step_y != 0:
-		grav_mag_y = max(1, min(32, abs(int(grav_step_y))))
-		emit(0xFA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)  # ld a,(gacc_y)
-		emit(0xC6, grav_mag_y & 0xFF)  # add a, grav_mag_y
-		emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)  # store acc
-		emit(0xFE, 16)  # cp 16
-		jr_y_no_v = jr(0x38)  # jr c, no_vy_step
-		emit(0xD6, 16)  # sub 16
-		emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
-		emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
-		emit(0x3C if grav_step_y > 0 else 0x3D)  # inc/dec a
-		emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # (vy)=a
-		y_no_v_addr = len(code)
-		patch_jr(jr_y_no_v, y_no_v_addr)
-	# y += sign_extend(vy)
-	emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
-	emit(0x47)  # ld b,a (vy)
-	emit(0x78)  # ld a,b
-	emit(0x87)  # add a,a ; carry = sign bit of vy
-	emit(0x9F)  # sbc a,a ; a = 0x00 or 0xFF
-	emit(0x4F)  # ld c,a (vy sign extension)
-	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
-	emit(0x80)  # add a,b
-	emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
-	emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
-	emit(0x89)  # adc a,c
-	emit(0xEA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+	# Integrate velocity to position every frame with rounded subpixel accumulation.
+	emit_subpixel_axis_step(x_addr, x_hi_addr, vx_addr, x_subacc_addr, invert_dir = True)
+	emit_subpixel_axis_step(y_addr, y_hi_addr, vy_addr, y_subacc_addr)
 	# Runtime collider pass: resolve downward contacts against authored collider AABBs.
 	if collider_count > 0:
 		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)  # ld a,(x_hi)
@@ -7226,6 +7281,84 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		emit(0x11, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
 	def ld_bc_imm(v):
 		emit(0x01, int(v) & 0xFF, (int(v) >> 8) & 0xFF)
+	def emit_subpixel_axis_step(pos_addr, pos_hi_addr, vel_addr, sub_acc_addr, invert_dir = False):
+		emit(0xFA, vel_addr & 0xFF, (vel_addr >> 8) & 0xFF)  # ld a,(vel)
+		emit(0xB7)  # or a
+		jr_vel_zero = jr(0x28)  # jr z, done
+		emit(0xCB, 0x7F)  # bit 7,a
+		jr_vel_neg = jr(0x20)  # jr nz, neg_path
+		emit(0x47)  # ld b,a (|vel|)
+		emit(0xFA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0x80)  # add a,b
+		emit(0xEA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		pos_loop_addr = len(code)
+		emit(0xFA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0xFE, int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM) & 0xFF)  # cp vel_accum
+		jr_pos_done = jr(0x38)  # jr c, pos_done
+		emit(0xD6, int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM) & 0xFF)  # sub vel_accum
+		emit(0xEA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0xFA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+		if not invert_dir:
+			emit(0x3C)  # inc a
+			emit(0xEA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+			jr_pos_no_carry = jr(0x20)  # jr nz, pos_after_hi
+			emit(0xFA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+			emit(0x3C)  # inc a
+			emit(0xEA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+		else:
+			emit(0x3D)  # dec a
+			emit(0xEA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+			emit(0xFE, 0xFF)  # cp $FF (borrow from low byte)
+			jr_pos_no_carry = jr(0x20)  # jr nz, pos_after_hi
+			emit(0xFA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+			emit(0x3D)  # dec a
+			emit(0xEA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+		pos_after_hi_addr = len(code)
+		patch_jr(jr_pos_no_carry, pos_after_hi_addr)
+		jr_pos_loop = jr(0x18)  # jr pos_loop
+		patch_jr(jr_pos_loop, pos_loop_addr)
+		pos_done_addr = len(code)
+		patch_jr(jr_pos_done, pos_done_addr)
+		jr_axis_done = jr(0x18)  # jr axis_done
+		neg_path_addr = len(code)
+		patch_jr(jr_vel_neg, neg_path_addr)
+		emit(0x2F)  # cpl
+		emit(0x3C)  # inc a
+		emit(0x47)  # ld b,a (|vel|)
+		emit(0xFA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0x80)  # add a,b
+		emit(0xEA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		neg_loop_addr = len(code)
+		emit(0xFA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0xFE, int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM) & 0xFF)  # cp vel_accum
+		jr_neg_done = jr(0x38)  # jr c, neg_done
+		emit(0xD6, int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM) & 0xFF)  # sub vel_accum
+		emit(0xEA, sub_acc_addr & 0xFF, (sub_acc_addr >> 8) & 0xFF)
+		emit(0xFA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+		if not invert_dir:
+			emit(0x3D)  # dec a
+			emit(0xEA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+			emit(0xFE, 0xFF)  # cp $FF (borrow from low byte)
+			jr_neg_no_borrow = jr(0x20)  # jr nz, neg_after_hi
+			emit(0xFA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+			emit(0x3D)  # dec a
+			emit(0xEA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+		else:
+			emit(0x3C)  # inc a
+			emit(0xEA, pos_addr & 0xFF, (pos_addr >> 8) & 0xFF)
+			jr_neg_no_borrow = jr(0x20)  # jr nz, neg_after_hi
+			emit(0xFA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+			emit(0x3C)  # inc a
+			emit(0xEA, pos_hi_addr & 0xFF, (pos_hi_addr >> 8) & 0xFF)
+		neg_after_hi_addr = len(code)
+		patch_jr(jr_neg_no_borrow, neg_after_hi_addr)
+		jr_neg_loop = jr(0x18)  # jr neg_loop
+		patch_jr(jr_neg_loop, neg_loop_addr)
+		neg_done_addr = len(code)
+		patch_jr(jr_neg_done, neg_done_addr)
+		axis_done_addr = len(code)
+		patch_jr(jr_axis_done, axis_done_addr)
+		patch_jr(jr_vel_zero, axis_done_addr)
 	collider_count = max(0, min(31, int(collider_count)))
 	emit(0xF3)  # di
 	emit(0x31, 0xFE, 0xFF)  # ld sp, $FFFE
@@ -7271,10 +7404,12 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		gacc_x_addr = base + 5
 		y_hi_addr = base + 6
 		x_hi_addr = base + 7
+		x_subacc_addr = 0xC200 + body_idx
+		y_subacc_addr = 0xC240 + body_idx
 		init_x = max(0, min(65535, int(body.get('init_x', 0))))
 		init_y = max(0, min(65535, int(body.get('init_y', 0))))
-		init_vx = max(-127, min(127, int(body.get('init_vx', 0))))
-		init_vy = max(-127, min(127, int(body.get('init_vy', 0))))
+		init_vx = int(body.get('init_vx', 0))
+		init_vy = int(body.get('init_vy', 0))
 		ld_a_imm(init_y); emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 		ld_a_imm((init_y >> 8) & 0xFF); emit(0xEA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
 		ld_a_imm(init_vy); emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
@@ -7283,6 +7418,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		ld_a_imm(init_vx); emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 		ld_a_imm(0); emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
 		ld_a_imm(0); emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
+		ld_a_imm(int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2)); emit(0xEA, x_subacc_addr & 0xFF, (x_subacc_addr >> 8) & 0xFF)
+		ld_a_imm(int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2)); emit(0xEA, y_subacc_addr & 0xFF, (y_subacc_addr >> 8) & 0xFF)
 		sprite_tiles_w = max(1, min(4, int(body.get('sprite_tiles_w', 1))))
 		sprite_tiles_h = max(1, min(4, int(body.get('sprite_tiles_h', 1))))
 		sprite_tile_count_for_body = max(1, min(16, int(body.get('sprite_tile_count', sprite_tiles_w * sprite_tiles_h))))
@@ -7355,8 +7492,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		sprite_h_px = max(8, min(32, sprite_tiles_h * 8))
 		oam_left_visible_min = (256 - int(sprite_w_px)) & 0xFF
 		oam_top_visible_min = (256 - int(sprite_h_px)) & 0xFF
-		grav_step_x = max(-32, min(32, int(body.get('grav_step_x', 0))))
-		grav_step_y = max(-32, min(32, int(body.get('grav_step_y', 1))))
+		grav_step_x = int(body.get('grav_step_x', 0))
+		grav_step_y = int(body.get('grav_step_y', 1))
 		script_spec = body.get('velocity_script') if isinstance(body.get('velocity_script'), dict) else None
 		script_base_vx = 0
 		script_left_delta = 0
@@ -7364,21 +7501,21 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		script_jump_y = None
 		script_jump_vy_max = None
 		if script_spec is not None:
-			script_base_vx = max(-127, min(127, int(script_spec.get('base_vx', 0))))
-			script_left_delta = max(-8, min(8, int(script_spec.get('left_delta', 0))))
-			script_right_delta = max(-8, min(8, int(script_spec.get('right_delta', 0))))
+			script_base_vx = int(script_spec.get('base_vx', 0))
+			script_left_delta = int(script_spec.get('left_delta', 0))
+			script_right_delta = int(script_spec.get('right_delta', 0))
 			if script_spec.get('jump_y', None) is not None:
-				script_jump_y = max(-8, min(8, int(script_spec.get('jump_y', 0))))
+				script_jump_y = int(script_spec.get('jump_y', 0))
 			if script_spec.get('jump_vy_max', None) is not None:
-				script_jump_vy_max = max(-127, min(127, int(script_spec.get('jump_vy_max', 0))))
+				script_jump_vy_max = int(script_spec.get('jump_vy_max', 0))
 		if grav_step_x != 0:
-			grav_mag_x = max(1, min(32, abs(int(grav_step_x))))
+			grav_mag_x = max(1, abs(int(grav_step_x)))
 			emit(0xFA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)  # ld a,(gacc_x)
 			emit(0xC6, grav_mag_x & 0xFF)  # add a, grav_mag_x
 			emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)  # store acc
-			emit(0xFE, 16)  # cp 16
+			emit(0xFE, int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM) & 0xFF)  # cp gravity_accum
 			jr_x_no_v = jr(0x38)  # jr c, no_vx_step
-			emit(0xD6, 16)  # sub 16
+			emit(0xD6, int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM) & 0xFF)  # sub gravity_accum
 			emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
 			emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)  # ld a,(vx)
 			emit(0x3C if grav_step_x > 0 else 0x3D)  # inc/dec a
@@ -7396,8 +7533,7 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				emit(0xFE, 0x00)  # cp $00 (pressed)
 				jr_right_skip = jr(0x20)  # jr nz, skip_right
 				emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
-				for _ in range(abs(int(script_right_delta))):
-					emit(0x3C if script_right_delta > 0 else 0x3D)
+				emit(0xC6, int(script_right_delta) & 0xFF)  # add a,delta (byte-wrapped)
 				emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 				right_skip_addr = len(code)
 				patch_jr(jr_right_skip, right_skip_addr)
@@ -7409,8 +7545,7 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				emit(0xFE, 0x00)  # cp $00 (pressed)
 				jr_left_skip = jr(0x20)  # jr nz, skip_left
 				emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
-				for _ in range(abs(int(script_left_delta))):
-					emit(0x3C if script_left_delta > 0 else 0x3D)
+				emit(0xC6, int(script_left_delta) & 0xFF)  # add a,delta (byte-wrapped)
 				emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 				left_skip_addr = len(code)
 				patch_jr(jr_left_skip, left_skip_addr)
@@ -7425,7 +7560,7 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				if script_jump_vy_max is not None:
 					# Script condition `vel[1] <= n` uses script-space Y-up velocity.
 					# Internal phase1 stores Y-down velocity, so compare `vy >= -n`.
-					jump_internal_min_vy = max(-127, min(127, int(-int(script_jump_vy_max))))
+					jump_internal_min_vy = int(-int(script_jump_vy_max))
 					emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
 					emit(0xEE, 0x80)  # xor $80 (signed -> unsigned bias)
 					emit(0xFE, (int(jump_internal_min_vy) ^ 0x80) & 0xFF)  # cp (min_vy^$80)
@@ -7438,46 +7573,24 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				patch_jr(jr_not_a, no_jump_addr)
 				if jr_jump_guard_skip is not None:
 					patch_jr(jr_jump_guard_skip, no_jump_addr)
-		# x += sign_extend(vx)
-		emit(0xFA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
-		emit(0x47)  # ld b,a (vx)
-		emit(0x78)  # ld a,b
-		emit(0x87)  # add a,a ; carry = sign bit of vx
-		emit(0x9F)  # sbc a,a ; a = 0x00 or 0xFF
-		emit(0x4F)  # ld c,a (vx sign extension)
-		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
-		emit(0x80)  # add a,b
-		emit(0xEA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
-		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
-		emit(0x89)  # adc a,c
-		emit(0xEA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
+		# x += round(vx / 60) using subpixel accumulation.
+		emit_subpixel_axis_step(x_addr, x_hi_addr, vx_addr, x_subacc_addr, invert_dir = True)
 		if grav_step_y != 0:
-			grav_mag_y = max(1, min(32, abs(int(grav_step_y))))
+			grav_mag_y = max(1, abs(int(grav_step_y)))
 			emit(0xFA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)  # ld a,(gacc_y)
 			emit(0xC6, grav_mag_y & 0xFF)  # add a, grav_mag_y
 			emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)  # store acc
-			emit(0xFE, 16)  # cp 16
+			emit(0xFE, int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM) & 0xFF)  # cp gravity_accum
 			jr_y_no_v = jr(0x38)  # jr c, no_vy_step
-			emit(0xD6, 16)  # sub 16
+			emit(0xD6, int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM) & 0xFF)  # sub gravity_accum
 			emit(0xEA, gacc_y_addr & 0xFF, (gacc_y_addr >> 8) & 0xFF)
 			emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # ld a,(vy)
 			emit(0x3C if grav_step_y > 0 else 0x3D)  # inc/dec a
 			emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)  # (vy)=a
 			y_no_v_addr = len(code)
 			patch_jr(jr_y_no_v, y_no_v_addr)
-		# y += sign_extend(vy)
-		emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
-		emit(0x47)  # ld b,a (vy)
-		emit(0x78)  # ld a,b
-		emit(0x87)  # add a,a ; carry = sign bit of vy
-		emit(0x9F)  # sbc a,a ; a = 0x00 or 0xFF
-		emit(0x4F)  # ld c,a (vy sign extension)
-		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
-		emit(0x80)  # add a,b
-		emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
-		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
-		emit(0x89)  # adc a,c
-		emit(0xEA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+		# y += round(vy / 60) using subpixel accumulation.
+		emit_subpixel_axis_step(y_addr, y_hi_addr, vy_addr, y_subacc_addr)
 		if collider_count > 0:
 			# Runtime collider pass: resolve downward contacts against authored collider AABBs.
 			emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)  # ld a,(x_hi)
@@ -7996,30 +8109,44 @@ class _GbcPhase1MirrorSim:
 	def __init__ (self, x : int, y : int, vx : int, vy : int, grav_step_x : int, grav_step_y : int, sprite_w_px : int, sprite_h_px : int, collider_rects, offscreen_bottom_y : int, velocity_script = None):
 		self.x = max(0, min(65535, int(x)))
 		self.y = max(0, min(65535, int(y)))
-		self.vx = max(-127, min(127, int(vx)))
-		self.vy = max(-127, min(127, int(vy)))
+		self.vx = int(vx)
+		self.vy = int(vy)
 		self.gacc_x = 0
 		self.gacc_y = 0
-		self.grav_step_x = max(-32, min(32, int(grav_step_x)))
-		self.grav_step_y = max(-32, min(32, int(grav_step_y)))
+		self.grav_step_x = int(grav_step_x)
+		self.grav_step_y = int(grav_step_y)
 		self.sprite_w_px = max(8, min(32, int(sprite_w_px)))
 		self.sprite_h_px = max(8, min(32, int(sprite_h_px)))
 		self.collider_rects = list(collider_rects or [])
 		self.offscreen_bottom_y = max(145, min(252, int(offscreen_bottom_y)))
 		self.velocity_script = velocity_script if isinstance(velocity_script, dict) else None
+		self.x_subacc = int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2)
+		self.y_subacc = int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2)
 		self.dead = False
 	def _to_local (self, v):
 		return int(v) - _GBC_POSITION_BIAS
 	def _step_gravity_axis (self, step, acc, vel):
 		if step == 0:
 			return acc, vel
-		mag = max(1, min(32, abs(int(step))))
+		mag = max(1, abs(int(step)))
 		acc = int(acc) + mag
-		if acc >= 16:
-			acc -= 16
+		if acc >= int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM):
+			acc -= int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM)
 			vel += 1 if step > 0 else -1
-		vel = max(-127, min(127, int(vel)))
 		return int(acc), int(vel)
+	def _step_velocity_axis (self, pos, vel, sub_acc, invert_dir : bool = False):
+		vel = int(vel)
+		sub_acc = int(sub_acc)
+		if vel == 0:
+			return int(pos), int(sub_acc)
+		sub_acc += abs(vel)
+		while sub_acc >= int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM):
+			sub_acc -= int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM)
+			delta = (1 if vel > 0 else -1)
+			if invert_dir:
+				delta = -delta
+			pos = (int(pos) + int(delta)) & 0xFFFF
+		return int(pos), int(sub_acc)
 	def _is_supported (self):
 		local_y = self._to_local(self.y)
 		local_x = self._to_local(self.x)
@@ -8047,7 +8174,7 @@ class _GbcPhase1MirrorSim:
 				vx += right_delta
 			if bool(len(keys) > _RUNTIME_KEY_INDEX['LEFT'] and keys[_RUNTIME_KEY_INDEX['LEFT']]):
 				vx += left_delta
-			self.vx = max(-127, min(127, int(vx)))
+			self.vx = int(vx)
 			jump_y = self.velocity_script.get('jump_y', None)
 			if jump_y is not None and bool(len(keys) > _RUNTIME_KEY_INDEX['A'] and keys[_RUNTIME_KEY_INDEX['A']]):
 				jump_vy_max = self.velocity_script.get('jump_vy_max', None)
@@ -8058,16 +8185,16 @@ class _GbcPhase1MirrorSim:
 					can_jump = bool(script_vy <= int(jump_vy_max))
 				if can_jump:
 					# Script-space Y is up, internal velocity is Y-down.
-					self.vy = max(-127, min(127, int(-int(jump_y))))
+					self.vy = int(-int(jump_y))
 					self.gacc_y = 0
-		self.x = (int(self.x) + int(self.vx)) & 0xFFFF
+		self.x, self.x_subacc = self._step_velocity_axis(self.x, self.vx, self.x_subacc, invert_dir = True)
 		# Keep resting bodies stable on top of colliders instead of re-accelerating each frame.
 		if self.vy >= 0 and self._is_supported():
 			self.vy = 0
 			self.gacc_y = 0
 		else:
 			self.gacc_y, self.vy = self._step_gravity_axis(self.grav_step_y, self.gacc_y, self.vy)
-			self.y = (int(self.y) + int(self.vy)) & 0xFFFF
+			self.y, self.y_subacc = self._step_velocity_axis(self.y, self.vy, self.y_subacc)
 		# Match phase1 runtime: only resolve downward contacts.
 		if self.vy > 0:
 			local_x = self._to_local(self.x)
@@ -8089,8 +8216,8 @@ class _GbcPhase1MirrorSim:
 	def set_linear_velocity (self, _rigidBody, vel, wakeUp = True):
 		try:
 			# Mirror script-facing convention (Y-up) while internal phase1 state is Y-down.
-			self.vx = max(-127, min(127, int(round(float(vel[0])))))
-			self.vy = max(-127, min(127, int(round(-float(vel[1])))))
+			self.vx = int(round(float(vel[0])))
+			self.vy = int(round(-float(vel[1])))
 		except Exception:
 			pass
 	def get_linear_velocity (self, _rigidBody):
@@ -8488,6 +8615,13 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 							target_hit = True
 							if isinstance(call.args[1], ast.Name):
 								vel_alias_name = call.args[1].id
+							else:
+								vel_lit = _ast_numeric_vec2_literal(call.args[1])
+								if vel_lit is not None:
+									base_vx = int(round(float(vel_lit[0])))
+									base_vx_found = True
+									base_vy = int(round(float(vel_lit[1])))
+									base_vy_found = True
 			elif isinstance(stmt, ast.If):
 				key_name, jump_guard_vy_max = _extract_jump_test_details(stmt.test, keys_aliases, vel_alias_name, consts)
 				if key_name is None:
@@ -8538,12 +8672,12 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 		if not base_vy_found:
 			base_vy = 0
 		return {
-			'base_vx' : max(-127, min(127, int(base_vx))),
-			'base_vy' : max(-127, min(127, int(base_vy))),
-			'left_delta' : max(-8, min(8, int(left_delta))),
-			'right_delta' : max(-8, min(8, int(right_delta))),
-			'jump_y' : None if jump_y is None else max(-8, min(8, int(jump_y))),
-			'jump_vy_max' : None if jump_vy_max is None else max(-127, min(127, int(jump_vy_max))),
+			'base_vx' : int(base_vx),
+			'base_vy' : int(base_vy),
+			'left_delta' : int(left_delta),
+			'right_delta' : int(right_delta),
+			'jump_y' : None if jump_y is None else int(jump_y),
+			'jump_vy_max' : None if jump_vy_max is None else int(jump_vy_max),
 		}
 	if sprite_ob is None:
 		return None
@@ -10015,10 +10149,10 @@ def BuildGbc (world):
 						'palette4' : sprite_pal,
 						'init_x' : init_x,
 						'init_y' : init_y,
-						'init_vx' : max(-127, min(127, int(init_vx))),
-						'init_vy' : max(-127, min(127, int(init_vy))),
-						'grav_step_x' : max(-32, min(32, grav_step_x)),
-						'grav_step_y' : max(-32, min(32, grav_step_y)),
+						'init_vx' : int(init_vx),
+						'init_vy' : int(init_vy),
+						'grav_step_x' : int(grav_step_x),
+						'grav_step_y' : int(grav_step_y),
 						'velocity_script' : velocity_script,
 					})
 				collider_rects = _gbc_collect_runtime_colliders(scene_obs, ignored_names = set([ob.name for ob in rigid_sprite_obs]))
@@ -10074,8 +10208,8 @@ def BuildGbc (world):
 				init_y = (int(init_y_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
 				init_vx, init_vy = _extract_gbc_phase1_init_velocity(world, sprite_ob)
 				velocity_script = _extract_gbc_phase1_velocity_script(world, sprite_ob)
-				init_vx = max(-127, min(127, int(init_vx)))
-				init_vy = max(-127, min(127, int(init_vy)))
+				init_vx = int(init_vx)
+				init_vy = int(init_vy)
 				gravity_scale = float(getattr(sprite_ob, 'gravityScale', 1.0))
 				effective_x = gravity_x * gravity_scale
 				effective_down = -gravity_y * gravity_scale
@@ -10086,8 +10220,8 @@ def BuildGbc (world):
 					grav_step_x = 1 if effective_x > 0 else -1
 				if abs(effective_down) > 1e-6 and grav_step_y == 0:
 					grav_step_y = 1 if effective_down > 0 else -1
-				grav_step_x = max(-32, min(32, grav_step_x))
-				grav_step_y = max(-32, min(32, grav_step_y))
+				grav_step_x = int(grav_step_x)
+				grav_step_y = int(grav_step_y)
 				collider_rects = _gbc_collect_runtime_colliders(scene_obs, ignored_name = sprite_ob.name)
 				if init_vx != 0 or init_vy != 0:
 					print('GBC export: phase1 seeded sprite velocity from gbc-py script =', [init_vx, init_vy])
