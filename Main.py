@@ -8721,6 +8721,24 @@ def _gba_scroll_rgba_in_place (surf, dx : int, dy : int):
 	src = surf.copy()
 	surf[dst_y0 : dst_y1, dst_x0 : dst_x1] = src[src_y0 : src_y1, src_x0 : src_x1]
 
+def _gba_normalize_display_scroll_delta (dx : int, dy : int):
+	# Match pygame.display surface semantics to the logical GBC viewport.
+	def _wrap_signed (_v, _size):
+		try:
+			_v = int(_v)
+		except Exception:
+			_v = 0
+		if _size <= 0:
+			return _v
+		# Normalize into the shortest signed wrapped offset:
+		# 159 on a 160-wide surface becomes -1, matching reverse step intent.
+		_v = _v % _size
+		half = _size // 2
+		if _v > half:
+			_v -= _size
+		return _v
+	return _wrap_signed(dx, 160), _wrap_signed(dy, 144)
+
 def _gba_load_saved_image_rgba (ob):
 	try:
 		import numpy as np
@@ -8864,56 +8882,79 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list, fr
 			except Exception:
 				continue
 			_gba_scroll_rgba_in_place(surf, dx, dy)
+		elif _type == 'blit_surface_member' and member:
+			dst = members.get(member)
+			if dst is None:
+				continue
+			src_owner = op.get('src_owner_name') or owner_name
+			src_member = op.get('src_member')
+			src = owner_members.get(src_owner, {}).get(src_member) if src_member else None
+			if src is None:
+				continue
+			x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time)
+			y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time)
+			try:
+				x = int(round(float(0.0 if x_val is None else x_val)))
+				y = int(round(float(0.0 if y_val is None else y_val)))
+			except Exception:
+				continue
+			_gba_blit_rgba(dst, src, x, y, (1.0, 1.0, 1.0), 1.0)
 	for owner_name in list(image_surfaces.keys()):
 		override = owner_members.get(owner_name, {}).get('surface')
 		if override is not None:
 			image_surfaces[owner_name] = override
 	return image_surfaces
 
-def _gba_apply_display_draw_circles (canvas, script_runtime, frame : int = None, start_time : float = None):
+def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None, start_time : float = None):
+	if not isinstance(op, dict):
+		return
+	cond = op.get('condition')
+	if cond is not None and cond != '':
+		cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
+		if cond_val is None or abs(float(cond_val)) <= 1e-9:
+			return
+	op_type = str(op.get('op') or '')
+	if op_type == 'scroll_display_surface':
+		dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
+		dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
+		try:
+			dx = int(round(float(0.0 if dx_val is None else dx_val)))
+			dy = int(round(float(0.0 if dy_val is None else dy_val)))
+		except Exception:
+			return
+		dx, dy = _gba_normalize_display_scroll_delta(dx, dy)
+		_gba_scroll_rgba_in_place(canvas, dx, dy)
+		return
+	if op_type == 'blit_display_surface':
+		src_owner = op.get('src_owner_name')
+		src_member = op.get('src_member')
+		src = owner_members.get(src_owner, {}).get(src_member) if isinstance(owner_members, dict) and src_member else None
+		if src is None:
+			return
+		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time)
+		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time)
+		try:
+			x = int(round(float(0.0 if x_val is None else x_val)))
+			y = int(round(float(0.0 if y_val is None else y_val)))
+		except Exception:
+			return
+		_gba_blit_rgba(canvas, src, x, y, (1.0, 1.0, 1.0), 1.0)
+
+def _gba_apply_display_draw_circles (canvas, script_runtime, image_surfaces = None, frame : int = None, start_time : float = None):
 	if canvas is None:
 		return canvas
 	runtime = script_runtime or {}
+	owner_members = {}
+	for owner_name, surf in (image_surfaces or {}).items():
+		owner_members[owner_name] = {'surface' : surf}
 	for circle in list(runtime.get('init_draw_circles') or []):
 		_gba_draw_circle_from_script(canvas, circle, frame = frame, start_time = start_time)
 	for circle in list(runtime.get('update_draw_circles') or []):
 		_gba_draw_circle_from_script(canvas, circle, frame = frame, start_time = start_time)
 	for op in list(runtime.get('init_display_ops') or []):
-		if not isinstance(op, dict):
-			continue
-		if str(op.get('op') or '') != 'scroll_display_surface':
-			continue
-		cond = op.get('condition')
-		if cond is not None and cond != '':
-			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
-			if cond_val is None or abs(float(cond_val)) <= 1e-9:
-				continue
-		dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
-		dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
-		try:
-			dx = int(round(float(0.0 if dx_val is None else dx_val)))
-			dy = int(round(float(0.0 if dy_val is None else dy_val)))
-		except Exception:
-			continue
-		_gba_scroll_rgba_in_place(canvas, dx, dy)
+		_gba_apply_display_op(canvas, op, owner_members = owner_members, frame = frame, start_time = start_time)
 	for op in list(runtime.get('update_display_ops') or []):
-		if not isinstance(op, dict):
-			continue
-		if str(op.get('op') or '') != 'scroll_display_surface':
-			continue
-		cond = op.get('condition')
-		if cond is not None and cond != '':
-			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
-			if cond_val is None or abs(float(cond_val)) <= 1e-9:
-				continue
-		dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
-		dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
-		try:
-			dx = int(round(float(0.0 if dx_val is None else dx_val)))
-			dy = int(round(float(0.0 if dy_val is None else dy_val)))
-		except Exception:
-			continue
-		_gba_scroll_rgba_in_place(canvas, dx, dy)
+		_gba_apply_display_op(canvas, op, owner_members = owner_members, frame = frame, start_time = start_time)
 	return canvas
 
 def _gba_composite_scene (world, image_empties, image_surfaces = None, transform_overrides = None, script_runtime = None, frame : int = None):
@@ -8957,7 +8998,7 @@ def _gba_composite_scene (world, image_empties, image_surfaces = None, transform
 			pos = GetImagePosition(ob)
 		tint = list(ob.tint)
 		_gba_blit_rgba(canvas, scaled, int(pos.x), int(pos.y), tint, ob.color[3])
-	_gba_apply_display_draw_circles(canvas, script_runtime, frame = frame)
+	_gba_apply_display_draw_circles(canvas, script_runtime, image_surfaces = image_surfaces, frame = frame)
 	return canvas
 
 def _gba_try_build_and_install_pyrapier2d ():
@@ -9445,10 +9486,13 @@ def _gba_eval_display_scroll_offset (script_runtime, frame : int = 1, start_time
 		dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
 		dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
 		try:
-			dx_total += int(round(float(0.0 if dx_val is None else dx_val)))
-			dy_total += int(round(float(0.0 if dy_val is None else dy_val)))
+			dx = int(round(float(0.0 if dx_val is None else dx_val)))
+			dy = int(round(float(0.0 if dy_val is None else dy_val)))
 		except Exception:
 			continue
+		dx, dy = _gba_normalize_display_scroll_delta(dx, dy)
+		dx_total += dx
+		dy_total += dy
 	return int(dx_total), int(dy_total)
 
 def _gba_get_runtime_display_scroll_profile (script_runtime, frame : int = 1, start_time : float = None):
@@ -9473,8 +9517,14 @@ def _gba_get_runtime_display_scroll_profile (script_runtime, frame : int = 1, st
 
 def _gba_runtime_without_display_scroll (script_runtime):
 	runtime = dict(script_runtime or {})
-	runtime['init_display_ops'] = []
-	runtime['update_display_ops'] = []
+	runtime['init_display_ops'] = [
+		op for op in list(runtime.get('init_display_ops') or [])
+		if not (isinstance(op, dict) and str(op.get('op') or '') == 'scroll_display_surface')
+	]
+	runtime['update_display_ops'] = [
+		op for op in list(runtime.get('update_display_ops') or [])
+		if not (isinstance(op, dict) and str(op.get('op') or '') == 'scroll_display_surface')
+	]
 	return runtime
 
 def _gba_generate_script_only_frames (world, image_empties, image_surfaces, script_runtime):
