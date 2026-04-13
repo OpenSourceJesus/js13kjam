@@ -3508,7 +3508,21 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 	# local gbc-py scripts unless actually spawned at runtime.
 	template_only_obs = set(in_prefab_coll - in_non_prefab_coll)
 	spawn_template_obs = set()
+	template_spawn_instance_tags_by_ob = {}
+	def _append_script_entry (_owner_name, _script_txt, _is_init, _is_global, _script, _symbol_hint):
+		raw_script_txt = _script_txt
+		norm_script_txt = _normalize_gb_script_code(_script_txt, bool(_is_init), 'gbc-py', _owner_name)
+		script_entries.append({
+			'code' : norm_script_txt,
+			'raw_code' : raw_script_txt,
+			'is_init' : _is_init,
+			'is_global' : _is_global,
+			'script_obj' : _script,
+			'owner_name' : _owner_name,
+			'symbol_hint' : _symbol_hint,
+		})
 	try:
+		spawn_calls = []
 		for call in _collect_gbc_spawn_prefab_requests():
 			prefab_name = str(call.get('prefab_name', '') or '')
 			if prefab_name == '':
@@ -3516,6 +3530,11 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			coll = bpy.data.collections.get(prefab_name)
 			if not coll or not getattr(coll, 'exportPrefab', False):
 				continue
+			spawn_calls.append({
+				'prefab_name' : prefab_name,
+				'pos' : call.get('pos', None),
+				'rot' : float(call.get('rot', 0.0) or 0.0),
+			})
 			for ob in coll.all_objects:
 				spawn_template_obs.add(ob)
 		# Scene collection instances implicitly spawn prefab children too.
@@ -3527,10 +3546,58 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			coll = getattr(inst_ob, 'instance_collection', None)
 			if not coll or not getattr(coll, 'exportPrefab', False):
 				continue
+			try:
+				wm_pos = inst_ob.matrix_world.to_translation()
+				wm_rot = inst_ob.matrix_world.to_euler('XYZ')
+				inst_x = float(wm_pos.x)
+				inst_y = float(wm_pos.y)
+				inst_rot = float(-math.degrees(wm_rot.z))
+			except Exception:
+				inst_x = float(getattr(inst_ob.location, 'x', 0.0))
+				inst_y = float(getattr(inst_ob.location, 'y', 0.0))
+				inst_rot = float(-math.degrees(getattr(inst_ob.rotation_euler, 'z', 0.0)))
+			spawn_calls.append({
+				'prefab_name' : str(coll.name),
+				'pos' : [inst_x, inst_y],
+				'rot' : float(inst_rot),
+			})
 			for ob in coll.all_objects:
 				spawn_template_obs.add(ob)
+		# Keep instance fan-out stable with BuildGbc's fallback dedupe behavior.
+		deduped_spawn_calls = []
+		seen_spawn_keys = set()
+		for call in spawn_calls:
+			prefab_name = str(call.get('prefab_name', '') or '')
+			pos_val = call.get('pos', None)
+			rot_val = float(call.get('rot', 0.0) or 0.0)
+			if pos_val is None:
+				deduped_spawn_calls.append(call)
+				continue
+			x = float(pos_val[0]) if len(pos_val) > 0 else 0.0
+			y = float(pos_val[1]) if len(pos_val) > 1 else 0.0
+			key = (
+				prefab_name,
+				round(x, 4),
+				round(y, 4),
+				round(rot_val, 4),
+			)
+			if key in seen_spawn_keys:
+				continue
+			seen_spawn_keys.add(key)
+			deduped_spawn_calls.append(call)
+		for call_idx, call in enumerate(deduped_spawn_calls):
+			prefab_name = str(call.get('prefab_name', '') or '')
+			if prefab_name == '':
+				continue
+			coll = bpy.data.collections.get(prefab_name)
+			if not coll or not getattr(coll, 'exportPrefab', False):
+				continue
+			for ob in coll.all_objects:
+				tags = template_spawn_instance_tags_by_ob.setdefault(ob, [])
+				tags.append(call_idx)
 	except Exception:
 		spawn_template_obs = set()
+		template_spawn_instance_tags_by_ob = {}
 	template_local_scripts_skipped = 0
 	template_local_scripts_spawn_included = 0
 	if world:
@@ -3541,17 +3608,14 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			script = scriptInfo[3]
 			is_global = bool(scriptInfo[4]) if len(scriptInfo) > 4 else False
 			if _type == 'gbc-py':
-				raw_script_txt = scriptTxt
-				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, '__world__')
-				script_entries.append({
-					'code' : scriptTxt,
-					'raw_code' : raw_script_txt,
-					'is_init' : is_init,
-					'is_global' : is_global,
-					'script_obj' : script,
-					'owner_name' : '__world__',
-					'symbol_hint' : 'world_' + getattr(script, 'name', 'script'),
-				})
+				_append_script_entry(
+					'__world__',
+					scriptTxt,
+					is_init,
+					is_global,
+					script,
+					'world_' + getattr(script, 'name', 'script'),
+				)
 	for ob in bpy.data.objects:
 		if not ob.exportOb or ob.hide_get():
 			continue
@@ -3565,7 +3629,10 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			for scriptInfo in GetScripts(ob):
 				_type = scriptInfo[2]
 				if _type == 'gbc-py':
-					template_local_scripts_spawn_included += 1
+					spawn_tags = list(template_spawn_instance_tags_by_ob.get(ob, []))
+					if not spawn_tags:
+						spawn_tags = [None]
+					template_local_scripts_spawn_included += len(spawn_tags)
 		for scriptInfo in GetScripts(ob):
 			scriptTxt = scriptInfo[0]
 			is_init = scriptInfo[1]
@@ -3573,17 +3640,34 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			script = scriptInfo[3]
 			is_global = bool(scriptInfo[4]) if len(scriptInfo) > 4 else False
 			if _type == 'gbc-py':
-				raw_script_txt = scriptTxt
-				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, ob.name)
-				script_entries.append({
-					'code' : scriptTxt,
-					'raw_code' : raw_script_txt,
-					'is_init' : is_init,
-					'is_global' : is_global,
-					'script_obj' : script,
-					'owner_name' : ob.name,
-					'symbol_hint' : ob.name + '_' + getattr(script, 'name', 'script'),
-				})
+				if ob in template_only_obs and ob in spawn_template_obs:
+					spawn_tags = list(template_spawn_instance_tags_by_ob.get(ob, []))
+					if not spawn_tags:
+						spawn_tags = [None]
+					for tag in spawn_tags:
+						if tag is None:
+							owner_name = ob.name
+							symbol_hint = ob.name + '_' + getattr(script, 'name', 'script')
+						else:
+							owner_name = '__gbc_spawn_%i_%s' %(int(tag), ob.name)
+							symbol_hint = owner_name + '_' + getattr(script, 'name', 'script')
+						_append_script_entry(
+							owner_name,
+							scriptTxt,
+							is_init,
+							is_global,
+							script,
+							symbol_hint,
+						)
+				else:
+					_append_script_entry(
+						ob.name,
+						scriptTxt,
+						is_init,
+						is_global,
+						script,
+						ob.name + '_' + getattr(script, 'name', 'script'),
+					)
 	def _entry_has_spawn_prefab_call (_entry):
 		raw = str(_entry.get('raw_code', _entry.get('code', '')) or '')
 		try:
