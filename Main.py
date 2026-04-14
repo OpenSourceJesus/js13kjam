@@ -3192,7 +3192,56 @@ def _strip_print_calls_from_python (code : str):
 			):
 				return None
 			return self.generic_visit(node)
+	class _EnsureNonEmptyBlocks(ast.NodeTransformer):
+		@staticmethod
+		def _ensure_body(_stmts):
+			if isinstance(_stmts, list) and len(_stmts) == 0:
+				return [ast.Pass()]
+			return _stmts
+		def visit_If (self, node):
+			node = self.generic_visit(node)
+			node.body = self._ensure_body(getattr(node, 'body', []))
+			return node
+		def visit_For (self, node):
+			node = self.generic_visit(node)
+			node.body = self._ensure_body(getattr(node, 'body', []))
+			return node
+		def visit_AsyncFor (self, node):
+			node = self.generic_visit(node)
+			node.body = self._ensure_body(getattr(node, 'body', []))
+			return node
+		def visit_While (self, node):
+			node = self.generic_visit(node)
+			node.body = self._ensure_body(getattr(node, 'body', []))
+			return node
+		def visit_With (self, node):
+			node = self.generic_visit(node)
+			node.body = self._ensure_body(getattr(node, 'body', []))
+			return node
+		def visit_AsyncWith (self, node):
+			node = self.generic_visit(node)
+			node.body = self._ensure_body(getattr(node, 'body', []))
+			return node
+		def visit_Try (self, node):
+			node = self.generic_visit(node)
+			node.body = self._ensure_body(getattr(node, 'body', []))
+			for handler in list(getattr(node, 'handlers', []) or []):
+				handler.body = self._ensure_body(getattr(handler, 'body', []))
+			return node
+		def visit_FunctionDef (self, node):
+			node = self.generic_visit(node)
+			node.body = self._ensure_body(getattr(node, 'body', []))
+			return node
+		def visit_AsyncFunctionDef (self, node):
+			node = self.generic_visit(node)
+			node.body = self._ensure_body(getattr(node, 'body', []))
+			return node
+		def visit_ClassDef (self, node):
+			node = self.generic_visit(node)
+			node.body = self._ensure_body(getattr(node, 'body', []))
+			return node
 	tree = _StripPrintExprs().visit(tree)
+	tree = _EnsureNonEmptyBlocks().visit(tree)
 	try:
 		tree = ast.fix_missing_locations(tree)
 	except Exception:
@@ -3232,6 +3281,7 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		code = entry.get('code', '')
 		raw_code = entry.get('raw_code', code)
 		analysis_code = str(raw_code if str(raw_code).strip() != '' else code)
+		exec_code = str(code if str(code).strip() != '' else analysis_code)
 		is_init = bool(entry.get('is_init'))
 		owner_name = entry.get('owner_name') or '__world__'
 		scope_key = str((owner_name, bool(is_init), entry.get('symbol_hint') or '', int(entry_idx)))
@@ -3328,10 +3378,13 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			'scope_key' : scope_key,
 			'owner_name' : owner_name,
 			'is_init' : bool(is_init),
+			'is_global' : bool(entry.get('is_global')),
+			'source_code' : str(entry.get('source_code', analysis_code) or ''),
+			'source_line_offset' : int(entry.get('source_line_offset', 0) or 0),
 			# Mirror runner resolves print output itself; avoid duplicate script prints.
-			# Analyze/execute prefixed Python source so shared global members are
-			# visible during runtime print evaluation as well.
-			'code' : _strip_print_calls_from_python(analysis_code),
+			# Execute normalized/prefixed code so runtime compatibility shims
+			# (for example cast_shape adapters) are active during mirror eval.
+			'code' : _strip_print_calls_from_python(exec_code),
 		})
 	# Prefer parser-rebuilt print metadata for script owner/phase pairs we handled,
 	# while preserving backend-provided print calls for any untouched pairs.
@@ -3378,6 +3431,55 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        sim = physics\n'
 		'    except:\n'
 		'        sim = None\n'
+		'def _js13k_gbc_validate_cast_shape_args(*args, **kwargs):\n'
+		'    if len(args) < 6:\n'
+		'        raise TypeError("world.castShape requires at least 6 positional args: shapePos, shapeRot, shapeVel, shape, maxToi, stopAtPenetration")\n'
+		'    if len(args) > 7:\n'
+		'        raise TypeError("world.castShape accepts at most 7 positional args")\n'
+		'    if kwargs:\n'
+		'        allowed = {"collisionGroupFilter", "collision_group_filter"}\n'
+		'        unknown = [k for k in kwargs if k not in allowed]\n'
+		'        if len(unknown) > 0:\n'
+		'            raise TypeError("world.castShape got unexpected keyword argument(s): " + ", ".join([str(k) for k in unknown]))\n'
+		'if (sim is not None) and hasattr(sim, "cast_shape") and not getattr(sim, "_js13k_gbc_cast_shape_validated", False):\n'
+		'    _js13k_gbc_orig_cast_shape = sim.cast_shape\n'
+		'    def _js13k_gbc_cast_shape_checked(*args, **kwargs):\n'
+		'        _js13k_gbc_validate_cast_shape_args(*args, **kwargs)\n'
+		'        return _js13k_gbc_orig_cast_shape(*args, **kwargs)\n'
+		'    try:\n'
+		'        sim.cast_shape = _js13k_gbc_cast_shape_checked\n'
+		'        sim._js13k_gbc_cast_shape_validated = True\n'
+		'    except:\n'
+		'        pass\n'
+		'if (sim is not None) and hasattr(sim, "cast_collider") and not hasattr(sim, "cast_shape"):\n'
+		'    def _js13k_gbc_cast_shape_from_collider(*args, **kwargs):\n'
+		'        _js13k_gbc_validate_cast_shape_args(*args, **kwargs)\n'
+		'        shape_pos = args[0]\n'
+		'        shape_rot = args[1]\n'
+		'        shape_vel = args[2]\n'
+		'        shape = args[3]\n'
+		'        collision_group_filter = None\n'
+		'        if len(args) > 6:\n'
+		'            collision_group_filter = args[6]\n'
+		'        elif "collisionGroupFilter" in kwargs:\n'
+		'            collision_group_filter = kwargs.get("collisionGroupFilter")\n'
+		'        elif "collision_group_filter" in kwargs:\n'
+		'            collision_group_filter = kwargs.get("collision_group_filter")\n'
+		'        return sim.cast_collider(shape, shape_vel, shape_pos, shape_rot, collision_group_filter)\n'
+		'    try:\n'
+		'        sim.cast_shape = _js13k_gbc_cast_shape_from_collider\n'
+		'        sim._js13k_gbc_cast_shape_validated = True\n'
+		'    except:\n'
+		'        pass\n'
+		'if (sim is not None) and (not hasattr(sim, "cast_shape")) and hasattr(sim, "cast_collider"):\n'
+		'    class _GbcSimCastShapeProxy:\n'
+		'        def __init__(self, _sim):\n'
+		'            self._sim = _sim\n'
+		'        def cast_shape(self, *args, **kwargs):\n'
+		'            return _js13k_gbc_cast_shape_from_collider(*args, **kwargs)\n'
+		'        def __getattr__(self, _name):\n'
+		'            return getattr(self._sim, _name)\n'
+		'    sim = _GbcSimCastShapeProxy(sim)\n'
 		'_js13k_gbc_pos_bias = 32768.0\n'
 		'def _js13k_gbc_bias_pos_for_set(_pos):\n'
 		'    try:\n'
@@ -3515,6 +3617,8 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 		script_entries.append({
 			'code' : norm_script_txt,
 			'raw_code' : raw_script_txt,
+			'source_code' : raw_script_txt,
+			'source_line_offset' : 0,
 			'is_init' : _is_init,
 			'is_global' : _is_global,
 			'script_obj' : _script,
@@ -3720,9 +3824,11 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 		'[gbc-trace] ExportGbcPyAssembly:py2gb_backend=' + ('available' if bool(_py2gb_export_gba_py_assembly) else 'missing'),
 	])
 	if global_members_prefix != '':
+		prefix_line_count = len(str(global_members_prefix).splitlines())
 		for entry in runtime_script_entries:
 			code_txt = str(entry.get('code', '') or '')
 			raw_code_txt = str(entry.get('raw_code', code_txt) or '')
+			entry['source_line_offset'] = int(entry.get('source_line_offset', 0) or 0) + int(prefix_line_count)
 			entry['code'] = global_members_prefix + '\n' + code_txt if code_txt.strip() != '' else global_members_prefix
 			entry['raw_code'] = global_members_prefix + '\n' + raw_code_txt if raw_code_txt.strip() != '' else global_members_prefix
 	exportType = prev_export
@@ -6353,8 +6459,10 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				runtime_globals = __import__('builtins').globals()
 				if name in runtime_globals:
 					return str(runtime_globals[name])
+				# Mirror print eval is best-effort; unresolved names can happen when
+				# the mirror cannot execute a runtime-only call path.
 				if strict:
-					raise RuntimeError(f"NameError: name '{name}' is not defined")
+					return 'None'
 				return expr_eval
 			if isinstance(val, (int, float, bool, str)):
 				return str(val)
@@ -6381,7 +6489,7 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				if name in runtime_globals:
 					return str(runtime_globals[name])
 				if strict:
-					raise RuntimeError(f"NameError: name '{name}' is not defined")
+					return 'None'
 			if strict and not re.fullmatch(r'[A-Za-z_]\w*', expr_eval):
 				raise RuntimeError(f"Invalid script print expression: {expr!r}")
 			# Keep runtime print mirroring non-fatal for dynamic/unavailable symbols.
@@ -6535,6 +6643,110 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 	def _runner():
 		frame = 0
 		init_printed = False
+		mirror_logged_errors = set()
+		def _log_mirror_script_error (kind, owner, scope_key, frame_val, err, code_txt = '', source_code = '', source_line_offset = 0, is_non_local : bool = False):
+			try:
+				err_text = f'{type(err).__name__}: {err}'
+			except Exception:
+				err_text = str(err)
+			try:
+				_frame_key = int(frame_val) if frame_val is not None else -1
+			except Exception:
+				_frame_key = -1
+			key = (str(kind), str(owner), str(scope_key), str(err_text), _frame_key)
+			if key in mirror_logged_errors:
+				return
+			mirror_logged_errors.add(key)
+			phase = 'update' if str(kind) == 'exec' else str(kind)
+			script_name = str(scope_key)
+			try:
+				parsed_scope = ast.literal_eval(scope_key) if isinstance(scope_key, str) else scope_key
+			except Exception:
+				parsed_scope = None
+			if isinstance(parsed_scope, (list, tuple)) and len(parsed_scope) >= 3:
+				script_name = str(parsed_scope[2])
+			owner_pref = str(owner) + '_'
+			if script_name.startswith(owner_pref):
+				script_name = script_name[len(owner_pref) :]
+			line_no = None
+			display_line_no = None
+			func_name = None
+			tb = getattr(err, '__traceback__', None)
+			while tb is not None:
+				try:
+					filename = str(tb.tb_frame.f_code.co_filename)
+				except Exception:
+					filename = ''
+				if filename.startswith('<mirror:'):
+					line_no = int(tb.tb_lineno)
+					try:
+						co_name = str(tb.tb_frame.f_code.co_name)
+					except Exception:
+						co_name = ''
+					if co_name and co_name != '<module>':
+						func_name = co_name
+				tb = tb.tb_next
+			try:
+				off = int(source_line_offset or 0)
+			except Exception:
+				off = 0
+			if line_no is not None:
+				display_line_no = max(1, line_no - off)
+			src_line = ''
+			caret_line = ''
+			code_lines = []
+			try:
+				code_lines = str(code_txt).splitlines()
+			except Exception:
+				code_lines = []
+			transformed_line = ''
+			try:
+				if line_no is not None and 1 <= line_no <= len(code_lines):
+					transformed_line = code_lines[line_no - 1]
+			except Exception:
+				transformed_line = ''
+			try:
+				if str(source_code).strip() != '':
+					lines = str(source_code).splitlines()
+					if display_line_no is not None and 1 <= display_line_no <= len(lines):
+						src_line = lines[display_line_no - 1]
+					# Align to authored line by matching transformed failing line nearby.
+					if transformed_line != '' and src_line.strip() != transformed_line.strip() and display_line_no is not None:
+						for delta in (1, -1, 2, -2, 3, -3):
+							cand = display_line_no + delta
+							if 1 <= cand <= len(lines) and lines[cand - 1].strip() == transformed_line.strip():
+								display_line_no = cand
+								src_line = lines[cand - 1]
+								break
+				if src_line == '':
+					if line_no is not None and 1 <= line_no <= len(code_lines):
+						src_line = code_lines[line_no - 1]
+			except Exception:
+				src_line = ''
+			if src_line:
+				caret_idx = src_line.find('cast_shape')
+				if caret_idx < 0:
+					caret_idx = max(0, len(src_line) - len(src_line.lstrip(' ')))
+				caret_width = len('cast_shape') if src_line.find('cast_shape') >= 0 else 1
+				caret_line = (' ' * caret_idx) + ('^' * max(1, int(caret_width)))
+			try:
+				line_label = display_line_no if display_line_no is not None else (line_no if line_no is not None else '?')
+				if is_non_local:
+					header = f'[{script_label}:{phase}:error] Non-local script {script_name}, line {line_label}'
+				else:
+					header = f'[{script_label}:{phase}:error] Object {owner}, script {script_name}, line {line_label}'
+				if func_name and not is_non_local:
+					header += f', in {func_name}'
+				detail_lines = [header]
+				if src_line:
+					detail_lines.append(src_line)
+				if caret_line:
+					detail_lines.append(caret_line)
+				detail_lines.append(err_text)
+				for _line in detail_lines:
+					print(_line)
+			except Exception:
+				pass
 		per_script_locals = __import__('builtins').globals().get('scriptLocals', {})
 		if not isinstance(per_script_locals, dict):
 			per_script_locals = {}
@@ -6559,6 +6771,13 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			return out
 		def _eval_env_for_owner(owner, frame = None, scope_key = None):
 			env = {}
+			# Runtime scripts share globals; mirror eval should expose world-scope
+			# bindings (for example global gbc-py vars) to local owner scripts.
+			if owner != '__world__':
+				world_scopes = _owner_scopes('__world__')
+				for world_scope in world_scopes.values():
+					if isinstance(world_scope, dict):
+						env.update(world_scope)
 			owner_scopes = _owner_scopes(owner)
 			if scope_key is not None:
 				scope = owner_scopes.get(scope_key)
@@ -6633,6 +6852,8 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			owner = script_info.get('owner_name') or '__world__'
 			scope_key = script_info.get('scope_key')
 			code_txt = str(script_info.get('code', '') or '')
+			source_code_txt = str(script_info.get('source_code', code_txt) or '')
+			source_line_offset = int(script_info.get('source_line_offset', 0) or 0)
 			if code_txt.strip() == '':
 				return
 			cache_key = (scope_key, code_txt)
@@ -6640,12 +6861,33 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			if code_obj is None:
 				try:
 					code_obj = compile(code_txt, f'<mirror:{owner}:{scope_key}>', 'exec')
-				except Exception:
-					_compiled_script_cache[cache_key] = False
+				except Exception as err:
+					_log_mirror_script_error(
+						'compile',
+						owner,
+						scope_key,
+						frame,
+						err,
+						code_txt = code_txt,
+						source_code = source_code_txt,
+						source_line_offset = source_line_offset,
+						is_non_local = bool(script_info.get('is_global')),
+					)
+					try:
+						numbered = []
+						for ln, src_line in enumerate(str(code_txt).splitlines(), start = 1):
+							numbered.append(f'{ln:03d}: {src_line}')
+						_append_gbc_trace_lines([
+							'[gbc-trace] MirrorScriptSource'
+							+ f':label={script_label}'
+							+ f',owner={owner}'
+							+ f',scope={scope_key}'
+							+ f',frame={frame}',
+						] + [('[gbc-trace]   ' + row) for row in numbered])
+					except Exception:
+						pass
 					return
 				_compiled_script_cache[cache_key] = code_obj
-			if code_obj is False:
-				return
 			env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key)
 			if owner != '__world__':
 				try:
@@ -6657,10 +6899,23 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			env.setdefault('pygame', _MirrorPygameShim())
 			env.setdefault('math', math)
 			env.setdefault('random', __import__('random'))
+			# Mirror runtime does not materialize prefabs; keep spawn calls non-fatal.
+			env.setdefault('spawn_prefab', (lambda *args, **kwargs: None))
 			env.setdefault('__builtins__', __import__('builtins'))
 			try:
 				exec(code_obj, env, env)
-			except Exception:
+			except Exception as err:
+				_log_mirror_script_error(
+					'exec',
+					owner,
+					scope_key,
+					frame,
+					err,
+					code_txt = code_txt,
+					source_code = source_code_txt,
+					source_line_offset = source_line_offset,
+					is_non_local = bool(script_info.get('is_global')),
+				)
 				# Preserve partial mirror state so strict print placeholder
 				# resolution can still read globals initialized before failure.
 				owner_store = mirror_script_locals.setdefault(owner, {})
@@ -6709,7 +6964,13 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				if isinstance(val, str):
 					inner = re.fullmatch(r'(?i)<expr:\s*(.*?)\s*>', val.strip())
 					if inner:
-						return '<expr:' + inner.group(1).strip() + '>'
+						expr_text = inner.group(1).strip()
+						# Do not inline call-heavy expressions (for example
+						# sim.cast_shape(...)) into print placeholders. Let runtime
+						# mirror locals resolve the variable value directly.
+						if '(' in expr_text:
+							return m.group(0)
+						return '<expr:' + expr_text + '>'
 					return '<expr:' + val + '>'
 				if _is_simple_const_value(val):
 					return '<expr:' + repr(val) + '>'
