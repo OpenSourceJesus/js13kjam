@@ -1,4 +1,4 @@
-import os, re, io, ast, sys, json, math, time, string, atexit, struct, shutil, contextlib, threading, subprocess, webbrowser, inspect
+import os, re, io, ast, sys, json, math, time, string, atexit, struct, shutil, inspect, contextlib, threading, subprocess, webbrowser, keyword
 import ctypes, ctypes.util
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
@@ -17,11 +17,21 @@ try:
 	from py2gb.blender_export import is_runtime_script_binding_name as _py2gb_is_runtime_script_binding_name
 	from py2gb.blender_export import augment_runtime_physics_maps as _py2gb_augment_runtime_physics_maps
 except Exception:
-	_py2gb_export_gba_py_assembly = None
-	_py2gb_normalize_gb_script_code = None
-	_py2gb_py2gb_asm = None
-	_py2gb_is_runtime_script_binding_name = None
-	_py2gb_augment_runtime_physics_maps = None
+	try:
+		from py2gba.blender_export import export_gba_py_assembly as _py2gb_export_gba_py_assembly
+		from py2gba.blender_export import normalize_gb_script_code as _py2gb_normalize_gb_script_code
+		try:
+			from py2gba.blender_export import py2gb_asm as _py2gb_py2gb_asm
+		except Exception:
+			from py2gba.blender_export import py2gba_asm as _py2gb_py2gb_asm
+		from py2gba.blender_export import is_runtime_script_binding_name as _py2gb_is_runtime_script_binding_name
+		from py2gba.blender_export import augment_runtime_physics_maps as _py2gb_augment_runtime_physics_maps
+	except Exception:
+		_py2gb_export_gba_py_assembly = None
+		_py2gb_normalize_gb_script_code = None
+		_py2gb_py2gb_asm = None
+		_py2gb_is_runtime_script_binding_name = None
+		_py2gb_augment_runtime_physics_maps = None
 
 isLinux = False
 POTRACE_PATH = 'potrace-1.16.'
@@ -3377,6 +3387,7 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		mirror_scripts.append({
 			'scope_key' : scope_key,
 			'owner_name' : owner_name,
+			'owner_attributes' : dict(entry.get('owner_attributes', {})) if isinstance(entry.get('owner_attributes', {}), dict) else {},
 			'is_init' : bool(is_init),
 			'is_global' : bool(entry.get('is_global')),
 			'source_code' : str(entry.get('source_code', analysis_code) or ''),
@@ -3441,11 +3452,63 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        unknown = [k for k in kwargs if k not in allowed]\n'
 		'        if len(unknown) > 0:\n'
 		'            raise TypeError("world.castShape got unexpected keyword argument(s): " + ", ".join([str(k) for k in unknown]))\n'
+		'def _js13k_gbc_bias_pos_for_cast(_pos):\n'
+		'    try:\n'
+		'        return [\n'
+		'            (float(_pos[0]) + 32768.0) % 65536.0,\n'
+		'            ((-float(_pos[1])) + 32768.0) % 65536.0,\n'
+		'        ]\n'
+		'    except:\n'
+		'        return _pos\n'
+		'def _js13k_gbc_bias_vel_for_cast(_vel):\n'
+		'    try:\n'
+		'        return [\n'
+		'            float(_vel[0]),\n'
+		'            -float(_vel[1]),\n'
+		'        ]\n'
+		'    except:\n'
+		'        return _vel\n'
+		'_js13k_gbc_cast_debug_count = 0\n'
+		'_js13k_gbc_cast_debug_limit = 120\n'
+		'def _js13k_gbc_cast_debug_log(stage, payload):\n'
+		'    global _js13k_gbc_cast_debug_count\n'
+		'    try:\n'
+		'        if int(_js13k_gbc_cast_debug_count) >= int(_js13k_gbc_cast_debug_limit):\n'
+		'            return\n'
+		'        print("[gbc-cast-debug]", stage, payload)\n'
+		'        _js13k_gbc_cast_debug_count = int(_js13k_gbc_cast_debug_count) + 1\n'
+		'    except:\n'
+		'        pass\n'
 		'if (sim is not None) and hasattr(sim, "cast_shape") and not getattr(sim, "_js13k_gbc_cast_shape_validated", False):\n'
 		'    _js13k_gbc_orig_cast_shape = sim.cast_shape\n'
+		'    _js13k_gbc_orig_cast_collider = sim.cast_collider if hasattr(sim, "cast_collider") else None\n'
 		'    def _js13k_gbc_cast_shape_checked(*args, **kwargs):\n'
 		'        _js13k_gbc_validate_cast_shape_args(*args, **kwargs)\n'
-		'        return _js13k_gbc_orig_cast_shape(*args, **kwargs)\n'
+		'        _args = list(args)\n'
+		'        _orig_pos = _args[0]\n'
+		'        _orig_vel = _args[2]\n'
+		'        _args[0] = _js13k_gbc_bias_pos_for_cast(_args[0])\n'
+		'        _args[2] = _js13k_gbc_bias_vel_for_cast(_args[2])\n'
+		'        _js13k_gbc_cast_debug_log("in", {"orig_pos": _orig_pos, "orig_vel": _orig_vel, "cast_pos": _args[0], "cast_vel": _args[2], "shape": str(_args[3])})\n'
+		'        if _js13k_gbc_orig_cast_collider is not None:\n'
+		'            _cgf = None\n'
+		'            if len(_args) > 6:\n'
+		'                _cgf = _args[6]\n'
+		'            elif "collisionGroupFilter" in kwargs:\n'
+		'                _cgf = kwargs.get("collisionGroupFilter")\n'
+		'            elif "collision_group_filter" in kwargs:\n'
+		'                _cgf = kwargs.get("collision_group_filter")\n'
+		'            try:\n'
+		'                _hit = _js13k_gbc_orig_cast_collider(_args[3], _args[2], _args[0], _args[1], _cgf)\n'
+		'                _js13k_gbc_cast_debug_log("cast_collider", {"hit": _hit, "cgf": _cgf})\n'
+		'                if _hit:\n'
+		'                    return _hit\n'
+		'            except:\n'
+		'                _js13k_gbc_cast_debug_log("cast_collider_error", {"shape": str(_args[3])})\n'
+		'                pass\n'
+		'        _shape_hit = _js13k_gbc_orig_cast_shape(*tuple(_args), **kwargs)\n'
+		'        _js13k_gbc_cast_debug_log("cast_shape", {"hit": _shape_hit})\n'
+		'        return _shape_hit\n'
 		'    try:\n'
 		'        sim.cast_shape = _js13k_gbc_cast_shape_checked\n'
 		'        sim._js13k_gbc_cast_shape_validated = True\n'
@@ -3458,6 +3521,8 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        shape_rot = args[1]\n'
 		'        shape_vel = args[2]\n'
 		'        shape = args[3]\n'
+		'        shape_pos = _js13k_gbc_bias_pos_for_cast(shape_pos)\n'
+		'        shape_vel = _js13k_gbc_bias_vel_for_cast(shape_vel)\n'
 		'        collision_group_filter = None\n'
 		'        if len(args) > 6:\n'
 		'            collision_group_filter = args[6]\n'
@@ -3465,7 +3530,10 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'            collision_group_filter = kwargs.get("collisionGroupFilter")\n'
 		'        elif "collision_group_filter" in kwargs:\n'
 		'            collision_group_filter = kwargs.get("collision_group_filter")\n'
-		'        return sim.cast_collider(shape, shape_vel, shape_pos, shape_rot, collision_group_filter)\n'
+		'        _js13k_gbc_cast_debug_log("from_collider_in", {"shape": str(shape), "cast_pos": shape_pos, "cast_vel": shape_vel, "cgf": collision_group_filter})\n'
+		'        _hit = sim.cast_collider(shape, shape_vel, shape_pos, shape_rot, collision_group_filter)\n'
+		'        _js13k_gbc_cast_debug_log("from_collider_out", {"hit": _hit})\n'
+		'        return _hit\n'
 		'    try:\n'
 		'        sim.cast_shape = _js13k_gbc_cast_shape_from_collider\n'
 		'        sim._js13k_gbc_cast_shape_validated = True\n'
@@ -3597,6 +3665,61 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 	prev_export = exportType
 	exportType = 'gbc'
 	script_entries = []
+	def _is_valid_gbc_attribute_name (_name):
+		return isinstance(_name, str) and _name != '' and _name.isidentifier() and (not keyword.iskeyword(_name))
+	def _collect_validated_gbc_script_attributes (_ob):
+		attr_map = GetAttributes(_ob)
+		if not isinstance(attr_map, dict) or attr_map == {}:
+			return {}
+		invalid_names = []
+		for _name in list(attr_map.keys()):
+			if not _is_valid_gbc_attribute_name(_name):
+				invalid_names.append(str(_name))
+		if invalid_names:
+			raise RuntimeError(
+				'GBC export: object "' + str(_ob.name) + '" has included attributes that are not valid variable names: '
+				+ ', '.join(sorted(set(invalid_names)))
+			)
+		return dict(attr_map)
+	def _validate_gbc_object_attributes_for_export (_ob):
+		_collect_validated_gbc_script_attributes(_ob)
+	def _build_gbc_local_this_attributes_prefix (_owner_attributes):
+		if not isinstance(_owner_attributes, dict) or _owner_attributes == {}:
+			return ''
+		lines = []
+		for _name in sorted(_owner_attributes.keys()):
+			lines.append(str(_name) + ' = ' + repr(_owner_attributes[_name]))
+		return '\n'.join(lines).strip()
+	def _rewrite_gbc_this_attribute_accesses_to_locals (_code, _owner_attributes):
+		if not isinstance(_code, str) or _code.strip() == '':
+			return str(_code or '')
+		if not isinstance(_owner_attributes, dict) or _owner_attributes == {}:
+			return str(_code)
+		_attr_names = {str(_k) for _k in _owner_attributes.keys() if isinstance(_k, str) and _k != ''}
+		if _attr_names == set():
+			return str(_code)
+		try:
+			_tree = ast.parse(_code)
+		except Exception:
+			return str(_code)
+		class _RewriteThisAttributeRefs(ast.NodeTransformer):
+			def visit_Attribute (self, node):
+				node = self.generic_visit(node)
+				if (
+					isinstance(node, ast.Attribute)
+					and isinstance(node.value, ast.Name)
+					and node.value.id == 'this'
+					and isinstance(node.attr, str)
+					and node.attr in _attr_names
+				):
+					return ast.copy_location(ast.Name(id = node.attr, ctx = node.ctx), node)
+				return node
+		try:
+			_tree = _RewriteThisAttributeRefs().visit(_tree)
+			_tree = ast.fix_missing_locations(_tree)
+			return ast.unparse(_tree)
+		except Exception:
+			return str(_code)
 	in_prefab_coll = set()
 	in_non_prefab_coll = set()
 	for coll in bpy.data.collections:
@@ -3609,16 +3732,32 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 	# Objects that exist only inside prefab template collections should not run
 	# local gbc-py scripts unless actually spawned at runtime.
 	template_only_obs = set(in_prefab_coll - in_non_prefab_coll)
+	for ob in bpy.data.objects:
+		if not ob.exportOb or ob.hide_get():
+			continue
+		_validate_gbc_object_attributes_for_export(ob)
 	spawn_template_obs = set()
 	template_spawn_instance_tags_by_ob = {}
-	def _append_script_entry (_owner_name, _script_txt, _is_init, _is_global, _script, _symbol_hint):
+	def _append_script_entry (_owner_name, _script_txt, _is_init, _is_global, _script, _symbol_hint, _owner_attributes = None):
 		raw_script_txt = _script_txt
 		norm_script_txt = _normalize_gb_script_code(_script_txt, bool(_is_init), 'gbc-py', _owner_name)
+		source_line_offset = 0
+		local_attr_prefix = ''
+		if _owner_name != '__world__':
+			local_attr_prefix = _build_gbc_local_this_attributes_prefix(_owner_attributes)
+			norm_script_txt = _rewrite_gbc_this_attribute_accesses_to_locals(norm_script_txt, _owner_attributes)
+		if local_attr_prefix != '':
+			source_line_offset = len(local_attr_prefix.splitlines())
+			if norm_script_txt.strip() == '':
+				norm_script_txt = local_attr_prefix
+			else:
+				norm_script_txt = local_attr_prefix + '\n' + norm_script_txt
 		script_entries.append({
 			'code' : norm_script_txt,
 			'raw_code' : raw_script_txt,
 			'source_code' : raw_script_txt,
-			'source_line_offset' : 0,
+			'source_line_offset' : source_line_offset,
+			'owner_attributes' : dict(_owner_attributes) if isinstance(_owner_attributes, dict) else {},
 			'is_init' : _is_init,
 			'is_global' : _is_global,
 			'script_obj' : _script,
@@ -3723,6 +3862,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 	for ob in bpy.data.objects:
 		if not ob.exportOb or ob.hide_get():
 			continue
+		gbc_script_attributes = None
 		if ob in template_only_obs and ob not in spawn_template_obs:
 			for scriptInfo in GetScripts(ob):
 				_type = scriptInfo[2]
@@ -3744,6 +3884,8 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			script = scriptInfo[3]
 			is_global = bool(scriptInfo[4]) if len(scriptInfo) > 4 else False
 			if _type == 'gbc-py':
+				if gbc_script_attributes is None:
+					gbc_script_attributes = _collect_validated_gbc_script_attributes(ob)
 				if ob in template_only_obs and ob in spawn_template_obs:
 					spawn_tags = list(template_spawn_instance_tags_by_ob.get(ob, []))
 					if not spawn_tags:
@@ -3762,6 +3904,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 							is_global,
 							script,
 							symbol_hint,
+							gbc_script_attributes,
 						)
 				else:
 					_append_script_entry(
@@ -3771,6 +3914,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 						is_global,
 						script,
 						ob.name + '_' + getattr(script, 'name', 'script'),
+						gbc_script_attributes,
 					)
 	def _entry_has_spawn_prefab_call (_entry):
 		raw = str(_entry.get('raw_code', _entry.get('code', '')) or '')
@@ -6893,6 +7037,14 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				try:
 					this_obj = type('MirrorThis', (), {})()
 					this_obj.id = owner
+					owner_attributes = script_info.get('owner_attributes', {})
+					if isinstance(owner_attributes, dict):
+						for attr_name, attr_value in owner_attributes.items():
+							if isinstance(attr_name, str) and attr_name.isidentifier():
+								try:
+									setattr(this_obj, attr_name, attr_value)
+								except Exception:
+									pass
 					env.setdefault('this', this_obj)
 				except Exception:
 					pass
@@ -9699,6 +9851,64 @@ class _GbcPhase1MirrorSim:
 		return None
 	def get_angular_velocity (self, _rigidBody):
 		return 0.0
+	def _coerce_vec2 (self, val, fallback = None):
+		if fallback is None:
+			fallback = [0.0, 0.0]
+		try:
+			return [float(val[0]), float(val[1])]
+		except Exception:
+			try:
+				return [float(fallback[0]), float(fallback[1])]
+			except Exception:
+				return [0.0, 0.0]
+	def _cast_hit_entry (self, collider_idx, toi, x, y):
+		return {
+			'collider' : collider_idx,
+			'toi' : float(toi),
+			'witness1' : [float(x), float(y)],
+			'witness2' : [float(x), float(y)],
+			'normal1' : [0.0, 0.0],
+			'normal2' : [0.0, 0.0],
+		}
+	def _aabb_overlaps (self, ax, ay, aw, ah, bx, by, bw, bh):
+		return (
+			(float(ax) < (float(bx) + float(bw)))
+			and ((float(ax) + float(aw)) > float(bx))
+			and (float(ay) < (float(by) + float(bh)))
+			and ((float(ay) + float(ah)) > float(by))
+		)
+	def cast_shape (self, shapePos, _shapeRot, shapeVel, _shape, maxToi, stopAtPenetration, _collisionGroupFilter = None):
+		start = self._coerce_vec2(shapePos, [0.0, 0.0])
+		vel = self._coerce_vec2(shapeVel, [0.0, 0.0])
+		try:
+			toi_max = float(maxToi)
+		except Exception:
+			toi_max = 1.0
+		if toi_max < 0.0:
+			toi_max = 0.0
+		# Mirror scripts use Y-up; collider rects use Y-down.
+		start_x = float(start[0])
+		start_y = -float(start[1])
+		dx = float(vel[0]) * float(toi_max)
+		dy = -float(vel[1]) * float(toi_max)
+		shape_w = float(self.sprite_w_px)
+		shape_h = float(self.sprite_h_px)
+		if bool(stopAtPenetration):
+			for idx, (cx, cy, cw, ch) in enumerate(self.collider_rects):
+				if self._aabb_overlaps(start_x, start_y, shape_w, shape_h, cx, cy, cw, ch):
+					return self._cast_hit_entry(idx, 0.0, start_x, start_y)
+		max_delta = max(abs(dx), abs(dy), 1.0)
+		steps = max(1, int(math.ceil(max_delta)))
+		for step_i in range(1, steps + 1):
+			t = float(step_i) / float(steps)
+			px = start_x + (dx * t)
+			py = start_y + (dy * t)
+			for idx, (cx, cy, cw, ch) in enumerate(self.collider_rects):
+				if self._aabb_overlaps(px, py, shape_w, shape_h, cx, cy, cw, ch):
+					return self._cast_hit_entry(idx, t * toi_max, px, py)
+		return None
+	def cast_collider (self, shape, shapeVel, shapePos, shapeRot, collisionGroupFilter = None):
+		return self.cast_shape(shapePos, shapeRot, shapeVel, shape, 1.0, True, collisionGroupFilter)
 	def __getattr__ (self, _name):
 		# Keep phase1 print-mirror API permissive like script compat shims:
 		# unknown physics helpers (e.g. cast_collider/cast_shape) should be callable.
@@ -9777,6 +9987,47 @@ def _script_owner_matches_target_keys (owner_name, target_keys):
 		if key.lstrip('_') == owner_token:
 			return True
 	return False
+
+def _build_ast_literal_expr_node (_value):
+	try:
+		parsed = ast.parse(repr(_value), mode = 'eval')
+		return parsed.body
+	except Exception:
+		return None
+
+def _rewrite_this_attributes_with_object_values (_code, _ob):
+	if not isinstance(_code, str) or _code.strip() == '':
+		return str(_code or '')
+	try:
+		attributes = GetAttributes(_ob)
+	except Exception:
+		attributes = {}
+	if not isinstance(attributes, dict) or attributes == {}:
+		return str(_code)
+	try:
+		tree = ast.parse(_code)
+	except Exception:
+		return str(_code)
+	class _RewriteThisAttributeLiterals(ast.NodeTransformer):
+		def visit_Attribute (self, node):
+			node = self.generic_visit(node)
+			if (
+				isinstance(node, ast.Attribute)
+				and isinstance(node.value, ast.Name)
+				and node.value.id == 'this'
+				and isinstance(node.attr, str)
+				and node.attr in attributes
+			):
+				lit = _build_ast_literal_expr_node(attributes.get(node.attr))
+				if lit is not None:
+					return ast.copy_location(lit, node)
+			return node
+	try:
+		tree = _RewriteThisAttributeLiterals().visit(tree)
+		tree = ast.fix_missing_locations(tree)
+		return ast.unparse(tree)
+	except Exception:
+		return str(_code)
 
 def _extract_rigidbody_name_expr (node):
 	if isinstance(node, ast.Name):
@@ -9924,6 +10175,7 @@ def _extract_gbc_phase1_init_velocity (world, sprite_ob):
 			_type = scriptInfo[2]
 			if _type != 'gbc-py':
 				continue
+			scriptTxt = _rewrite_this_attributes_with_object_values(scriptTxt, ob)
 			if isInit:
 				init_codes.append((scriptTxt, allow_this_id))
 			else:
@@ -10192,6 +10444,7 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 			_type = scriptInfo[2]
 			if _type != 'gbc-py':
 				continue
+			scriptTxt = _rewrite_this_attributes_with_object_values(scriptTxt, ob)
 			if isInit:
 				init_codes.append((scriptTxt, allow_this_id))
 			else:
