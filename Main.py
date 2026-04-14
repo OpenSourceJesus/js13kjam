@@ -6837,6 +6837,9 @@ _GBC_POSITION_BIAS = 32768
 _GBC_POSITION_MASK = 0xFFFF
 _GBC_PHASE1_VELOCITY_ACCUM_DENOM = 60
 _GBC_PHASE1_GRAVITY_ACCUM_DENOM = 60
+_GBC_RUNTIME_MAX_OAM = 40
+_GBC_RUNTIME_MAX_METASPRITE_TILES = 40
+_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES = 8
 
 def _gbc_clamp_signed_byte (v):
 	v = int(v)
@@ -7177,17 +7180,20 @@ def _gbc_build_program (frame_data_addr : int, frame_stride : int, frame_count :
 	code[call_copy_attr_patch + 1] = (copy_abs >> 8) & 0xFF
 	return bytes(code)
 
-def _gbc_encode_metasprite_rgba (rgba, sprite_w_px : int, sprite_h_px : int, palette4 = None, max_tiles : int = 16):
+def _gbc_encode_metasprite_rgba (rgba, sprite_w_px : int, sprite_h_px : int, palette4 = None, max_tiles : int = 16, max_palettes : int = 8):
 	try:
 		import numpy as np
 	except ImportError:
 		raise RuntimeError('GBC export requires NumPy.')
 	if rgba is None:
-		return (bytes([0] * 16), 1, 1)
-	sprite_w_px = max(8, min(32, int(sprite_w_px)))
-	sprite_h_px = max(8, min(32, int(sprite_h_px)))
-	tiles_w = max(1, min(4, int(math.ceil(sprite_w_px / 8.0))))
-	tiles_h = max(1, min(4, int(math.ceil(sprite_h_px / 8.0))))
+		return (bytes([0] * 16), 1, 1, [_GBC_DEFAULT_BG_COLORS[: 4]], [0])
+	max_tiles = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_TILES, int(max_tiles)))
+	max_palettes = max(1, min(8, int(max_palettes)))
+	max_span_tiles = max(1, int(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES))
+	sprite_w_px = max(8, min(max_span_tiles * 8, int(sprite_w_px)))
+	sprite_h_px = max(8, min(max_span_tiles * 8, int(sprite_h_px)))
+	tiles_w = max(1, min(max_span_tiles, int(math.ceil(sprite_w_px / 8.0))))
+	tiles_h = max(1, min(max_span_tiles, int(math.ceil(sprite_h_px / 8.0))))
 	while tiles_w * tiles_h > max_tiles:
 		if tiles_w >= tiles_h and tiles_w > 1:
 			tiles_w -= 1
@@ -7197,28 +7203,129 @@ def _gbc_encode_metasprite_rgba (rgba, sprite_w_px : int, sprite_h_px : int, pal
 			break
 	resized = _gba_nn_resize_rgba(rgba, tiles_w * 8, tiles_h * 8).copy()
 	if resized.shape[0] != tiles_h * 8 or resized.shape[1] != tiles_w * 8:
-		return (bytes([0] * 16), 1, 1)
-	pal = palette4
-	if pal is None or len(pal) < 4:
-		pal = _GBC_DEFAULT_BG_COLORS[: 4]
-	pal_np = np.array([[int(c[0]), int(c[1]), int(c[2])] for c in pal[: 4]], dtype = np.float32)
-	out = bytearray()
+		return (bytes([0] * 16), 1, 1, [_GBC_DEFAULT_BG_COLORS[: 4]], [0])
+	default_pal_u8 = np.array(_GBC_DEFAULT_BG_COLORS[: 4], dtype = np.uint8)
+	def _normalize_palette4_u8 (pal):
+		if pal is None:
+			return default_pal_u8.copy()
+		try:
+			arr = np.array(pal, dtype = np.int16)
+		except Exception:
+			return default_pal_u8.copy()
+		if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] < 4:
+			return default_pal_u8.copy()
+		arr = np.clip(arr[: 4], 0, 255).astype(np.uint8)
+		return arr
+	def _build_local_palette4_u8 (opaque_rgb):
+		if opaque_rgb is None or opaque_rgb.shape[0] <= 0:
+			return default_pal_u8.copy()
+		pal4 = _gbc_quantize_palette4(opaque_rgb, lock_extremes = True)
+		pal4_u8 = np.array(pal4, dtype = np.uint8)
+		if pal4_u8.shape != (4, 3):
+			return default_pal_u8.copy()
+		pal4_u8[0] = default_pal_u8[0]
+		return pal4_u8
+	def _palette_err_for_opaque (opaque_rgb, pal4_u8):
+		if opaque_rgb is None or opaque_rgb.shape[0] <= 0:
+			return 0.0
+		_, err = _gbc_quantize_indices_for_palette(opaque_rgb, pal4_u8[1 : 4])
+		return float(err)
+	def _encode_tile_with_palette (tile_rgba, pal4_u8):
+		alpha = np.clip(tile_rgba[:, :, 3], 0.0, 1.0)
+		rgb255 = np.clip(tile_rgba[:, :, :3], 0.0, 1.0) * 255.0
+		idx = np.zeros((8, 8), dtype = np.uint8)
+		for y in range(8):
+			for x in range(8):
+				if alpha[y, x] <= 0.2:
+					idx[y, x] = 0
+					continue
+				d = pal4_u8[1 : 4].astype(np.float32) - rgb255[y, x]
+				err = np.sum(d * d, axis = 1)
+				idx[y, x] = int(1 + int(np.argmin(err)))
+		return idx
+	user_pal = _normalize_palette4_u8(palette4)
+	palette4_has_entries = False
+	if palette4 is not None:
+		try:
+			palette4_has_entries = len(palette4) >= 4
+		except Exception:
+			palette4_has_entries = False
+	if palette4_has_entries:
+		palette_bank = [user_pal]
+	else:
+		palette_bank = []
+	tile_rgba = []
+	tile_opaque_rgb = []
+	tile_local_pal = []
 	for ty in range(tiles_h):
 		for tx in range(tiles_w):
 			tile = resized[ty * 8 : (ty + 1) * 8, tx * 8 : (tx + 1) * 8, :]
+			tile_rgba.append(tile)
 			alpha = np.clip(tile[:, :, 3], 0.0, 1.0)
-			rgb255 = np.clip(tile[:, :, :3], 0.0, 1.0) * 255.0
-			idx = np.zeros((8, 8), dtype = np.uint8)
-			for y in range(8):
-				for x in range(8):
-					if alpha[y, x] <= 0.2:
-						idx[y, x] = 0
-						continue
-					d = pal_np[1 : 4] - rgb255[y, x]
-					err = np.sum(d * d, axis = 1)
-					idx[y, x] = int(1 + int(np.argmin(err)))
-			out.extend(_gbc_tile_to_2bpp(idx))
-	return (bytes(out), tiles_w, tiles_h)
+			rgb = (np.clip(tile[:, :, :3], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+			opaque = rgb[alpha > 0.2]
+			tile_opaque_rgb.append(opaque)
+			tile_local_pal.append(_build_local_palette4_u8(opaque))
+	if not palette_bank:
+		palette_bank = [tile_local_pal[0] if tile_local_pal else default_pal_u8.copy()]
+	while len(palette_bank) < max_palettes:
+		worst_i = -1
+		worst_err = -1.0
+		for i, opaque in enumerate(tile_opaque_rgb):
+			best_err = None
+			for pal4 in palette_bank:
+				err = _palette_err_for_opaque(opaque, pal4)
+				if best_err is None or err < best_err:
+					best_err = err
+			if best_err is not None and best_err > worst_err:
+				worst_err = best_err
+				worst_i = i
+		if worst_i == -1 or worst_err <= 0.0:
+			break
+		candidate = tile_local_pal[worst_i]
+		if any(np.array_equal(candidate, p) for p in palette_bank):
+			break
+		palette_bank.append(candidate)
+	for _ in range(2):
+		assignments = []
+		for opaque in tile_opaque_rgb:
+			best_idx = 0
+			best_err = None
+			for pi, pal4 in enumerate(palette_bank):
+				err = _palette_err_for_opaque(opaque, pal4)
+				if best_err is None or err < best_err:
+					best_err = err
+					best_idx = pi
+			assignments.append(best_idx)
+		for pi in range(len(palette_bank)):
+			group = [tile_opaque_rgb[i] for i, a in enumerate(assignments) if a == pi and tile_opaque_rgb[i].shape[0] > 0]
+			if not group:
+				continue
+			joined = np.concatenate(group, axis = 0)
+			palette_bank[pi] = _build_local_palette4_u8(joined)
+	out = bytearray()
+	tile_palette_idx = []
+	for i, tile in enumerate(tile_rgba):
+		opaque = tile_opaque_rgb[i]
+		best_idx = 0
+		best_err = None
+		for pi, pal4 in enumerate(palette_bank):
+			err = _palette_err_for_opaque(opaque, pal4)
+			if best_err is None or err < best_err:
+				best_err = err
+				best_idx = pi
+		tile_palette_idx.append(int(best_idx))
+		idx = _encode_tile_with_palette(tile, palette_bank[best_idx])
+		out.extend(_gbc_tile_to_2bpp(idx))
+	palette_bank_out = []
+	for pal4 in palette_bank:
+		palette_bank_out.append([
+			(int(pal4[0][0]), int(pal4[0][1]), int(pal4[0][2])),
+			(int(pal4[1][0]), int(pal4[1][1]), int(pal4[1][2])),
+			(int(pal4[2][0]), int(pal4[2][1]), int(pal4[2][2])),
+			(int(pal4[3][0]), int(pal4[3][1]), int(pal4[3][2])),
+		])
+	return (bytes(out), tiles_w, tiles_h, palette_bank_out, tile_palette_idx)
 
 def _gbc_palette_bytes_from_palette_bank (palette_bank):
 	palette_bytes = bytearray()
@@ -7248,7 +7355,7 @@ def _gbc_palette4_from_rgba (rgba):
 		return _GBC_DEFAULT_BG_COLORS[: 4]
 	return _gbc_quantize_palette4(pix, lock_extremes = True)
 
-def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0):
+def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None):
 	code = bytearray()
 	def emit(*vals):
 		code.extend(vals)
@@ -7372,13 +7479,14 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		if script_spec.get('jump_vy_max', None) is not None:
 			script_jump_vy_max = _gbc_clamp_signed_byte(int(script_spec.get('jump_vy_max', 0)))
 	collider_count = max(0, min(31, int(collider_count)))
-	sprite_tile_count = max(1, min(16, int(sprite_tile_count)))
-	sprite_tiles_w = max(1, min(4, int(sprite_tiles_w)))
-	sprite_tiles_h = max(1, min(4, int(sprite_tiles_h)))
+	sprite_tile_count = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_TILES, int(sprite_tile_count)))
+	sprite_tiles_w = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(sprite_tiles_w)))
+	sprite_tiles_h = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(sprite_tiles_h)))
 	if sprite_tiles_w * sprite_tiles_h > sprite_tile_count:
 		sprite_tiles_h = max(1, sprite_tile_count // sprite_tiles_w)
-	sprite_w_px = max(8, min(32, sprite_tiles_w * 8))
-	sprite_h_px = max(8, min(32, sprite_tiles_h * 8))
+	sprite_w_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, sprite_tiles_w * 8))
+	sprite_h_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, sprite_tiles_h * 8))
+	sprite_tile_palette_idxs = [max(0, min(7, int(v))) for v in list(sprite_tile_palette_idxs or [])]
 	oam_left_visible_min = (256 - int(sprite_w_px)) & 0xFF
 	oam_top_visible_min = (256 - int(sprite_h_px)) & 0xFF
 	offscreen_bottom_y = max(145, min(252, 144 + sprite_tiles_h * 8))
@@ -7462,7 +7570,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			emit(0xEA, (base + 1) & 0xFF, ((base + 1) >> 8) & 0xFF)  # OAM x
 			ld_a_imm(idx)
 			emit(0xEA, (base + 2) & 0xFF, ((base + 2) >> 8) & 0xFF)  # tile idx
-			ld_a_imm(0x08)  # OBJ tile bank 1
+			pal_idx = sprite_tile_palette_idxs[idx] if idx < len(sprite_tile_palette_idxs) else 0
+			ld_a_imm(0x08 | (pal_idx & 0x07))  # OBJ tile bank 1 + palette
 			emit(0xEA, (base + 3) & 0xFF, ((base + 3) >> 8) & 0xFF)
 	ld_a_imm((-int(init_scroll_y)) & 0xFF); ldh_imm_a(0x42)
 	ld_a_imm((-int(init_scroll_x)) & 0xFF); ldh_imm_a(0x43)
@@ -7802,7 +7911,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	patch_call(call_copy_bg_attr_patch, copy_addr)
 	return bytes(code)
 
-def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette4, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0):
+def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette_bank, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None):
 	tile_data_len = 384 * 16
 	tilemap_len = 32 * 32
 	attrmap_len = 32 * 32
@@ -7813,8 +7922,7 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	if len(tilemap) != tilemap_len or len(attrmap) != attrmap_len:
 		raise RuntimeError('GBC dynamic physics export map layout mismatch.')
 	bg_palette_bytes = _gbc_palette_bytes_from_palette_bank(bg_palette_bank if bg_palette_bank is not None else palette_bank)
-	obj_bank = [obj_palette4] + [_GBC_DEFAULT_BG_COLORS[: 4] for _ in range(7)]
-	obj_palette_bytes = _gbc_palette_bytes_from_palette_bank(obj_bank)
+	obj_palette_bytes = _gbc_palette_bytes_from_palette_bank(obj_palette_bank)
 	bg_payload = tile_data + tilemap + attrmap
 	collider_rects = list(collider_rects or [])
 	if len(collider_rects) > 31:
@@ -7830,15 +7938,15 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 		])
 	code_start = 0x150
 	rom_size = 0x8000
-	sprite_tile_count = max(1, min(16, int((len(sprite_tile_bytes) if sprite_tile_bytes else 0) // 16)))
+	sprite_tile_count = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_TILES, int((len(sprite_tile_bytes) if sprite_tile_bytes else 0) // 16)))
 	collider_count = len(collider_payload) // 4
-	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y)
+	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs)
 	bg_data_addr = code_start + len(probe)
 	if bg_data_addr & 0xF:
 		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
 	sprite_data_addr = bg_data_addr + len(bg_payload)
 	collider_data_addr = sprite_data_addr + sprite_tile_count * 16
-	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y)
+	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs)
 	total_need = collider_data_addr + len(collider_payload)
 	if total_need > rom_size:
 		raise RuntimeError('GBC dynamic physics export exceeds 32KB ROM size.')
@@ -8039,22 +8147,22 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		ld_a_imm(0); emit(0xEA, gacc_x_addr & 0xFF, (gacc_x_addr >> 8) & 0xFF)
 		ld_a_imm(int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2)); emit(0xEA, x_subacc_addr & 0xFF, (x_subacc_addr >> 8) & 0xFF)
 		ld_a_imm(int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2)); emit(0xEA, y_subacc_addr & 0xFF, (y_subacc_addr >> 8) & 0xFF)
-		sprite_tiles_w = max(1, min(4, int(body.get('sprite_tiles_w', 1))))
-		sprite_tiles_h = max(1, min(4, int(body.get('sprite_tiles_h', 1))))
-		sprite_tile_count_for_body = max(1, min(16, int(body.get('sprite_tile_count', sprite_tiles_w * sprite_tiles_h))))
+		sprite_tiles_w = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(body.get('sprite_tiles_w', 1))))
+		sprite_tiles_h = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(body.get('sprite_tiles_h', 1))))
+		sprite_tile_count_for_body = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_TILES, int(body.get('sprite_tile_count', sprite_tiles_w * sprite_tiles_h))))
 		if sprite_tiles_w * sprite_tiles_h > sprite_tile_count_for_body:
 			sprite_tiles_h = max(1, sprite_tile_count_for_body // sprite_tiles_w)
 		sprite_tile_base = max(0, min(255, int(body.get('sprite_tile_base', 0))))
-		oam_base = max(0, min(39, int(body.get('oam_base', 0))))
+		oam_base = max(0, min(_GBC_RUNTIME_MAX_OAM - 1, int(body.get('oam_base', 0))))
+		sprite_tile_palette_idxs = [max(0, min(7, int(v))) for v in list(body.get('sprite_tile_palette_idxs', []))]
 		palette_idx = max(0, min(7, int(body.get('palette_idx', 0))))
-		attr = 0x08 | (palette_idx & 0x07)  # OBJ tile bank 1 + palette slot
 		for row in range(sprite_tiles_h):
 			for col in range(sprite_tiles_w):
 				tile_idx = row * sprite_tiles_w + col
 				if tile_idx >= sprite_tile_count_for_body:
 					continue
 				base_oam = oam_base + tile_idx
-				if base_oam >= 40:
+				if base_oam >= _GBC_RUNTIME_MAX_OAM:
 					continue
 				oam_addr = 0xFE00 + base_oam * 4
 				ld_a_imm(init_y + init_scroll_y + row * 8 + 16)
@@ -8063,6 +8171,7 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				emit(0xEA, (oam_addr + 1) & 0xFF, ((oam_addr + 1) >> 8) & 0xFF)  # OAM x
 				ld_a_imm(sprite_tile_base + tile_idx)
 				emit(0xEA, (oam_addr + 2) & 0xFF, ((oam_addr + 2) >> 8) & 0xFF)  # tile idx
+				attr = 0x08 | (int(sprite_tile_palette_idxs[tile_idx]) & 0x07) if tile_idx < len(sprite_tile_palette_idxs) else (0x08 | (palette_idx & 0x07))
 				ld_a_imm(attr)
 				emit(0xEA, (oam_addr + 3) & 0xFF, ((oam_addr + 3) >> 8) & 0xFF)  # attrs
 	ld_a_imm((-int(init_scroll_y)) & 0xFF); ldh_imm_a(0x42)
@@ -8105,13 +8214,13 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		gacc_x_addr = base + 5
 		y_hi_addr = base + 6
 		x_hi_addr = base + 7
-		sprite_tiles_w = max(1, min(4, int(body.get('sprite_tiles_w', 1))))
-		sprite_tiles_h = max(1, min(4, int(body.get('sprite_tiles_h', 1))))
-		sprite_tile_count_for_body = max(1, min(16, int(body.get('sprite_tile_count', sprite_tiles_w * sprite_tiles_h))))
+		sprite_tiles_w = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(body.get('sprite_tiles_w', 1))))
+		sprite_tiles_h = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(body.get('sprite_tiles_h', 1))))
+		sprite_tile_count_for_body = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_TILES, int(body.get('sprite_tile_count', sprite_tiles_w * sprite_tiles_h))))
 		if sprite_tiles_w * sprite_tiles_h > sprite_tile_count_for_body:
 			sprite_tiles_h = max(1, sprite_tile_count_for_body // sprite_tiles_w)
-		sprite_w_px = max(8, min(32, sprite_tiles_w * 8))
-		sprite_h_px = max(8, min(32, sprite_tiles_h * 8))
+		sprite_w_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, sprite_tiles_w * 8))
+		sprite_h_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, sprite_tiles_h * 8))
 		offscreen_bottom_y = max(145, min(252, 144 + int(sprite_h_px)))
 		oam_left_visible_min = (256 - int(sprite_w_px)) & 0xFF
 		oam_top_visible_min = (256 - int(sprite_h_px)) & 0xFF
@@ -8367,9 +8476,9 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				other_gacc_x_addr = other_base + 5
 				other_y_hi_addr = other_base + 6
 				other_x_hi_addr = other_base + 7
-				other_sprite_tiles_w = max(1, min(4, int(other_body.get('sprite_tiles_w', 1))))
-				other_sprite_tiles_h = max(1, min(4, int(other_body.get('sprite_tiles_h', 1))))
-				other_sprite_w_px = max(8, min(32, other_sprite_tiles_w * 8))
+				other_sprite_tiles_w = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(other_body.get('sprite_tiles_w', 1))))
+				other_sprite_tiles_h = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(other_body.get('sprite_tiles_h', 1))))
+				other_sprite_w_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, other_sprite_tiles_w * 8))
 				emit(0xFA, other_x_hi_addr & 0xFF, (other_x_hi_addr >> 8) & 0xFF)  # ld a,(other_x_hi)
 				emit(0xFE, 0x80)  # cp $80
 				emit(0xC2, 0x00, 0x00)  # jp nz, next pair
@@ -8533,7 +8642,7 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				patch_abs(patch_pos, body_pair_done_addr)
 			patch_abs(jp_body_pair_skip_patch, body_pair_done_addr)
 		# Update metasprite OAM from solved body position.
-		oam_base = max(0, min(39, int(body.get('oam_base', 0))))
+		oam_base = max(0, min(_GBC_RUNTIME_MAX_OAM - 1, int(body.get('oam_base', 0))))
 		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
 		emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 		jr_oam_x_hi_pos = jr(0x28)  # jr z, x_hi_pos
@@ -8581,7 +8690,7 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				if tile_idx >= sprite_tile_count_for_body:
 					continue
 				base_oam = oam_base + tile_idx
-				if base_oam >= 40:
+				if base_oam >= _GBC_RUNTIME_MAX_OAM:
 					continue
 				oam_addr = 0xFE00 + base_oam * 4
 				emit(0xEA, oam_addr & 0xFF, (oam_addr >> 8) & 0xFF)
@@ -8595,7 +8704,7 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				if tile_idx >= sprite_tile_count_for_body:
 					continue
 				base_oam = oam_base + tile_idx
-				if base_oam >= 40:
+				if base_oam >= _GBC_RUNTIME_MAX_OAM:
 					continue
 				oam_addr = 0xFE00 + base_oam * 4
 				emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
@@ -8673,28 +8782,73 @@ def _gbc_build_dynamic_physics_rom_multi (canvas_160x144, body_specs, bg_palette
 	bodies = []
 	total_tile_count = 0
 	total_oam_count = 0
-	palette_bank_obj = [_GBC_DEFAULT_BG_COLORS[: 4] for _ in range(8)]
+	palette_bank_obj = []
+	def _norm_pal4 (pal4):
+		default_pal = _GBC_DEFAULT_BG_COLORS[: 4]
+		if pal4 is None:
+			return [tuple(c) for c in default_pal]
+		try:
+			out = []
+			for i in range(4):
+				c = pal4[i] if i < len(pal4) else default_pal[i]
+				out.append((int(c[0]), int(c[1]), int(c[2])))
+			return out
+		except Exception:
+			return [tuple(c) for c in default_pal]
+	def _palette_distance (a, b):
+		total = 0
+		for i in range(4):
+			ca = a[i] if i < len(a) else a[-1]
+			cb = b[i] if i < len(b) else b[-1]
+			total += abs(int(ca[0]) - int(cb[0])) + abs(int(ca[1]) - int(cb[1])) + abs(int(ca[2]) - int(cb[2]))
+		return int(total)
 	for spec in body_specs:
 		tile_bytes_raw = spec.get('sprite_tile_bytes', None)
 		tile_bytes = b'' if tile_bytes_raw is None else bytes(tile_bytes_raw)
-		tile_count = max(1, min(16, int(len(tile_bytes) // 16)))
-		sprite_tiles_w = max(1, min(4, int(spec.get('sprite_tiles_w', 1))))
-		sprite_tiles_h = max(1, min(4, int(spec.get('sprite_tiles_h', 1))))
+		tile_count = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_TILES, int(len(tile_bytes) // 16)))
+		sprite_tiles_w = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(spec.get('sprite_tiles_w', 1))))
+		sprite_tiles_h = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(spec.get('sprite_tiles_h', 1))))
 		if sprite_tiles_w * sprite_tiles_h > tile_count:
 			sprite_tiles_h = max(1, tile_count // sprite_tiles_w)
-		oam_need = max(1, min(16, sprite_tiles_w * sprite_tiles_h))
+		oam_need = max(1, min(_GBC_RUNTIME_MAX_OAM, sprite_tiles_w * sprite_tiles_h))
 		if total_tile_count + tile_count > 255:
 			print('GBC export: clamping multi-body sprites to fit VRAM tiles at 255 (from', len(body_specs), 'requested bodies).')
 			break
-		if total_oam_count + oam_need > 40:
+		if total_oam_count + oam_need > _GBC_RUNTIME_MAX_OAM:
 			print('GBC export: clamping multi-body sprites to fit OAM at 40 entries (from', len(body_specs), 'requested bodies).')
 			break
-		palette_idx = min(7, len(bodies))
-		palette4_raw = spec.get('palette4', None)
-		pal4 = list(palette4_raw)[: 4] if palette4_raw is not None else list(_GBC_DEFAULT_BG_COLORS[: 4])
-		if len(pal4) < 4:
-			pal4 = _GBC_DEFAULT_BG_COLORS[: 4]
-		palette_bank_obj[palette_idx] = pal4
+		spec_palette_bank = list(spec.get('palette_bank', []) or [])
+		if not spec_palette_bank:
+			spec_palette_bank = [spec.get('palette4', _GBC_DEFAULT_BG_COLORS[: 4])]
+		spec_palette_bank = [_norm_pal4(p) for p in spec_palette_bank]
+		pal_local_to_global = {}
+		for local_i, pal4 in enumerate(spec_palette_bank):
+			exact_idx = None
+			for gi, gp in enumerate(palette_bank_obj):
+				if gp == pal4:
+					exact_idx = gi
+					break
+			if exact_idx is not None:
+				pal_local_to_global[local_i] = exact_idx
+				continue
+			if len(palette_bank_obj) < 8:
+				palette_bank_obj.append(pal4)
+				pal_local_to_global[local_i] = len(palette_bank_obj) - 1
+				continue
+			best_idx = 0
+			best_dist = None
+			for gi, gp in enumerate(palette_bank_obj):
+				dist = _palette_distance(gp, pal4)
+				if best_dist is None or dist < best_dist:
+					best_dist = dist
+					best_idx = gi
+			pal_local_to_global[local_i] = best_idx
+		palette_idx = int(pal_local_to_global.get(0, 0))
+		spec_tile_palette_idx = [int(v) for v in list(spec.get('tile_palette_idx', []) or [])]
+		sprite_tile_palette_idxs = []
+		for ti in range(tile_count):
+			local_idx = spec_tile_palette_idx[ti] if ti < len(spec_tile_palette_idx) else 0
+			sprite_tile_palette_idxs.append(int(pal_local_to_global.get(local_idx, palette_idx)))
 		body = {
 			'init_x' : int(spec.get('init_x', 0)),
 			'init_y' : int(spec.get('init_y', 0)),
@@ -8710,6 +8864,7 @@ def _gbc_build_dynamic_physics_rom_multi (canvas_160x144, body_specs, bg_palette
 			'sprite_tile_base' : total_tile_count,
 			'oam_base' : total_oam_count,
 			'palette_idx' : palette_idx,
+			'sprite_tile_palette_idxs' : sprite_tile_palette_idxs,
 			'mass_q' : max(1, min(255, int(spec.get('mass_q', 1)))),
 		}
 		bodies.append(body)
@@ -8717,6 +8872,8 @@ def _gbc_build_dynamic_physics_rom_multi (canvas_160x144, body_specs, bg_palette
 		total_oam_count += oam_need
 	if not bodies:
 		raise RuntimeError('GBC dynamic multi-body export requires at least one valid runtime body.')
+	while len(palette_bank_obj) < 8:
+		palette_bank_obj.append([tuple(c) for c in _GBC_DEFAULT_BG_COLORS[: 4]])
 	obj_palette_bytes = _gbc_palette_bytes_from_palette_bank(palette_bank_obj)
 	bg_payload = tile_data + tilemap + attrmap
 	sprite_payload = bytearray()
@@ -9143,8 +9300,8 @@ class _GbcPhase1MirrorSim:
 		self.gacc_y = 0
 		self.grav_step_x = int(grav_step_x)
 		self.grav_step_y = int(grav_step_y)
-		self.sprite_w_px = max(8, min(32, int(sprite_w_px)))
-		self.sprite_h_px = max(8, min(32, int(sprite_h_px)))
+		self.sprite_w_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, int(sprite_w_px)))
+		self.sprite_h_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, int(sprite_h_px)))
 		self.collider_rects = list(collider_rects or [])
 		self.offscreen_bottom_y = max(145, min(252, int(offscreen_bottom_y)))
 		self.velocity_script = velocity_script if isinstance(velocity_script, dict) else None
@@ -9287,8 +9444,8 @@ class _GbcPhase1MirrorSim:
 def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects, velocity_script = None):
 	if sprite_ob is None:
 		return {}
-	sprite_w_px = max(8, min(32, int(sprite_tiles_w) * 8))
-	sprite_h_px = max(8, min(32, int(sprite_tiles_h) * 8))
+	sprite_w_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, int(sprite_tiles_w) * 8))
+	sprite_h_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, int(sprite_tiles_h) * 8))
 	offscreen_bottom_y = max(145, min(252, 144 + int(sprite_tiles_h) * 8))
 	sim = _GbcPhase1MirrorSim(
 		x = init_x,
@@ -9345,6 +9502,17 @@ def _ast_is_this_id_expr (node):
 		and node.attr == 'id'
 	)
 
+def _script_owner_matches_target_keys (owner_name, target_keys):
+	if not isinstance(owner_name, str) or owner_name == '':
+		return False
+	owner_token = owner_name.lstrip('_')
+	for key in list(target_keys or []):
+		if not isinstance(key, str) or key == '':
+			continue
+		if key.lstrip('_') == owner_token:
+			return True
+	return False
+
 def _extract_rigidbody_name_expr (node):
 	if isinstance(node, ast.Name):
 		return ('name_ref', node.id)
@@ -9369,7 +9537,7 @@ def _extract_rigidbody_name_expr (node):
 				return ('this_id', None)
 	return (None, None)
 
-def _extract_gbc_phase1_init_velocity_from_code (code : str, target_keys : set):
+def _extract_gbc_phase1_init_velocity_from_code (code : str, target_keys : set, allow_this_id : bool = False):
 	try:
 		tree = ast.parse(code or '')
 	except Exception:
@@ -9428,7 +9596,10 @@ def _extract_gbc_phase1_init_velocity_from_code (code : str, target_keys : set):
 			rb_kind, rb_value = _extract_rigidbody_name_expr(call.args[0])
 			if rb_kind == 'name_ref' and rb_value in aliases:
 				rb_kind, rb_value = aliases[rb_value]
-			if rb_kind != 'this_id':
+			if rb_kind == 'this_id':
+				if not bool(allow_this_id):
+					continue
+			else:
 				if rb_kind != 'key' or not isinstance(rb_value, str):
 					continue
 				if rb_value not in target_keys:
@@ -9475,12 +9646,13 @@ def _extract_gbc_phase1_init_velocity (world, sprite_ob):
 			if _type != 'gbc-py':
 				continue
 			if isInit:
-				init_codes.append(scriptTxt)
+				init_codes.append((scriptTxt, False))
 			else:
-				update_codes.append(scriptTxt)
+				update_codes.append((scriptTxt, False))
 	for ob in list(getattr(bpy.data, 'objects', []) or []):
 		if not getattr(ob, 'exportOb', False) or ob.hide_get():
 			continue
+		allow_this_id = _script_owner_matches_target_keys(str(getattr(ob, 'name', '') or ''), target_keys)
 		for scriptInfo in list(GetScripts(ob) or []):
 			scriptTxt = scriptInfo[0]
 			isInit = bool(scriptInfo[1])
@@ -9488,17 +9660,17 @@ def _extract_gbc_phase1_init_velocity (world, sprite_ob):
 			if _type != 'gbc-py':
 				continue
 			if isInit:
-				init_codes.append(scriptTxt)
+				init_codes.append((scriptTxt, allow_this_id))
 			else:
-				update_codes.append(scriptTxt)
-	for code in init_codes:
-		match = _extract_gbc_phase1_init_velocity_from_code(code, target_keys)
+				update_codes.append((scriptTxt, allow_this_id))
+	for code, allow_this_id in init_codes:
+		match = _extract_gbc_phase1_init_velocity_from_code(code, target_keys, allow_this_id = allow_this_id)
 		if match is not None:
 			return match
 	# Phase-1 runtime does not execute gbc-py update scripts, but if authors
 	# place a constant velocity set there, use it as startup seed fallback.
-	for code in update_codes:
-		match = _extract_gbc_phase1_init_velocity_from_code(code, target_keys)
+	for code, allow_this_id in update_codes:
+		match = _extract_gbc_phase1_init_velocity_from_code(code, target_keys, allow_this_id = allow_this_id)
 		if match is not None:
 			return match
 	return (0, 0)
@@ -9576,7 +9748,7 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 			# Unknown dynamic guard: don't infer this branch for phase-1 script extraction.
 			return (None, None)
 		return (key_name, jump_vy_max)
-	def _parse_update_code (_code, _target_keys):
+	def _parse_update_code (_code, _target_keys, _allow_this_id = False):
 		try:
 			tree = ast.parse(_code or '')
 		except Exception:
@@ -9648,7 +9820,7 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 						rb_kind, rb_value = _extract_rigidbody_name_expr(call.args[0])
 						if rb_kind == 'name_ref' and rb_value in aliases:
 							rb_kind, rb_value = aliases[rb_value]
-						if rb_kind == 'this_id' or (rb_kind == 'key' and isinstance(rb_value, str) and rb_value in _target_keys):
+						if (rb_kind == 'this_id' and bool(_allow_this_id)) or (rb_kind == 'key' and isinstance(rb_value, str) and rb_value in _target_keys):
 							target_hit = True
 							if isinstance(call.args[1], ast.Name):
 								vel_alias_name = call.args[1].id
@@ -9742,12 +9914,13 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 			if _type != 'gbc-py':
 				continue
 			if isInit:
-				init_codes.append(scriptTxt)
+				init_codes.append((scriptTxt, False))
 			else:
-				update_codes.append(scriptTxt)
+				update_codes.append((scriptTxt, False))
 	for ob in list(getattr(bpy.data, 'objects', []) or []):
 		if not getattr(ob, 'exportOb', False) or ob.hide_get():
 			continue
+		allow_this_id = _script_owner_matches_target_keys(str(getattr(ob, 'name', '') or ''), target_keys)
 		for scriptInfo in list(GetScripts(ob) or []):
 			scriptTxt = scriptInfo[0]
 			isInit = bool(scriptInfo[1])
@@ -9755,11 +9928,11 @@ def _extract_gbc_phase1_velocity_script (world, sprite_ob):
 			if _type != 'gbc-py':
 				continue
 			if isInit:
-				init_codes.append(scriptTxt)
+				init_codes.append((scriptTxt, allow_this_id))
 			else:
-				update_codes.append(scriptTxt)
-	for code in update_codes + init_codes:
-		spec = _parse_update_code(code, target_keys)
+				update_codes.append((scriptTxt, allow_this_id))
+	for code, allow_this_id in (update_codes + init_codes):
+		spec = _parse_update_code(code, target_keys, _allow_this_id = allow_this_id)
 		if isinstance(spec, dict):
 			return spec
 	return None
@@ -11547,13 +11720,14 @@ def BuildGbc (world):
 					# Preserve detail for the controlled/scripted actor, but keep
 					# fallback/spawned rigid bodies lean so we can fit more bodies
 					# within the hard 40-entry OAM runtime budget.
+					needs_large_sprite = int(round(sprite_w)) > 32 or int(round(sprite_h)) > 32
 					if isinstance(velocity_script, dict):
-						sprite_max_tiles = 16
+						sprite_max_tiles = _GBC_RUNTIME_MAX_METASPRITE_TILES if needs_large_sprite else 16
 					elif sprite_name.startswith('__gbc_spawnphys_'):
 						sprite_max_tiles = 6
 					else:
-						sprite_max_tiles = 9
-					sprite_tile, sprite_tiles_w, sprite_tiles_h = _gbc_encode_metasprite_rgba(
+						sprite_max_tiles = _GBC_RUNTIME_MAX_METASPRITE_TILES if needs_large_sprite else 9
+					sprite_tile, sprite_tiles_w, sprite_tiles_h, sprite_pal_bank, sprite_tile_pal_idx = _gbc_encode_metasprite_rgba(
 						sprite_rgba,
 						int(round(sprite_w)),
 						int(round(sprite_h)),
@@ -11575,6 +11749,8 @@ def BuildGbc (world):
 						'sprite_tile_bytes' : sprite_tile,
 						'sprite_tiles_w' : sprite_tiles_w,
 						'sprite_tiles_h' : sprite_tiles_h,
+						'palette_bank' : sprite_pal_bank,
+						'tile_palette_idx' : sprite_tile_pal_idx,
 						'palette4' : sprite_pal,
 						'init_x' : init_x,
 						'init_y' : init_y,
@@ -11592,13 +11768,13 @@ def BuildGbc (world):
 				for i, spec in enumerate(body_specs):
 					tile_bytes_raw = spec.get('sprite_tile_bytes', None)
 					tile_bytes = b'' if tile_bytes_raw is None else bytes(tile_bytes_raw)
-					tile_count = max(1, min(16, int(len(tile_bytes) // 16)))
-					sprite_tiles_w = max(1, min(4, int(spec.get('sprite_tiles_w', 1))))
-					sprite_tiles_h = max(1, min(4, int(spec.get('sprite_tiles_h', 1))))
+					tile_count = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_TILES, int(len(tile_bytes) // 16)))
+					sprite_tiles_w = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(spec.get('sprite_tiles_w', 1))))
+					sprite_tiles_h = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES, int(spec.get('sprite_tiles_h', 1))))
 					if sprite_tiles_w * sprite_tiles_h > tile_count:
 						sprite_tiles_h = max(1, tile_count // sprite_tiles_w)
-					oam_need = max(1, min(16, sprite_tiles_w * sprite_tiles_h))
-					if total_tile_count + tile_count > 255 or total_oam_count + oam_need > 40:
+					oam_need = max(1, min(_GBC_RUNTIME_MAX_OAM, sprite_tiles_w * sprite_tiles_h))
+					if total_tile_count + tile_count > 255 or total_oam_count + oam_need > _GBC_RUNTIME_MAX_OAM:
 						dropped_body_specs = body_specs[i :]
 						body_specs_runtime = body_specs[: i]
 						break
@@ -11710,8 +11886,9 @@ def BuildGbc (world):
 				sprite_w = _gba_to_gbc_cover_len(sprite_w)
 				sprite_h = _gba_to_gbc_cover_len(sprite_h)
 				sprite_name = str(getattr(sprite_ob, 'name', '') or '')
-				sprite_max_tiles = 9 if sprite_name.startswith('__gbc_spawnphys_') else 16
-				sprite_tile, sprite_tiles_w, sprite_tiles_h = _gbc_encode_metasprite_rgba(
+				needs_large_sprite = int(round(sprite_w)) > 32 or int(round(sprite_h)) > 32
+				sprite_max_tiles = _GBC_RUNTIME_MAX_METASPRITE_TILES if needs_large_sprite else (9 if sprite_name.startswith('__gbc_spawnphys_') else 16)
+				sprite_tile, sprite_tiles_w, sprite_tiles_h, sprite_pal_bank, sprite_tile_pal_idx = _gbc_encode_metasprite_rgba(
 					sprite_rgba,
 					int(round(sprite_w)),
 					int(round(sprite_h)),
@@ -11762,7 +11939,7 @@ def BuildGbc (world):
 					init_x,
 					init_y,
 					bg_palette_bank,
-					sprite_pal,
+					sprite_pal_bank,
 					collider_rects = collider_rects,
 					grav_step_x = grav_step_x,
 					grav_step_y = grav_step_y,
@@ -11773,6 +11950,7 @@ def BuildGbc (world):
 					init_scroll_y = scroll_profile.get('init_dy', 0),
 					scroll_step_x = scroll_profile.get('step_dx', 0),
 					scroll_step_y = scroll_profile.get('step_dy', 0),
+					sprite_tile_palette_idxs = sprite_tile_pal_idx,
 				)
 		else:
 			_gba_apply_script_surface_ops(
