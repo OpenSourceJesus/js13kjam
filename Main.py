@@ -6661,6 +6661,10 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			try:
 				exec(code_obj, env, env)
 			except Exception:
+				# Preserve partial mirror state so strict print placeholder
+				# resolution can still read globals initialized before failure.
+				owner_store = mirror_script_locals.setdefault(owner, {})
+				owner_store[scope_key] = env
 				return
 			owner_store = mirror_script_locals.setdefault(owner, {})
 			owner_store[scope_key] = env
