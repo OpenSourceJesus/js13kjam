@@ -2646,7 +2646,7 @@ def _is_runtime_script_binding_name (name):
 		'sim', 'physics',
 	))
 
-def _serialize_print_call_text (call_node, const_env = None, expr_env = None, rb_alias = None, vel_env = None):
+def _serialize_print_call_text (call_node, const_env = None, expr_env = None, rb_alias = None, vel_env = None, owner_name : str = None):
 	if not _is_print_call(call_node):
 		return None
 	const_env = const_env if isinstance(const_env, dict) else {}
@@ -2693,6 +2693,33 @@ def _serialize_print_call_text (call_node, const_env = None, expr_env = None, rb
 		except Exception:
 			return node
 	def _serialize_print_arg (node):
+		def _serialize_owner_lookup_expr (_fn_name):
+			try:
+				owner_candidates = _script_lookup_candidate_names(str(owner_name or ''))
+			except Exception:
+				owner_candidates = [str(owner_name or '')]
+			owner_candidates = [c for c in owner_candidates if isinstance(c, str) and c != '']
+			if owner_candidates == []:
+				return 'None'
+			expr = 'None'
+			for key in reversed(owner_candidates):
+				call_expr = _fn_name + '(' + repr(key) + ')'
+				expr = '(' + call_expr + ' if (' + call_expr + ') is not None else ' + expr + ')'
+			return expr
+		if (
+			isinstance(node, ast.Attribute)
+			and isinstance(node.value, ast.Name)
+			and node.value.id == 'this'
+			and node.attr == 'col'
+		):
+			return '<expr:' + _serialize_owner_lookup_expr('get_collider') + '>'
+		if (
+			isinstance(node, ast.Attribute)
+			and isinstance(node.value, ast.Name)
+			and node.value.id == 'this'
+			and node.attr == 'rb'
+		):
+			return '<expr:' + _serialize_owner_lookup_expr('get_rigidbody') + '>'
 		if isinstance(node, ast.Name) and node.id in rb_alias and isinstance(rb_alias.get(node.id), str):
 			return '<expr:get_rigidbody(' + repr(rb_alias.get(node.id)) + ')>'
 		if isinstance(node, ast.Call):
@@ -3020,7 +3047,7 @@ def _extract_print_calls_from_stmts (stmts, is_init : bool, owner_name : str, pa
 	vel_env = vel_env if isinstance(vel_env, dict) else {}
 	for stmt in list(stmts or []):
 		if isinstance(stmt, ast.Expr) and _is_print_call(stmt.value):
-			text = _serialize_print_call_text(stmt.value, const_env = const_env, expr_env = expr_env, rb_alias = rb_alias, vel_env = vel_env)
+			text = _serialize_print_call_text(stmt.value, const_env = const_env, expr_env = expr_env, rb_alias = rb_alias, vel_env = vel_env, owner_name = owner_name)
 			if text is None:
 				continue
 			info = {
@@ -3608,6 +3635,72 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        ]\n'
 		'    except:\n'
 		'        return [0.0, 0.0]\n'
+		'def _js13k_gbc_resolve_collider_handle(_collider):\n'
+		'    try:\n'
+		'        if isinstance(_collider, (tuple, list)) and len(_collider) == 2:\n'
+		'            int(_collider[0])\n'
+		'            int(_collider[1])\n'
+		'            return _collider\n'
+		'    except:\n'
+		'        pass\n'
+		'    _key = ""\n'
+		'    if isinstance(_collider, str):\n'
+		'        _key = _collider\n'
+		'    else:\n'
+		'        try:\n'
+		'            _key = str(getattr(_collider, "id"))\n'
+		'        except:\n'
+		'            try:\n'
+		'                _key = str(_collider)\n'
+		'            except:\n'
+		'                _key = ""\n'
+		'    if _key == "":\n'
+		'        return _collider\n'
+		'    _candidates = [_key]\n'
+		'    try:\n'
+		'        if _key.startswith("_"):\n'
+		'            _candidates.append(_key[1:])\n'
+		'        else:\n'
+		'            _candidates.append("_" + _key)\n'
+		'        if not _key.endswith(":0"):\n'
+		'            _candidates.append(_key + ":0")\n'
+		'            if _key.startswith("_"):\n'
+		'                _candidates.append(_key[1:] + ":0")\n'
+		'            else:\n'
+		'                _candidates.append("_" + _key + ":0")\n'
+		'        if _key.startswith("__gbc_spawn_"):\n'
+		'            _suffix = _key[len("__gbc_spawn_"): ]\n'
+		'            _phys = "__gbc_spawnphys_" + _suffix\n'
+		'            _candidates.append(_phys)\n'
+		'            _candidates.append("_" + _phys)\n'
+		'            _candidates.append(_phys + ":0")\n'
+		'            _candidates.append("_" + _phys + ":0")\n'
+		'        elif _key.startswith("__gbc_spawnphys_"):\n'
+		'            _suffix = _key[len("__gbc_spawnphys_"): ]\n'
+		'            _draw = "__gbc_spawn_" + _suffix\n'
+		'            _candidates.append(_draw)\n'
+		'            _candidates.append("_" + _draw)\n'
+		'            _candidates.append(_draw + ":0")\n'
+		'            _candidates.append("_" + _draw + ":0")\n'
+		'    except:\n'
+		'        pass\n'
+		'    _sources = []\n'
+		'    for _src_name in ("collidersIds", "colliders"):\n'
+		'        try:\n'
+		'            _src = globals().get(_src_name, {})\n'
+		'        except:\n'
+		'            _src = {}\n'
+		'        if isinstance(_src, dict):\n'
+		'            _sources.append(_src)\n'
+		'    for _src in _sources:\n'
+		'        for _cand in _candidates:\n'
+		'            try:\n'
+		'                _v = _src.get(_cand, None)\n'
+		'                if _v is not None:\n'
+		'                    return _v\n'
+		'            except:\n'
+		'                pass\n'
+		'    return _collider\n'
 		'if (sim is not None) and hasattr(sim, "get_rigid_body_position") and not getattr(sim, "_js13k_gbc_get_rbpos_safe", False):\n'
 		'    _js13k_gbc_orig_get_rigid_body_position = sim.get_rigid_body_position\n'
 		'    def _js13k_gbc_get_rigid_body_position_safe(rigidBody):\n'
@@ -3627,7 +3720,31 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'    _js13k_gbc_orig_get_collider_position = sim.get_collider_position\n'
 		'    def _js13k_gbc_get_collider_position_safe(collider):\n'
 		'        try:\n'
-		'            return _js13k_gbc_unbias_pos_for_get(_js13k_gbc_orig_get_collider_position(collider))\n'
+		'            _orig_collider = collider\n'
+		'            collider = _js13k_gbc_resolve_collider_handle(collider)\n'
+		'            _raw_pos = _js13k_gbc_orig_get_collider_position(collider)\n'
+		'            if _raw_pos is None:\n'
+		'                _fallback_name = ""\n'
+		'                if isinstance(_orig_collider, str):\n'
+		'                    _fallback_name = _orig_collider\n'
+		'                else:\n'
+		'                    try:\n'
+		'                        _fallback_name = str(getattr(_orig_collider, "id"))\n'
+		'                    except:\n'
+		'                        try:\n'
+		'                            _fallback_name = str(_orig_collider)\n'
+		'                        except:\n'
+		'                            _fallback_name = ""\n'
+		'                _get_pos = globals().get("get_object_position", None)\n'
+		'                if callable(_get_pos) and _fallback_name != "":\n'
+		'                    try:\n'
+		'                        _p = _get_pos(_fallback_name)\n'
+		'                        if _p is not None:\n'
+		'                            return _p\n'
+		'                    except:\n'
+		'                        pass\n'
+		'                return [0.0, 0.0]\n'
+		'            return _js13k_gbc_unbias_pos_for_get(_raw_pos)\n'
 		'        except:\n'
 		'            return [0.0, 0.0]\n'
 		'    sim.get_collider_position = _js13k_gbc_get_collider_position_safe\n'
@@ -3635,6 +3752,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'if (sim is not None) and hasattr(sim, "set_collider_position") and not getattr(sim, "_js13k_gbc_set_colpos_safe", False):\n'
 		'    _js13k_gbc_orig_set_collider_position = sim.set_collider_position\n'
 		'    def _js13k_gbc_set_collider_position_safe(collider, pos, wakeUp = True):\n'
+		'        collider = _js13k_gbc_resolve_collider_handle(collider)\n'
 		'        return _js13k_gbc_orig_set_collider_position(collider, _js13k_gbc_bias_pos_for_set(pos), wakeUp)\n'
 		'    sim.set_collider_position = _js13k_gbc_set_collider_position_safe\n'
 		'    sim._js13k_gbc_set_colpos_safe = True\n'
@@ -3734,6 +3852,11 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 		_collect_validated_gbc_script_attributes(_ob)
 	def _build_gbc_local_this_attributes_prefix (_owner_name, _owner_attributes):
 		lines = []
+		reserved_attr_locals = {
+			'this', 'sim', 'physics', 'objects', 'obs', 'rigidBodies', 'rbs', 'colliders', 'cols',
+			'get_rigidbody', 'get_collider', 'get_object_position', 'get_object_rotation',
+			'gbc_get_rigidbody', 'gbc_get_collider', 'gbc_get_object_position', 'gbc_get_object_rotation',
+		}
 		_owner_key = str(_owner_name or '')
 		if _owner_key != '' and _owner_key != '__world__':
 			lines.extend([
@@ -3742,26 +3865,92 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				'    owner_key = str(this.id)',
 				'except:',
 				'    owner_key = %r' %(_owner_key),
+				'owner_keys = [owner_key]',
+				'try:',
+				'    if isinstance(owner_key, str) and owner_key != "":',
+				'        owner_keys.append("_" + owner_key)',
+				'        owner_keys.append(owner_key + ":0")',
+				'        owner_keys.append("_" + owner_key + ":0")',
+				'        if owner_key.startswith("__gbc_spawn_"):',
+				'            phys_key = "__gbc_spawnphys_" + owner_key[len("__gbc_spawn_"): ]',
+				'            owner_keys.append(phys_key)',
+				'            owner_keys.append("_" + phys_key)',
+				'            owner_keys.append(phys_key + ":0")',
+				'            owner_keys.append("_" + phys_key + ":0")',
+				'        elif owner_key.startswith("__gbc_spawnphys_"):',
+				'            draw_key = "__gbc_spawn_" + owner_key[len("__gbc_spawnphys_"): ]',
+				'            owner_keys.append(draw_key)',
+				'            owner_keys.append("_" + draw_key)',
+				'            owner_keys.append(draw_key + ":0")',
+				'            owner_keys.append("_" + draw_key + ":0")',
+				'except:',
+				'    owner_keys = [owner_key]',
+				'try:',
+				'    _rb_ids = globals().get("rigidBodiesIds", {})',
+				'except:',
+				'    _rb_ids = {}',
+				'try:',
+				'    _col_ids = globals().get("collidersIds", {})',
+				'except:',
+				'    _col_ids = {}',
 				'rb = None',
-				'try:',
-				'    rb = rigidBodies[this.id]',
-				'except:',
-				'    rb = None',
-				'try:',
-				'    rb = rb if rb is not None else get_rigidbody(owner_key)',
-				'except:',
+				'for _key in owner_keys:',
 				'    try:',
-				'        rb = rb if rb is not None else rigidBodies[owner_key]',
+				'        rb = rb if rb is not None else get_rigidbody(_key)',
 				'    except:',
 				'        rb = rb',
-				'col = None',
-				'try:',
-				'    col = get_collider(owner_key)',
-				'except:',
+				'    if rb is not None:',
+				'        break',
 				'    try:',
-				'        col = colliders[owner_key]',
+				'        rb = rb if rb is not None else rigidBodies[_key]',
 				'    except:',
-				'        col = None',
+				'        rb = rb',
+				'    if rb is not None:',
+				'        break',
+				'    try:',
+				'        rb = rb if rb is not None else _rb_ids[_key]',
+				'    except:',
+				'        rb = rb',
+				'    if rb is not None:',
+				'        break',
+				'col = None',
+				'col_key_hit = None',
+				'for _key in owner_keys:',
+				'    try:',
+				'        col = col if col is not None else get_collider(_key)',
+				'    except:',
+				'        col = col',
+				'    if col is not None:',
+				'        col_key_hit = _key',
+				'        break',
+				'    try:',
+				'        col = col if col is not None else colliders[_key]',
+				'    except:',
+				'        col = col',
+				'    if col is not None:',
+				'        col_key_hit = _key',
+				'        break',
+				'    try:',
+				'        col = col if col is not None else _col_ids[_key]',
+				'    except:',
+				'        col = col',
+				'    if col is not None:',
+				'        col_key_hit = _key',
+				'        break',
+				'try:',
+				'    print("[gbc-col-debug]", "owner_key=", owner_key, "hit=", col_key_hit, "candidate_count=", len(owner_keys), "col_is_none=", (col is None))',
+				'except:',
+				'    pass',
+				'try:',
+				'    if col is None:',
+				'        _col_ids_keys = []',
+				'        try:',
+				'            _col_ids_keys = list(getattr(_col_ids, "keys", lambda : [])())',
+				'        except:',
+				'            _col_ids_keys = []',
+				'        print("[gbc-col-keys]", "owner_key=", owner_key, "keys=", _col_ids_keys[:10], "key_count=", len(_col_ids_keys))',
+				'except:',
+				'    pass',
 				'try:',
 				'    this.rb = rb',
 				'except:',
@@ -3774,7 +3963,16 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 		if not isinstance(_owner_attributes, dict) or _owner_attributes == {}:
 			return '\n'.join(lines).strip()
 		for _name in sorted(_owner_attributes.keys()):
-			lines.append(str(_name) + ' = ' + repr(_owner_attributes[_name]))
+			if str(_name) in reserved_attr_locals:
+				continue
+			_default_expr = repr(_owner_attributes[_name])
+			lines.extend([
+				str(_name) + ' = ' + _default_expr,
+				'try:',
+				'    ' + str(_name) + ' = getattr(this, ' + repr(str(_name)) + ')',
+				'except:',
+				'    ' + str(_name) + ' = ' + str(_name),
+			])
 		return '\n'.join(lines).strip()
 	def _rewrite_gbc_this_attribute_accesses_to_locals (_code, _owner_attributes):
 		if not isinstance(_code, str) or _code.strip() == '':
@@ -3816,8 +4014,10 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'else:\n'
 			'    obs = {}\n'
 			'obs.update(_js13k_obs_export)\n'
-			'_js13k_rigid_bodies = globals().get("rigidBodies", {})\n'
-			'_js13k_colliders = globals().get("colliders", {})\n'
+			'_js13k_rigid_bodies = globals().get("rigidBodies", globals().get("rigidBodiesIds", {}))\n'
+			'_js13k_colliders = globals().get("colliders", globals().get("collidersIds", {}))\n'
+			'_js13k_rigid_bodies_ids = globals().get("rigidBodiesIds", _js13k_rigid_bodies)\n'
+			'_js13k_colliders_ids = globals().get("collidersIds", _js13k_colliders)\n'
 			'def _js13k_lookup_runtime_handle(_src, _name):\n'
 			'    if not isinstance(_src, dict):\n'
 			'        return None\n'
@@ -3846,11 +4046,17 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'    if not isinstance(_js13k_ob_data, dict):\n'
 			'        continue\n'
 			'    _js13k_ob_data["rb"] = _js13k_lookup_runtime_handle(_js13k_rigid_bodies, _js13k_ob_name)\n'
+			'    if _js13k_ob_data.get("rb", None) is None:\n'
+			'        _js13k_ob_data["rb"] = _js13k_lookup_runtime_handle(_js13k_rigid_bodies_ids, _js13k_ob_name)\n'
 			'    _js13k_ob_data["col"] = _js13k_lookup_runtime_handle(_js13k_colliders, _js13k_ob_name)\n'
+			'    if _js13k_ob_data.get("col", None) is None:\n'
+			'        _js13k_ob_data["col"] = _js13k_lookup_runtime_handle(_js13k_colliders_ids, _js13k_ob_name)\n'
 			'objects = obs\n'
 			'del _obs_existing\n'
 			'del _js13k_rigid_bodies\n'
 			'del _js13k_colliders\n'
+			'del _js13k_rigid_bodies_ids\n'
+			'del _js13k_colliders_ids\n'
 			'del _js13k_lookup_runtime_handle\n'
 			'del _js13k_obs_export\n'
 		)
@@ -4166,10 +4372,10 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				continue
 			entry['code'] = re.sub(r'\bthis\s*\.\s*rb\b', 'rb', str(entry.get('code', '') or ''))
 			entry['code'] = re.sub(r'\bthis\s*\.\s*col\b', 'col', str(entry.get('code', '') or ''))
-			entry['raw_code'] = re.sub(r'\bthis\s*\.\s*rb\b', 'rb', str(entry.get('raw_code', '') or ''))
-			entry['raw_code'] = re.sub(r'\bthis\s*\.\s*col\b', 'col', str(entry.get('raw_code', '') or ''))
-			entry['source_code'] = re.sub(r'\bthis\s*\.\s*rb\b', 'rb', str(entry.get('source_code', entry.get('raw_code', entry.get('code', ''))) or ''))
-			entry['source_code'] = re.sub(r'\bthis\s*\.\s*col\b', 'col', str(entry.get('source_code', '') or ''))
+			# Keep analysis/debug source text untouched so print-expression extraction
+			# can still resolve `this.rb/this.col` against runtime mirror `this`.
+			entry['raw_code'] = str(entry.get('raw_code', '') or '')
+			entry['source_code'] = str(entry.get('source_code', entry.get('raw_code', entry.get('code', ''))) or '')
 		except Exception:
 			pass
 	# Dump final runtime script text (post-prefix/rewrite) for debugging.
@@ -4362,6 +4568,7 @@ templateScripts = {}
 scripts = {}
 scriptLocals = {}
 _currentInstanceName = None
+_gbc_spawn_owner_pos_overrides = {}
 
 class _ThisObject:
 	def __init__ (self, name):
@@ -4420,6 +4627,51 @@ def _normalize_script_lookup_key (name):
 			out += ch
 	return out
 
+def _append_script_lookup_candidate (_out, _seen, _value):
+	try:
+		s = str(_value)
+	except Exception:
+		return
+	if s == '' or s in _seen:
+		return
+	_seen.add(s)
+	_out.append(s)
+
+def _script_lookup_candidate_names (name):
+	candidates = []
+	seen = set()
+	_append_script_lookup_candidate(candidates, seen, name)
+	if not isinstance(name, str):
+		return candidates
+	base_name = str(name)
+	if base_name.startswith('_'):
+		_append_script_lookup_candidate(candidates, seen, base_name[1:])
+	else:
+		_append_script_lookup_candidate(candidates, seen, '_' + base_name)
+	if ':' in base_name:
+		_append_script_lookup_candidate(candidates, seen, base_name.split(':', 1)[0])
+	if not base_name.endswith(':0'):
+		_append_script_lookup_candidate(candidates, seen, base_name + ':0')
+		if base_name.startswith('_'):
+			_append_script_lookup_candidate(candidates, seen, base_name[1:] + ':0')
+		else:
+			_append_script_lookup_candidate(candidates, seen, '_' + base_name + ':0')
+	if base_name.startswith('__gbc_spawn_'):
+		suffix = base_name[len('__gbc_spawn_'):]
+		phys_name = '__gbc_spawnphys_' + suffix
+		_append_script_lookup_candidate(candidates, seen, phys_name)
+		_append_script_lookup_candidate(candidates, seen, '_' + phys_name)
+		_append_script_lookup_candidate(candidates, seen, phys_name + ':0')
+		_append_script_lookup_candidate(candidates, seen, '_' + phys_name + ':0')
+	elif base_name.startswith('__gbc_spawnphys_'):
+		suffix = base_name[len('__gbc_spawnphys_'):]
+		draw_name = '__gbc_spawn_' + suffix
+		_append_script_lookup_candidate(candidates, seen, draw_name)
+		_append_script_lookup_candidate(candidates, seen, '_' + draw_name)
+		_append_script_lookup_candidate(candidates, seen, draw_name + ':0')
+		_append_script_lookup_candidate(candidates, seen, '_' + draw_name + ':0')
+	return candidates
+
 def _resolve_script_lookup (sourceDict, name):
 	src = sourceDict
 	if not isinstance(src, dict):
@@ -4438,25 +4690,30 @@ def _resolve_script_lookup (sourceDict, name):
 			src = {}
 	if not isinstance(src, dict):
 		return None
-	if name in src:
-		value = src[name]
+	candidate_names = _script_lookup_candidate_names(name)
+	for candidate in candidate_names:
+		if candidate not in src:
+			continue
+		value = src[candidate]
 		if value is not None:
 			return value
-	if isinstance(name, str):
-		if name.startswith('_'):
-			value = src.get(name[1:])
-			if value is not None:
-				return value
-		else:
-			value = src.get('_' + name)
-			if value is not None:
-				return value
-		nameNorm = _normalize_script_lookup_key(name)
+	for candidate in candidate_names:
+		if not isinstance(candidate, str):
+			continue
+		nameNorm = _normalize_script_lookup_key(candidate)
+		if nameNorm == '':
+			continue
 		for k, v in list(src.items()):
 			if not isinstance(k, str):
 				continue
 			kNorm = _normalize_script_lookup_key(k)
-			if kNorm == nameNorm or kNorm.endswith('_' + nameNorm) or kNorm.endswith(nameNorm):
+			if (
+				kNorm == nameNorm
+				or kNorm.endswith('_' + nameNorm)
+				or kNorm.endswith(nameNorm)
+				or kNorm.startswith(nameNorm + '_')
+				or kNorm.startswith(nameNorm)
+			):
 				return v
 	return None
 
@@ -4475,7 +4732,17 @@ class _ScriptLookupDict:
 		self._source = source
 	def _source_dict (self):
 		src = self._source() if callable(self._source) else self._source
-		return src if isinstance(src, dict) else {}
+		if isinstance(src, _ScriptLookupDict):
+			# Guard against accidental wrapper cycles.
+			return src._source_dict()
+		if isinstance(src, dict):
+			return src
+		try:
+			if hasattr(src, 'items'):
+				return dict(src.items())
+		except Exception:
+			pass
+		return {}
 	def __getitem__ (self, name):
 		src = self._source_dict()
 		if name in src:
@@ -4520,20 +4787,100 @@ def _get_script_locals (instanceName, scriptKey, this):
 	localsDict['cols'] = localsDict['colliders']
 	localsDict['sim'] = sim
 	localsDict['physics'] = sim
-	localsDict['get_rigidbody'] = (
-		lambda name : _resolve_script_lookup_from_sources(
-			name,
-			rigidBodiesIds,
-			globals().get('rigidBodies', {}),
-		)
-	)
-	localsDict['get_collider'] = (
-		lambda name : _resolve_script_lookup_from_sources(
-			name,
-			collidersIds,
-			globals().get('colliders', {}),
-		)
-	)
+	def _safe_lookup_handle (_name, *sources):
+		try:
+			key = str(_name)
+		except Exception:
+			key = ''
+		candidates = [key]
+		if isinstance(key, str) and key != '':
+			if key.startswith('_'):
+				candidates.append(key[1:])
+			else:
+				candidates.append('_' + key)
+			if not key.endswith(':0'):
+				candidates.append(key + ':0')
+				if key.startswith('_'):
+					candidates.append(key[1:] + ':0')
+				else:
+					candidates.append('_' + key + ':0')
+			if key.startswith('__gbc_spawn_'):
+				suffix = key[len('__gbc_spawn_'):]
+				phys = '__gbc_spawnphys_' + suffix
+				candidates.extend([phys, '_' + phys, phys + ':0', '_' + phys + ':0'])
+			elif key.startswith('__gbc_spawnphys_'):
+				suffix = key[len('__gbc_spawnphys_'):]
+				draw = '__gbc_spawn_' + suffix
+				candidates.extend([draw, '_' + draw, draw + ':0', '_' + draw + ':0'])
+		for src in list(sources or []):
+			src_dict = src if isinstance(src, dict) else {}
+			if not isinstance(src_dict, dict):
+				try:
+					if hasattr(src, 'items'):
+						src_dict = dict(src.items())
+				except Exception:
+					src_dict = {}
+			for cand in candidates:
+				try:
+					v = src_dict.get(cand, None)
+				except Exception:
+					v = None
+				if v is not None:
+					return v
+		return None
+	def _safe_get_rigidbody (name):
+		return _safe_lookup_handle(name, rigidBodiesIds, globals().get('rigidBodies', {}))
+	def _safe_get_collider (name):
+		return _safe_lookup_handle(name, collidersIds, globals().get('colliders', {}))
+	def _safe_get_object_position (name):
+		_fn = __import__('builtins').globals().get('get_object_position')
+		if callable(_fn):
+			return _fn(name)
+		rb = _safe_get_rigidbody(name)
+		if rb is not None:
+			try:
+				return sim.get_rigid_body_position(rb)
+			except Exception:
+				pass
+		col = _safe_get_collider(name)
+		if col is not None:
+			try:
+				return sim.get_collider_position(col)
+			except Exception:
+				pass
+		_spawn_pos = _safe_lookup_handle(name, __import__('builtins').globals().get('_gbc_spawn_owner_pos_overrides', {}))
+		if isinstance(_spawn_pos, (list, tuple)) and len(_spawn_pos) >= 2:
+			try:
+				return [float(_spawn_pos[0]), float(_spawn_pos[1])]
+			except Exception:
+				pass
+		return [0.0, 0.0]
+	def _safe_get_object_rotation (name):
+		_fn = __import__('builtins').globals().get('get_object_rotation')
+		if callable(_fn):
+			return _fn(name)
+		rb = _safe_get_rigidbody(name)
+		if rb is not None:
+			try:
+				return sim.get_rigid_body_rotation(rb)
+			except Exception:
+				pass
+		col = _safe_get_collider(name)
+		if col is not None:
+			try:
+				return sim.get_collider_rotation(col)
+			except Exception:
+				pass
+		return 0.0
+	# Keep helper callables stable across frames even when script locals persist.
+	localsDict['get_rigidbody'] = _safe_get_rigidbody
+	localsDict['get_collider'] = _safe_get_collider
+	localsDict['get_object_position'] = _safe_get_object_position
+	localsDict['get_object_rotation'] = _safe_get_object_rotation
+	localsDict['gbc_get_rigidbody'] = _safe_get_rigidbody
+	localsDict['gbc_get_collider'] = _safe_get_collider
+	localsDict['gbc_get_object_position'] = _safe_get_object_position
+	localsDict['gbc_get_object_rotation'] = _safe_get_object_rotation
 	return localsDict
 
 def _exec_script (code, instanceName, this, phase, scriptKey):
@@ -4683,12 +5030,23 @@ def radians (ang):
 	return float(math.radians(ang))
 
 def get_object_position (name):
-	if name in rigidBodiesIds:
-		return sim.get_rigid_body_position(rigidBodiesIds[name])
-	elif name in collidersIds:
-		return sim.get_collider_position(collidersIds[name])
-	else:
-		raise ValueError('name needs to refer to a rigid body or a collider found in rigidBodiesIds or collidersIds')
+	rigid_body = _resolve_script_lookup_from_sources(name, rigidBodiesIds, globals().get('rigidBodies', {}))
+	if rigid_body is not None:
+		return sim.get_rigid_body_position(rigid_body)
+	collider = _resolve_script_lookup_from_sources(name, collidersIds, globals().get('colliders', {}))
+	if collider is not None:
+		return sim.get_collider_position(collider)
+	# Visual-only fallback for exported spawned draw proxies.
+	try:
+		for candidate in _script_lookup_candidate_names(name):
+			if candidate in surfacesRects and candidate in pivots:
+				return add(surfacesRects[candidate].topleft, pivots[candidate])
+			if candidate in surfacesRects:
+				rect = surfacesRects[candidate]
+				return [float(rect.centerx), float(rect.centery)]
+	except Exception:
+		pass
+	raise ValueError('name needs to refer to a rigid body or a collider found in rigidBodiesIds or collidersIds')
 
 def get_object_rotation (name):
 	if name in rigidBodiesIds:
@@ -6752,30 +7110,65 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 			def _lookup_runtime_handle (_dict, _name):
 				if not isinstance(_dict, dict):
 					return None
-				if _name in _dict:
-					direct_exact = _dict[_name]
-					if direct_exact is not None:
-						return direct_exact
-				if isinstance(_name, str):
-					if _name.startswith('_'):
-						direct = _dict.get(_name[1:])
-						if direct is not None:
-							return direct
-					else:
-						direct = _dict.get('_' + _name)
-						if direct is not None:
-							return direct
-					name_norm = _name.lstrip('_').lower()
+				def _norm (_s):
+					try:
+						s = str(_s)
+					except Exception:
+						return ''
+					s = s.lstrip('_').lower()
+					out = ''
+					for ch in s:
+						if ('a' <= ch <= 'z') or ('0' <= ch <= '9') or ch == '_':
+							out += ch
+					return out
+				try:
+					candidates = _script_lookup_candidate_names(_name)
+				except Exception:
+					candidates = [_name]
+				for candidate in list(candidates or []):
+					try:
+						if candidate in _dict:
+							val = _dict[candidate]
+							if val is not None:
+								return val
+					except Exception:
+						pass
+				for candidate in list(candidates or []):
+					if not isinstance(candidate, str):
+						continue
+					name_norm = _norm(candidate)
+					if name_norm == '':
+						continue
 					for k, v in list(_dict.items()):
 						if not isinstance(k, str):
 							continue
-						k_norm = k.lstrip('_').lower()
-						if k_norm == name_norm or k_norm.endswith('_' + name_norm) or k_norm.endswith(name_norm):
+						k_norm = _norm(k)
+						if (
+							k_norm == name_norm
+							or k_norm.endswith('_' + name_norm)
+							or k_norm.endswith(name_norm)
+							or k_norm.startswith(name_norm + '_')
+							or k_norm.startswith(name_norm)
+						):
 							return v
 				return None
 			class _EvalLocals(dict):
 				def __missing__ (self, key):
 					return None
+			def _get_rigidbody_for_print (_name):
+				val = _lookup_runtime_handle(rigid_bodies_named, _name)
+				if val is None:
+					val = _lookup_runtime_handle(rigid_bodies_runtime, _name)
+				if val is None and isinstance(_name, str) and _name != '':
+					return _name
+				return val
+			def _get_collider_for_print (_name):
+				val = _lookup_runtime_handle(colliders_named, _name)
+				if val is None:
+					val = _lookup_runtime_handle(colliders_runtime, _name)
+				if val is None and isinstance(_name, str) and _name != '':
+					return _name
+				return val
 			protected_names = set((
 				'int', 'float', 'type', 'str', 'repr', 'len', 'list', 'tuple', 'dict',
 				'round', 'abs', 'max', 'min', 'bool', 'hasattr', 'getattr', 'callable',
@@ -6820,8 +7213,8 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 				'collidersIds' : colliders_runtime,
 				'sim' : sim_runtime,
 				'physics' : sim_runtime,
-				'get_rigidbody' : (lambda name : _lookup_runtime_handle(rigid_bodies_named, name)),
-				'get_collider' : (lambda name : _lookup_runtime_handle(colliders_named, name)),
+				'get_rigidbody' : (lambda name : _get_rigidbody_for_print(name)),
+				'get_collider' : (lambda name : _get_collider_for_print(name)),
 				'js13k_vec_update' : (lambda seq, idx, rhs, op = 'set': (
 					(lambda _lst: (
 						_lst.__setitem__(
@@ -6848,6 +7241,7 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 					)(list(seq if isinstance(seq, (list, tuple)) else []))
 				)),
 			})
+			eval_locals['this'] = extra_env.get('this', runtime_globals.get('this', None))
 			for k, v in const_env.items():
 				if re.fullmatch(r'[A-Za-z_]\w*', str(k)) and _is_simple_const_value(v):
 					name = str(k)
@@ -7324,6 +7718,100 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				for k, v in runtime_env.items():
 					if k not in env:
 						env[k] = v
+			def _mirror_lookup_handle (_name, *sources):
+				try:
+					key = str(_name)
+				except Exception:
+					key = ''
+				candidates = [key]
+				if isinstance(key, str) and key != '':
+					if key.startswith('_'):
+						candidates.append(key[1:])
+					else:
+						candidates.append('_' + key)
+					if not key.endswith(':0'):
+						candidates.append(key + ':0')
+						if key.startswith('_'):
+							candidates.append(key[1:] + ':0')
+						else:
+							candidates.append('_' + key + ':0')
+					if key.startswith('__gbc_spawn_'):
+						suffix = key[len('__gbc_spawn_'):]
+						phys = '__gbc_spawnphys_' + suffix
+						candidates.extend([phys, '_' + phys, phys + ':0', '_' + phys + ':0'])
+					elif key.startswith('__gbc_spawnphys_'):
+						suffix = key[len('__gbc_spawnphys_'):]
+						draw = '__gbc_spawn_' + suffix
+						candidates.extend([draw, '_' + draw, draw + ':0', '_' + draw + ':0'])
+				for src in list(sources or []):
+					src_dict = src if isinstance(src, dict) else {}
+					if not isinstance(src_dict, dict):
+						try:
+							if hasattr(src, 'items'):
+								src_dict = dict(src.items())
+						except Exception:
+							src_dict = {}
+					for cand in candidates:
+						try:
+							v = src_dict.get(cand, None)
+						except Exception:
+							v = None
+						if v is not None:
+							return v
+				return None
+			def _mirror_get_rigidbody (_name):
+				return _mirror_lookup_handle(_name, env.get('rigidBodiesIds', {}), env.get('rigidBodies', {}))
+			def _mirror_get_collider (_name):
+				return _mirror_lookup_handle(_name, env.get('collidersIds', {}), env.get('colliders', {}))
+			def _mirror_get_object_position (_name):
+				_fn = __import__('builtins').globals().get('get_object_position')
+				if callable(_fn):
+					return _fn(_name)
+				_rb = _mirror_get_rigidbody(_name)
+				if _rb is not None:
+					try:
+						return env.get('sim').get_rigid_body_position(_rb)
+					except Exception:
+						pass
+				_col = _mirror_get_collider(_name)
+				if _col is not None:
+					try:
+						return env.get('sim').get_collider_position(_col)
+					except Exception:
+						pass
+				_spawn_pos = _mirror_lookup_handle(_name, __import__('builtins').globals().get('_gbc_spawn_owner_pos_overrides', {}))
+				if isinstance(_spawn_pos, (list, tuple)) and len(_spawn_pos) >= 2:
+					try:
+						return [float(_spawn_pos[0]), float(_spawn_pos[1])]
+					except Exception:
+						pass
+				return [0.0, 0.0]
+			def _mirror_get_object_rotation (_name):
+				_fn = __import__('builtins').globals().get('get_object_rotation')
+				if callable(_fn):
+					return _fn(_name)
+				_rb = _mirror_get_rigidbody(_name)
+				if _rb is not None:
+					try:
+						return env.get('sim').get_rigid_body_rotation(_rb)
+					except Exception:
+						pass
+				_col = _mirror_get_collider(_name)
+				if _col is not None:
+					try:
+						return env.get('sim').get_collider_rotation(_col)
+					except Exception:
+						pass
+				return 0.0
+			# Keep helper bindings callable even when per-script locals persist.
+			env['get_rigidbody'] = _mirror_get_rigidbody
+			env['get_collider'] = _mirror_get_collider
+			env['get_object_position'] = _mirror_get_object_position
+			env['get_object_rotation'] = _mirror_get_object_rotation
+			env['gbc_get_rigidbody'] = _mirror_get_rigidbody
+			env['gbc_get_collider'] = _mirror_get_collider
+			env['gbc_get_object_position'] = _mirror_get_object_position
+			env['gbc_get_object_rotation'] = _mirror_get_object_rotation
 			if owner != '__world__':
 				this_obj = env.get('this')
 				if this_obj is None:
@@ -7514,9 +8002,28 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			# Mirror runtime does not materialize prefabs; keep spawn calls non-fatal.
 			env.setdefault('spawn_prefab', (lambda *args, **kwargs: None))
 			env.setdefault('__builtins__', __import__('builtins'))
+			def _sync_owner_attr_locals_into_this ():
+				if owner == '__world__':
+					return
+				owner_attributes = script_info.get('owner_attributes', {})
+				if not isinstance(owner_attributes, dict) or owner_attributes == {}:
+					return
+				this_obj = env.get('this')
+				if this_obj is None:
+					return
+				for attr_name in owner_attributes.keys():
+					if not (isinstance(attr_name, str) and attr_name.isidentifier()):
+						continue
+					if attr_name not in env:
+						continue
+					try:
+						setattr(this_obj, attr_name, env.get(attr_name))
+					except Exception:
+						pass
 			try:
 				exec(code_obj, env, env)
 			except Exception as err:
+				_sync_owner_attr_locals_into_this()
 				_log_mirror_script_error(
 					'exec',
 					owner,
@@ -7533,6 +8040,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				owner_store = mirror_script_locals.setdefault(owner, {})
 				owner_store[scope_key] = env
 				return
+			_sync_owner_attr_locals_into_this()
 			owner_store = mirror_script_locals.setdefault(owner, {})
 			owner_store[scope_key] = env
 		def _const_env_for_owner (owner, scope_key = None):
@@ -12568,6 +13076,8 @@ def BuildGbc (world):
 				'rot_deg' : float(-math.degrees(ob.rotation_euler.z)),
 			}
 		fallback_spawn_draw_debug = []
+		global _gbc_spawn_owner_pos_overrides
+		_gbc_spawn_owner_pos_overrides = {}
 		if fallback_spawn_entries:
 			for proxy_ob, override in fallback_spawn_entries:
 				composite_imgs.append(proxy_ob)
@@ -12590,6 +13100,8 @@ def BuildGbc (world):
 				x_gba = float(override.get('x', 0.0))
 				y_gba = float(override.get('y', 0.0))
 				x_gbc, y_gbc = _gba_to_gbc_cover_point(x_gba, y_gba)
+				# Script-space positions are X-right, Y-up (negative is down).
+				_gbc_spawn_owner_pos_overrides[str(proxy_ob.name)] = [float(x_gbc), float(-y_gbc)]
 				w_gbc = _gba_to_gbc_cover_len(tw)
 				h_gbc = _gba_to_gbc_cover_len(th)
 				visible = not ((x_gbc + w_gbc) <= 0 or x_gbc >= 160 or (y_gbc + h_gbc) <= 0 or y_gbc >= 144)
