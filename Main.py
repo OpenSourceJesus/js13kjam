@@ -7227,6 +7227,22 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 		if not isinstance(per_script_locals, dict):
 			per_script_locals = {}
 		mirror_script_locals = {}
+		mirror_owner_attrs_by_scope = {}
+		mirror_owner_attrs_by_owner = {}
+		for _mirror_info in mirror_scripts:
+			if not isinstance(_mirror_info, dict):
+				continue
+			_owner_attrs = _mirror_info.get('owner_attributes', {})
+			if not isinstance(_owner_attrs, dict) or _owner_attrs == {}:
+				continue
+			_scope_key = _mirror_info.get('scope_key')
+			if _scope_key is not None:
+				mirror_owner_attrs_by_scope[_scope_key] = dict(_owner_attrs)
+			_owner_name = str(_mirror_info.get('owner_name') or '__world__')
+			_owner_bucket = mirror_owner_attrs_by_owner.setdefault(_owner_name, {})
+			for _attr_name, _attr_value in _owner_attrs.items():
+				if isinstance(_attr_name, str) and _attr_name not in _owner_bucket:
+					_owner_bucket[_attr_name] = _attr_value
 		def _owner_scopes (owner):
 			out = {}
 			owner_scope = per_script_locals.get(owner, {})
@@ -7313,6 +7329,16 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				if this_obj is None:
 					this_obj = type('MirrorThis', (), {})()
 					this_obj.id = owner
+				elif isinstance(this_obj, dict):
+					this_dict = dict(this_obj)
+					shadow_this = type('MirrorThis', (), {})()
+					for attr_name, attr_value in this_dict.items():
+						if isinstance(attr_name, str) and attr_name.isidentifier():
+							try:
+								setattr(shadow_this, attr_name, attr_value)
+							except Exception:
+								pass
+					this_obj = shadow_this
 				elif not hasattr(this_obj, 'id'):
 					try:
 						this_obj.id = owner
@@ -7334,6 +7360,18 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					this_obj.col = _resolve_script_lookup_from_sources(owner, colliders_ids, colliders_named)
 				except Exception:
 					pass
+				owner_attrs_fallback = dict(mirror_owner_attrs_by_owner.get(str(owner), {}))
+				if scope_key is not None:
+					scope_owner_attrs = mirror_owner_attrs_by_scope.get(scope_key, {})
+					if isinstance(scope_owner_attrs, dict):
+						owner_attrs_fallback.update(scope_owner_attrs)
+				for attr_name, attr_value in owner_attrs_fallback.items():
+					if isinstance(attr_name, str) and attr_name.isidentifier():
+						try:
+							if not hasattr(this_obj, attr_name):
+								setattr(this_obj, attr_name, attr_value)
+						except Exception:
+							pass
 				env['this'] = this_obj
 				_trace_mirror_this_binding('eval-env', owner, scope_key, frame, this_obj, rigid_bodies_ids, rigid_bodies_named)
 			# Keep mirror-eval aligned with fixed-step handheld runtime semantics.
@@ -7430,10 +7468,25 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key)
 			if owner != '__world__':
 				try:
-					this_obj = type('MirrorThis', (), {})()
-					this_obj.id = owner
-					this_obj.rb = None
-					this_obj.col = None
+					this_obj = env.get('this')
+					if this_obj is None:
+						this_obj = type('MirrorThis', (), {})()
+					if isinstance(this_obj, dict):
+						this_dict = dict(this_obj)
+						shadow_this = type('MirrorThis', (), {})()
+						for attr_name, attr_value in this_dict.items():
+							if isinstance(attr_name, str) and attr_name.isidentifier():
+								try:
+									setattr(shadow_this, attr_name, attr_value)
+								except Exception:
+									pass
+						this_obj = shadow_this
+					if not hasattr(this_obj, 'id'):
+						this_obj.id = owner
+					if not hasattr(this_obj, 'rb'):
+						this_obj.rb = None
+					if not hasattr(this_obj, 'col'):
+						this_obj.col = None
 					rigid_bodies_ids = env.get('rigidBodiesIds', {})
 					rigid_bodies_named = env.get('rigidBodies', {})
 					this_obj.rb = _resolve_script_lookup_from_sources(owner, rigid_bodies_ids, rigid_bodies_named)
@@ -7445,7 +7498,8 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 						for attr_name, attr_value in owner_attributes.items():
 							if isinstance(attr_name, str) and attr_name.isidentifier():
 								try:
-									setattr(this_obj, attr_name, attr_value)
+									if not hasattr(this_obj, attr_name):
+										setattr(this_obj, attr_name, attr_value)
 								except Exception:
 									pass
 					# Per-script locals can carry a stale/null "this"; force the
@@ -13611,7 +13665,7 @@ bpy.types.Object.maxGravityScale = bpy.props.FloatProperty(name = 'Max gravity s
 bpy.types.Object.useMinMaxBounciness = bpy.props.BoolProperty(name = 'Use min and max bounciness', update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'useMinMaxBounciness'))
 bpy.types.Object.minBounciness = bpy.props.FloatProperty(name = 'Min bounciness', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'minBounciness'))
 bpy.types.Object.maxBounciness = bpy.props.FloatProperty(name = 'Max bounciness', min = 0, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'maxBounciness'))
-bpy.types.Collection.exportPrefab = bpy.props.BoolProperty(name = 'Export prefab', default = False, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'exportPrefab'))
+bpy.types.Collection.exportPrefab = bpy.props.BoolProperty(name = 'Export prefab', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'exportPrefab'))
 
 for i in range(MAX_SCRIPTS_PER_OBJECT):
 	setattr(
