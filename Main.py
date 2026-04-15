@@ -3427,10 +3427,10 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			'is_global' : bool(entry.get('is_global')),
 			'source_code' : str(entry.get('source_code', analysis_code) or ''),
 			'source_line_offset' : int(entry.get('source_line_offset', 0) or 0),
-			# Mirror runner resolves print output itself; avoid duplicate script prints.
 			# Execute normalized/prefixed code so runtime compatibility shims
 			# (for example cast_shape adapters) are active during mirror eval.
-			'code' : _strip_print_calls_from_python(exec_code),
+			# Keep print() calls in mirror code so they emit at exact execution time.
+			'code' : exec_code,
 		})
 	# Prefer parser-rebuilt print metadata for script owner/phase pairs we handled,
 	# while preserving backend-provided print calls for any untouched pairs.
@@ -4827,6 +4827,14 @@ def _get_script_locals (instanceName, scriptKey, this):
 					v = None
 				if v is not None:
 					return v
+			# Fuzzy fallback for generated runtime keys (for example spawned
+			# __gbc_spawnphys_* proxies backing a template/source object name).
+			try:
+				v = _resolve_script_lookup(src_dict, key)
+			except Exception:
+				v = None
+			if v is not None:
+				return v
 		return None
 	def _safe_get_rigidbody (name):
 		return _safe_lookup_handle(name, rigidBodiesIds, globals().get('rigidBodies', {}))
@@ -7464,10 +7472,26 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 	mirror_scripts = [s for s in mirror_scripts_raw if isinstance(s, dict) and isinstance(s.get('code'), str)]
 	mirror_init_scripts = [s for s in mirror_scripts if bool(s.get('is_init'))]
 	mirror_update_scripts = [s for s in mirror_scripts if not bool(s.get('is_init'))]
+	realtime_print_pairs = set()
+	for script_info in mirror_scripts:
+		realtime_print_pairs.add((
+			bool(script_info.get('is_init')),
+			str(script_info.get('owner_name') or '__world__'),
+		))
 	_compiled_script_cache = {}
 	init_calls = [p for p in print_calls if p.get('is_init')]
 	update_calls = [p for p in print_calls if not p.get('is_init')]
-	if not init_calls and not update_calls:
+	# Mirror-executed scripts now print in real time. Keep replay only for any
+	# owner/phase pair that does not have executable mirror code.
+	init_calls = [
+		p for p in init_calls
+		if (bool(p.get('is_init')), str(p.get('owner_name') or '__world__')) not in realtime_print_pairs
+	]
+	update_calls = [
+		p for p in update_calls
+		if (bool(p.get('is_init')), str(p.get('owner_name') or '__world__')) not in realtime_print_pairs
+	]
+	if not init_calls and not update_calls and not mirror_init_scripts and not mirror_update_scripts:
 		return
 	runtime_env = runtime_env if isinstance(runtime_env, dict) else {}
 	def _runner():
@@ -7758,6 +7782,14 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 							v = None
 						if v is not None:
 							return v
+					# Fuzzy fallback for generated runtime keys (for example
+					# __gbc_spawnphys_* proxies looked up by source owner name).
+					try:
+						v = _resolve_script_lookup(src_dict, key)
+					except Exception:
+						v = None
+					if v is not None:
+						return v
 				return None
 			def _mirror_get_rigidbody (_name):
 				return _mirror_lookup_handle(_name, env.get('rigidBodiesIds', {}), env.get('rigidBodies', {}))
@@ -8001,7 +8033,30 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			env.setdefault('random', __import__('random'))
 			# Mirror runtime does not materialize prefabs; keep spawn calls non-fatal.
 			env.setdefault('spawn_prefab', (lambda *args, **kwargs: None))
-			env.setdefault('__builtins__', __import__('builtins'))
+			builtins_mod = __import__('builtins')
+			env.setdefault('__builtins__', builtins_mod)
+			def _mirror_runtime_print (*args, sep = ' ', end = '\n', file = None, flush = False):
+				# Preserve direct file-directed prints without mirror prefixing.
+				if file is not None:
+					try:
+						return builtins_mod.print(*args, sep = sep, end = end, file = file, flush = flush)
+					except Exception:
+						return None
+				try:
+					text = sep.join([str(a) for a in list(args or [])]) + str(end)
+				except Exception:
+					try:
+						text = str(args)
+					except Exception:
+						text = ''
+				text = str(text).rstrip('\n')
+				phase = 'init' if bool(script_info.get('is_init')) else 'update'
+				prefix = f"[{script_label}:{phase}:runtime] {owner}"
+				if phase == 'update':
+					prefix += f" [f={int(frame or 0)}]"
+				return builtins_mod.print(f"{prefix} {text}", flush = flush)
+			# Route script print() through mirror logger for stable runtime-prefixed output.
+			env['print'] = _mirror_runtime_print
 			def _sync_owner_attr_locals_into_this ():
 				if owner == '__world__':
 					return
@@ -10884,7 +10939,7 @@ class _GbcPhase1MirrorSim:
 			return (lambda *args, **kwargs: None)
 		return (lambda *args, **kwargs: 0)
 
-def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects, velocity_script = None):
+def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects, velocity_script = None, physics_scene_obs = None, runtime_handle_env = None):
 	if sprite_ob is None:
 		return {}
 	sprite_w_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, int(sprite_tiles_w) * 8))
@@ -10905,9 +10960,45 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 	)
 	handle = str(GetVarNameForObject(sprite_ob))
 	rigid_bodies_named = {}
+	if isinstance(runtime_handle_env, dict):
+		try:
+			_rb_src = runtime_handle_env.get('rigidBodiesIds', runtime_handle_env.get('rigidBodies', {}))
+			if isinstance(_rb_src, dict):
+				rigid_bodies_named.update(_rb_src)
+		except Exception:
+			pass
 	for key in [handle, '_' + handle, str(sprite_ob.name), '_' + str(sprite_ob.name)]:
 		if key:
-			rigid_bodies_named[key] = handle
+			rigid_bodies_named.setdefault(key, handle)
+	colliders_named = {}
+	if isinstance(runtime_handle_env, dict):
+		try:
+			_col_src = runtime_handle_env.get('collidersIds', runtime_handle_env.get('colliders', {}))
+			if isinstance(_col_src, dict):
+				colliders_named.update(_col_src)
+		except Exception:
+			pass
+	def _set_collider_aliases (_ob):
+		if _ob is None:
+			return
+		if not getattr(_ob, 'colliderExists', False):
+			return
+		try:
+			ob_var = str(GetVarNameForObject(_ob))
+		except Exception:
+			ob_var = str(getattr(_ob, 'name', '') or '')
+		ob_name = str(getattr(_ob, 'name', '') or '')
+		if ob_var == '' and ob_name == '':
+			return
+		col_handle = (ob_var if ob_var != '' else ob_name)
+		for key in [ob_var, '_' + ob_var, ob_name, '_' + ob_name]:
+			if isinstance(key, str) and key != '':
+				colliders_named.setdefault(key, col_handle)
+	_set_collider_aliases(sprite_ob)
+	for _ob in list(physics_scene_obs or []):
+		if not getattr(_ob, 'exportOb', False) or _ob.hide_get():
+			continue
+		_set_collider_aliases(_ob)
 	return {
 		'objects' : {},
 		'sim' : sim,
@@ -10915,9 +11006,9 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 		'rigidBodies' : rigid_bodies_named,
 		'rbs' : rigid_bodies_named,
 		'rigidBodiesIds' : rigid_bodies_named,
-		'colliders' : {},
-		'cols' : {},
-		'collidersIds' : {},
+		'colliders' : colliders_named,
+		'cols' : colliders_named,
+		'collidersIds' : colliders_named,
 	}
 
 def _ast_numeric_literal (node):
@@ -12658,6 +12749,27 @@ def _gb_scene_has_physics (scene_obs):
 			return True
 	return False
 
+def _extend_runtime_print_scene_with_offscene_script_physics (scene_obs, script_type):
+	out = list(scene_obs or [])
+	seen = set(out)
+	for ob in bpy.data.objects:
+		if ob in seen:
+			continue
+		if not getattr(ob, 'exportOb', False) or ob.hide_get():
+			continue
+		if not (getattr(ob, 'rigidBodyExists', False) or getattr(ob, 'colliderExists', False)):
+			continue
+		has_matching_script = False
+		for scriptInfo in GetScripts(ob):
+			if str(scriptInfo[2]) == str(script_type):
+				has_matching_script = True
+				break
+		if not has_matching_script:
+			continue
+		out.append(ob)
+		seen.add(ob)
+	return out
+
 def _gb_runtime_is_stubbed (script_runtime):
 	asm_path = (script_runtime or {}).get('assembly_path')
 	if not asm_path or not os.path.isfile(asm_path):
@@ -12736,7 +12848,8 @@ def BuildGba (world):
 				bufsize = 1,
 			)
 			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
-			runtime_print_env = _build_runtime_print_physics_env(world, scene_obs)
+			runtime_print_scene_obs = _extend_runtime_print_scene_with_offscene_script_physics(scene_obs, 'gba-py')
+			runtime_print_env = _build_runtime_print_physics_env(world, runtime_print_scene_obs)
 			mirror_step = None
 			sim_runtime = runtime_print_env.get('sim')
 			if sim_runtime is not None and hasattr(sim_runtime, 'step'):
@@ -13126,6 +13239,7 @@ def BuildGbc (world):
 		physics_scene_obs = list(scene_obs)
 		if fallback_spawn_physics_obs:
 			physics_scene_obs.extend(fallback_spawn_physics_obs)
+		runtime_print_scene_obs = _extend_runtime_print_scene_with_offscene_script_physics(physics_scene_obs, 'gbc-py')
 		physics_image_obs = list(composite_imgs)
 		for ph_ob in fallback_spawn_physics_obs:
 			if ph_ob.type == 'EMPTY' and ph_ob.empty_display_type == 'IMAGE' and getattr(ph_ob, 'data', None):
@@ -13501,8 +13615,9 @@ def BuildGbc (world):
 			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
 			if has_physics:
 				if use_multi_body_runtime:
-					runtime_print_env = _build_runtime_print_physics_env(world, physics_scene_obs, use_gbc_signed_positions = True)
+					runtime_print_env = _build_runtime_print_physics_env(world, runtime_print_scene_obs, use_gbc_signed_positions = True)
 				else:
+					phase1_runtime_handles = _build_runtime_print_physics_env(world, runtime_print_scene_obs, use_gbc_signed_positions = True)
 					runtime_print_env = _build_gbc_phase1_print_env(
 						sprite_ob,
 						sprite_tiles_w,
@@ -13515,9 +13630,11 @@ def BuildGbc (world):
 						grav_step_y,
 						collider_rects,
 						velocity_script = velocity_script if has_physics else None,
+						physics_scene_obs = runtime_print_scene_obs,
+						runtime_handle_env = phase1_runtime_handles,
 					)
 			else:
-				runtime_print_env = _build_runtime_print_physics_env(world, physics_scene_obs)
+				runtime_print_env = _build_runtime_print_physics_env(world, runtime_print_scene_obs)
 			mirror_step = None
 			sim_runtime = runtime_print_env.get('sim')
 			if sim_runtime is not None and hasattr(sim_runtime, 'step'):
@@ -13975,7 +14092,10 @@ def OnUpdateTint (self, ctx):
 
 def Update ():
 	canUpdateProps = True
-	world = bpy.context.world
+	if hasattr(bpy.context, 'world'):
+		world = bpy.context.world
+	else:
+		world = None
 	for txt in bpy.data.texts:
 		idxOfPeriod = txt.name.find('.')
 		if idxOfPeriod != -1:
