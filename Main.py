@@ -4189,6 +4189,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 					and node.value.id == 'this'
 					and isinstance(node.attr, str)
 					and node.attr in _attr_names
+				and isinstance(node.ctx, ast.Load)
 				):
 					return ast.copy_location(ast.Name(id = node.attr, ctx = node.ctx), node)
 				return node
@@ -11724,6 +11725,7 @@ def _rewrite_this_attributes_with_object_values (_code, _ob):
 				and node.value.id == 'this'
 				and isinstance(node.attr, str)
 				and node.attr in attributes
+				and isinstance(node.ctx, ast.Load)
 			):
 				lit = _build_ast_literal_expr_node(attributes.get(node.attr))
 				if lit is not None:
