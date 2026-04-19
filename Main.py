@@ -1870,11 +1870,38 @@ def GetPivot (ob):
 
 def GetImagePosition (ob):
 	size = ob.scale * ob.empty_display_size
+	try:
+		img_data = getattr(ob, 'data', None)
+		img_size = Vector(list(img_data.size) + [0]) if img_data else None
+	except Exception:
+		img_size = None
+	if img_size is not None and img_size.x != 0 and img_size.y != 0:
+		if img_size.x > img_size.y:
+			size.x *= img_size.x / img_size.y
+		else:
+			size.y *= img_size.y / img_size.x
 	pos = ob.location.copy()
 	localOffset = Vector((size.x * ob.empty_image_offset[0], size.y * (ob.empty_image_offset[1] + 1), 0))
 	rotatedOffset = Rotate2DByAngle(localOffset, ob.rotation_euler.z)
 	pos += rotatedOffset
 	pos.y *= -1
+	return pos
+
+def GetImageCenterPosition (ob):
+	size = ob.scale * ob.empty_display_size
+	try:
+		img_data = getattr(ob, 'data', None)
+		img_size = Vector(list(img_data.size) + [0]) if img_data else None
+	except Exception:
+		img_size = None
+	if img_size is not None and img_size.x != 0 and img_size.y != 0:
+		if img_size.x > img_size.y:
+			size.x *= img_size.x / img_size.y
+		else:
+			size.y *= img_size.y / img_size.x
+	pos = GetImagePosition(ob).copy()
+	centerOffset = Rotate2DByAngle(Vector((size.x * 0.5, size.y * 0.5, 0.0)), ob.rotation_euler.z)
+	pos += centerOffset
 	return pos
 
 def HandleCopyObject (ob, pos):
@@ -3428,7 +3455,7 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			'source_code' : str(entry.get('source_code', analysis_code) or ''),
 			'source_line_offset' : int(entry.get('source_line_offset', 0) or 0),
 			# Execute normalized/prefixed code so runtime compatibility shims
-			# (for example cast_shape adapters) are active during mirror eval.
+			# (for example cast_collider adapters) are active during mirror eval.
 			# Keep print() calls in mirror code so they emit at exact execution time.
 			'code' : exec_code,
 		})
@@ -3487,24 +3514,142 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        unknown = [k for k in kwargs if k not in allowed]\n'
 		'        if len(unknown) > 0:\n'
 		'            raise TypeError("world.castShape got unexpected keyword argument(s): " + ", ".join([str(k) for k in unknown]))\n'
+		'def _js13k_gbc_normalize_cast_hit(_hit):\n'
+		'    if _hit is None:\n'
+		'        return None\n'
+		'    try:\n'
+		'        if isinstance(_hit, bool):\n'
+		'            return _hit\n'
+		'    except:\n'
+		'        pass\n'
+		'    try:\n'
+		'        if isinstance(_hit, (int, float)):\n'
+		'            return {"collider": int(_hit), "hit": True}\n'
+		'    except:\n'
+		'        pass\n'
+		'    return _hit\n'
+		'_js13k_gbc_user_cast_shape_guard = {"busy": False, "warned": False}\n'
 		'def _js13k_gbc_user_cast_shape(shape_pos, shape_rot, shape_vel, shape, max_toi, stop_at_penetration, collision_group_filter = None):\n'
 		'    try:\n'
-		'        cast_collider_fn = getattr(sim, "cast_collider", None)\n'
-		'        if callable(cast_collider_fn):\n'
-		'            _cast_pos = _js13k_gbc_bias_pos_for_cast(shape_pos)\n'
-		'            _cast_vel = _js13k_gbc_bias_vel_for_cast(shape_vel)\n'
-		'            return cast_collider_fn(shape, _cast_vel, _cast_pos, shape_rot, collision_group_filter)\n'
-		'    except:\n'
-		'        pass\n'
+		'        if bool(_js13k_gbc_user_cast_shape_guard.get("busy", False)):\n'
+		'            return None\n'
+		'        _js13k_gbc_user_cast_shape_guard["busy"] = True\n'
+		'        _resolved_shape = shape\n'
+		'        try:\n'
+		'            _resolved_shape = _js13k_gbc_resolve_collider_handle(shape)\n'
+		'        except:\n'
+		'            pass\n'
+		'        try:\n'
+		'            cast_shape_guarded_fn = globals().get("_js13k_gbc_orig_cast_shape_guarded", None)\n'
+		'            if callable(cast_shape_guarded_fn):\n'
+		'                _hit = cast_shape_guarded_fn(shape_pos, shape_rot, shape_vel, _resolved_shape, max_toi, stop_at_penetration, collision_group_filter)\n'
+		'                _hit = _js13k_gbc_normalize_cast_hit(_hit)\n'
+		'                _js13k_gbc_cast_debug_log("user_cast_shape_guarded_out", {"hit": _hit})\n'
+		'                if _hit is not None:\n'
+		'                    return _hit\n'
+		'        except RecursionError:\n'
+		'            pass\n'
+		'        except:\n'
+		'            pass\n'
+		'        try:\n'
+		'            cast_shape_orig_fn = globals().get("_js13k_gbc_orig_cast_shape", None)\n'
+		'            if callable(cast_shape_orig_fn):\n'
+		'                _cast_pos = _js13k_gbc_bias_pos_for_cast(shape_pos)\n'
+		'                _cast_vel = _js13k_gbc_bias_vel_for_cast(shape_vel)\n'
+		'                _hit = cast_shape_orig_fn(_cast_pos, shape_rot, _cast_vel, _resolved_shape, max_toi, stop_at_penetration, collision_group_filter)\n'
+		'                _hit = _js13k_gbc_normalize_cast_hit(_hit)\n'
+		'                _js13k_gbc_cast_debug_log("user_cast_shape_orig_out", {"hit": _hit})\n'
+		'                if _hit is not None:\n'
+		'                    return _hit\n'
+		'        except RecursionError:\n'
+		'            pass\n'
+		'        except:\n'
+		'            _js13k_gbc_cast_debug_log("user_cast_shape_orig_error", {"shape": str(shape)})\n'
+		'        _runtime_fns = []\n'
+		'        try:\n'
+		'            _sim_cast_shape = getattr(sim, "cast_shape", None)\n'
+		'            if callable(_sim_cast_shape):\n'
+		'                _runtime_fns.append(("sim.cast_shape", _sim_cast_shape))\n'
+		'        except:\n'
+		'            pass\n'
+		'        try:\n'
+		'            _sim_cast_shape_camel = getattr(sim, "castShape", None)\n'
+		'            if callable(_sim_cast_shape_camel):\n'
+		'                _runtime_fns.append(("sim.castShape", _sim_cast_shape_camel))\n'
+		'        except:\n'
+		'            pass\n'
+		'        try:\n'
+		'            _world = globals().get("world", None)\n'
+		'            _world_cast_shape = getattr(_world, "castShape", None) if _world is not None else None\n'
+		'            if callable(_world_cast_shape):\n'
+		'                _runtime_fns.append(("world.castShape", _world_cast_shape))\n'
+		'        except:\n'
+		'            pass\n'
+		'        _seen_runtime = set()\n'
+		'        for _fn_name, _fn in _runtime_fns:\n'
+		'            try:\n'
+		'                _fn_id = id(_fn)\n'
+		'                if _fn_id in _seen_runtime:\n'
+		'                    continue\n'
+		'                _seen_runtime.add(_fn_id)\n'
+		'            except:\n'
+		'                pass\n'
+		'            try:\n'
+		'                if _fn is _js13k_gbc_user_cast_shape:\n'
+		'                    continue\n'
+		'            except:\n'
+		'                pass\n'
+		'            try:\n'
+		'                _hit = _fn(shape_pos, shape_rot, shape_vel, _resolved_shape, max_toi, stop_at_penetration, collision_group_filter)\n'
+		'                _hit = _js13k_gbc_normalize_cast_hit(_hit)\n'
+		'                if _hit is not None:\n'
+		'                    _js13k_gbc_cast_debug_log("user_cast_shape_runtime_out", {"fn": _fn_name, "hit": _hit})\n'
+		'                if _hit is not None:\n'
+		'                    return _hit\n'
+		'            except RecursionError:\n'
+		'                pass\n'
+		'            except:\n'
+		'                _js13k_gbc_cast_debug_log("user_cast_shape_runtime_error", {"shape": str(shape), "fn": _fn_name})\n'
+		'        if not bool(_js13k_gbc_user_cast_shape_guard.get("warned", False)):\n'
+		'            _js13k_gbc_cast_debug_log("user_cast_shape_unavailable", {"shape": str(shape)})\n'
+		'            _js13k_gbc_user_cast_shape_guard["warned"] = True\n'
+		'        return None\n'
+		'    finally:\n'
+		'        _js13k_gbc_user_cast_shape_guard["busy"] = False\n'
+		'_js13k_gbc_user_cast_collider_guard = {"busy": False, "warned": False}\n'
+		'def _js13k_gbc_user_cast_collider(shape, shape_vel, shape_pos, shape_rot, collision_group_filter = None):\n'
 		'    try:\n'
-		'        cast_shape_fn = getattr(sim, "cast_shape", None)\n'
-		'        if callable(cast_shape_fn):\n'
-		'            return cast_shape_fn(shape_pos, shape_rot, shape_vel, shape, max_toi, stop_at_penetration, collision_group_filter)\n'
+		'        if bool(_js13k_gbc_user_cast_collider_guard.get("busy", False)):\n'
+		'            return None\n'
+		'        _js13k_gbc_user_cast_collider_guard["busy"] = True\n'
+		'        _resolved_shape = shape\n'
+		'        try:\n'
+		'            _resolved_shape = _js13k_gbc_resolve_collider_handle(shape)\n'
+		'        except:\n'
+		'            pass\n'
+		'        _cast_pos = _js13k_gbc_bias_pos_for_cast(shape_pos)\n'
+		'        _cast_vel = _js13k_gbc_bias_vel_for_cast(shape_vel)\n'
+		'        _sim_cast_collider = None\n'
+		'        try:\n'
+		'            _sim_cast_collider = getattr(sim, "cast_collider", None)\n'
+		'        except:\n'
+		'            _sim_cast_collider = None\n'
+		'        if not callable(_sim_cast_collider):\n'
+		'            if not bool(_js13k_gbc_user_cast_collider_guard.get("warned", False)):\n'
+		'                _js13k_gbc_cast_debug_log("user_cast_collider_unavailable", {"shape": str(shape)})\n'
+		'                _js13k_gbc_user_cast_collider_guard["warned"] = True\n'
+		'            return None\n'
+		'        _hit = _sim_cast_collider(_resolved_shape, _cast_vel, _cast_pos, shape_rot, collision_group_filter)\n'
+		'        _hit = _js13k_gbc_normalize_cast_hit(_hit)\n'
+		'        _js13k_gbc_cast_debug_log("user_cast_collider_out", {"hit": _hit})\n'
+		'        return _hit\n'
 		'    except RecursionError:\n'
-		'        _js13k_gbc_cast_debug_log("cast_shape_recursion_blocked_user", {"shape": str(shape)})\n'
+		'        return None\n'
 		'    except:\n'
-		'        pass\n'
-		'    return None\n'
+		'        _js13k_gbc_cast_debug_log("user_cast_collider_error", {"shape": str(shape)})\n'
+		'        return None\n'
+		'    finally:\n'
+		'        _js13k_gbc_user_cast_collider_guard["busy"] = False\n'
 		'def _js13k_gbc_bias_pos_for_cast(_pos):\n'
 		'    try:\n'
 		'        return [\n'
@@ -3522,7 +3667,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'    except:\n'
 		'        return _vel\n'
 		'_js13k_gbc_cast_debug_count = 0\n'
-		'_js13k_gbc_cast_debug_limit = 120\n'
+		'_js13k_gbc_cast_debug_limit = 4000\n'
 		'def _js13k_gbc_cast_debug_log(stage, payload):\n'
 		'    global _js13k_gbc_cast_debug_count\n'
 		'    try:\n'
@@ -3532,7 +3677,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        _js13k_gbc_cast_debug_count = int(_js13k_gbc_cast_debug_count) + 1\n'
 		'    except:\n'
 		'        pass\n'
-		'if (sim is not None) and hasattr(sim, "cast_shape") and not getattr(sim, "_js13k_gbc_cast_shape_validated", False):\n'
+		'if False and (sim is not None) and hasattr(sim, "cast_shape") and not getattr(sim, "_js13k_gbc_cast_shape_validated", False):\n'
 		'    _js13k_gbc_orig_cast_shape = sim.cast_shape\n'
 		'    _js13k_gbc_orig_cast_collider = sim.cast_collider if hasattr(sim, "cast_collider") else None\n'
 		'    def _js13k_gbc_cast_shape_checked(*args, **kwargs):\n'
@@ -3554,7 +3699,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'            try:\n'
 		'                _hit = _js13k_gbc_orig_cast_collider(_args[3], _args[2], _args[0], _args[1], _cgf)\n'
 		'                _js13k_gbc_cast_debug_log("cast_collider", {"hit": _hit, "cgf": _cgf})\n'
-		'                if _hit:\n'
+		'                if _hit is not None:\n'
 		'                    return _hit\n'
 		'            except:\n'
 		'                _js13k_gbc_cast_debug_log("cast_collider_error", {"shape": str(_args[3])})\n'
@@ -3567,7 +3712,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        sim._js13k_gbc_cast_shape_validated = True\n'
 		'    except:\n'
 		'        pass\n'
-		'if (sim is not None) and hasattr(sim, "cast_collider") and not hasattr(sim, "cast_shape"):\n'
+		'if False and (sim is not None) and hasattr(sim, "cast_collider") and not hasattr(sim, "cast_shape"):\n'
 		'    def _js13k_gbc_cast_shape_from_collider(*args, **kwargs):\n'
 		'        _js13k_gbc_validate_cast_shape_args(*args, **kwargs)\n'
 		'        shape_pos = args[0]\n'
@@ -3592,7 +3737,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        sim._js13k_gbc_cast_shape_validated = True\n'
 		'    except:\n'
 		'        pass\n'
-		'if (sim is not None) and (not hasattr(sim, "cast_shape")) and hasattr(sim, "cast_collider"):\n'
+		'if False and (sim is not None) and (not hasattr(sim, "cast_shape")) and hasattr(sim, "cast_collider"):\n'
 		'    class _GbcSimCastShapeProxy:\n'
 		'        def __init__(self, _sim):\n'
 		'            self._sim = _sim\n'
@@ -3601,7 +3746,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        def __getattr__(self, _name):\n'
 		'            return getattr(self._sim, _name)\n'
 		'    sim = _GbcSimCastShapeProxy(sim)\n'
-		'if (sim is not None) and hasattr(sim, "cast_shape") and not getattr(sim, "_js13k_gbc_cast_shape_reentry_guarded", False):\n'
+		'if False and (sim is not None) and hasattr(sim, "cast_shape") and not getattr(sim, "_js13k_gbc_cast_shape_reentry_guarded", False):\n'
 		'    _js13k_gbc_orig_cast_shape_guarded = sim.cast_shape\n'
 		'    _js13k_gbc_cast_shape_guard_state = {"busy": False}\n'
 		'    def _js13k_gbc_cast_shape_no_recurse(*args, **kwargs):\n'
@@ -3641,6 +3786,15 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'            int(_collider[0])\n'
 		'            int(_collider[1])\n'
 		'            return _collider\n'
+		'    except:\n'
+		'        pass\n'
+		'    try:\n'
+		'        if isinstance(_collider, str):\n'
+		'            _parsed = ast.literal_eval(_collider)\n'
+		'            if isinstance(_parsed, (tuple, list)) and len(_parsed) == 2:\n'
+		'                _a = int(_parsed[0])\n'
+		'                _b = int(_parsed[1])\n'
+		'                return (_a, _b)\n'
 		'    except:\n'
 		'        pass\n'
 		'    _key = ""\n'
@@ -3759,8 +3913,8 @@ def _inject_gbc_signed_position_wrappers (code : str):
 	)
 	out_code = str(code or '')
 	try:
-		out_code = re.sub(r'\bsim\s*\.\s*cast_shape\s*\(', '_js13k_gbc_user_cast_shape(', out_code)
-		out_code = re.sub(r'\bphysics\s*\.\s*cast_shape\s*\(', '_js13k_gbc_user_cast_shape(', out_code)
+		out_code = re.sub(r'\bsim\s*\.\s*cast_collider\s*\(', '_js13k_gbc_user_cast_collider(', out_code)
+		out_code = re.sub(r'\bphysics\s*\.\s*cast_collider\s*\(', '_js13k_gbc_user_cast_collider(', out_code)
 	except Exception:
 		pass
 	return prefix + out_code
@@ -3864,7 +4018,10 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				'try:',
 				'    owner_key = str(this.id)',
 				'except:',
-				'    owner_key = %r' %(_owner_key),
+				'    try:',
+				'        owner_key = str(this.name)',
+				'    except:',
+				'        owner_key = %r' %(_owner_key),
 				'owner_keys = [owner_key]',
 				'try:',
 				'    if isinstance(owner_key, str) and owner_key != "":',
@@ -3872,17 +4029,35 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				'        owner_keys.append(owner_key + ":0")',
 				'        owner_keys.append("_" + owner_key + ":0")',
 				'        if owner_key.startswith("__gbc_spawn_"):',
-				'            phys_key = "__gbc_spawnphys_" + owner_key[len("__gbc_spawn_"): ]',
+				'            spawn_suffix = owner_key[len("__gbc_spawn_"): ]',
+				'            phys_key = "__gbc_spawnphys_" + spawn_suffix',
 				'            owner_keys.append(phys_key)',
 				'            owner_keys.append("_" + phys_key)',
 				'            owner_keys.append(phys_key + ":0")',
 				'            owner_keys.append("_" + phys_key + ":0")',
+				'            source_key = spawn_suffix',
+				'            split_idx = source_key.find("_")',
+				'            if split_idx > 0 and source_key[:split_idx].isdigit() and source_key[split_idx + 1:] != "":',
+				'                source_key = source_key[split_idx + 1:]',
+				'            owner_keys.append(source_key)',
+				'            owner_keys.append("_" + source_key)',
+				'            owner_keys.append(source_key + ":0")',
+				'            owner_keys.append("_" + source_key + ":0")',
 				'        elif owner_key.startswith("__gbc_spawnphys_"):',
-				'            draw_key = "__gbc_spawn_" + owner_key[len("__gbc_spawnphys_"): ]',
+				'            spawn_suffix = owner_key[len("__gbc_spawnphys_"): ]',
+				'            draw_key = "__gbc_spawn_" + spawn_suffix',
 				'            owner_keys.append(draw_key)',
 				'            owner_keys.append("_" + draw_key)',
 				'            owner_keys.append(draw_key + ":0")',
 				'            owner_keys.append("_" + draw_key + ":0")',
+				'            source_key = spawn_suffix',
+				'            split_idx = source_key.find("_")',
+				'            if split_idx > 0 and source_key[:split_idx].isdigit() and source_key[split_idx + 1:] != "":',
+				'                source_key = source_key[split_idx + 1:]',
+				'            owner_keys.append(source_key)',
+				'            owner_keys.append("_" + source_key)',
+				'            owner_keys.append(source_key + ":0")',
+				'            owner_keys.append("_" + source_key + ":0")',
 				'except:',
 				'    owner_keys = [owner_key]',
 				'try:',
@@ -3937,6 +4112,25 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				'    if col is not None:',
 				'        col_key_hit = _key',
 				'        break',
+				'if col is None:',
+				'    _resolver = globals().get("_resolve_script_lookup_from_sources", None)',
+				'    if callable(_resolver):',
+				'        for _key in owner_keys:',
+				'            try:',
+				'                col = _resolver(_key, _col_ids, colliders)',
+				'            except:',
+				'                col = col',
+				'            if col is not None:',
+				'                col_key_hit = "resolved:" + str(_key)',
+				'                break',
+				# Keep local `col` stable for gbc-py lowered scripts (this.col -> col)
+				# and make phase1 mirror lookups deterministic by owner id.
+				'if isinstance(owner_key, str) and owner_key != "":',
+				'    col = owner_key',
+				'    if col_key_hit is None:',
+				'        col_key_hit = "owner_key"',
+				'    else:',
+				'        col_key_hit = "owner_key+" + str(col_key_hit)',
 				'try:',
 				'    print("[gbc-col-debug]", "owner_key=", owner_key, "hit=", col_key_hit, "candidate_count=", len(owner_keys), "col_is_none=", (col is None))',
 				'except:',
@@ -4155,6 +4349,9 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				'prefab_name' : str(coll.name),
 				'pos' : [inst_x, inst_y],
 				'rot' : float(inst_rot),
+				# Keep scene instance fan-out stable even when two empties share
+				# the same transform (for example stacked collection instances).
+				'scene_instance_name' : str(getattr(inst_ob, 'name', '') or ''),
 			})
 			for ob in coll.all_objects:
 				spawn_template_obs.add(ob)
@@ -4165,6 +4362,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			prefab_name = str(call.get('prefab_name', '') or '')
 			pos_val = call.get('pos', None)
 			rot_val = float(call.get('rot', 0.0) or 0.0)
+			scene_instance_name = str(call.get('scene_instance_name', '') or '')
 			if pos_val is None:
 				deduped_spawn_calls.append(call)
 				continue
@@ -4175,6 +4373,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				round(x, 4),
 				round(y, 4),
 				round(rot_val, 4),
+				scene_instance_name,
 			)
 			if key in seen_spawn_keys:
 				continue
@@ -4573,6 +4772,8 @@ _gbc_spawn_owner_pos_overrides = {}
 class _ThisObject:
 	def __init__ (self, name):
 		self.name = name
+		# Keep Python mirror `this` compatible with DOM `this.id` in HTML runtime.
+		self.id = name
 	def get_position (self):
 		return get_object_position(self.name)
 	def get_rotation (self):
@@ -4644,6 +4845,20 @@ def _script_lookup_candidate_names (name):
 	if not isinstance(name, str):
 		return candidates
 	base_name = str(name)
+	def _append_template_source_candidates (_spawn_suffix):
+		if not isinstance(_spawn_suffix, str) or _spawn_suffix == '':
+			return
+		source_name = _spawn_suffix
+		sep_idx = source_name.find('_')
+		if sep_idx > 0:
+			prefix = source_name[:sep_idx]
+			rest = source_name[sep_idx + 1:]
+			if prefix.isdigit() and rest != '':
+				source_name = rest
+		_append_script_lookup_candidate(candidates, seen, source_name)
+		_append_script_lookup_candidate(candidates, seen, '_' + source_name)
+		_append_script_lookup_candidate(candidates, seen, source_name + ':0')
+		_append_script_lookup_candidate(candidates, seen, '_' + source_name + ':0')
 	if base_name.startswith('_'):
 		_append_script_lookup_candidate(candidates, seen, base_name[1:])
 	else:
@@ -4663,6 +4878,7 @@ def _script_lookup_candidate_names (name):
 		_append_script_lookup_candidate(candidates, seen, '_' + phys_name)
 		_append_script_lookup_candidate(candidates, seen, phys_name + ':0')
 		_append_script_lookup_candidate(candidates, seen, '_' + phys_name + ':0')
+		_append_template_source_candidates(suffix)
 	elif base_name.startswith('__gbc_spawnphys_'):
 		suffix = base_name[len('__gbc_spawnphys_'):]
 		draw_name = '__gbc_spawn_' + suffix
@@ -4670,6 +4886,7 @@ def _script_lookup_candidate_names (name):
 		_append_script_lookup_candidate(candidates, seen, '_' + draw_name)
 		_append_script_lookup_candidate(candidates, seen, draw_name + ':0')
 		_append_script_lookup_candidate(candidates, seen, '_' + draw_name + ':0')
+		_append_template_source_candidates(suffix)
 	return candidates
 
 def _resolve_script_lookup (sourceDict, name):
@@ -8035,6 +8252,40 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			env.setdefault('spawn_prefab', (lambda *args, **kwargs: None))
 			builtins_mod = __import__('builtins')
 			env.setdefault('__builtins__', builtins_mod)
+			def _format_gbc_cast_debug_text (_txt):
+				try:
+					match = re.match(r'^\[gbc-cast-debug\]\s+([A-Za-z0-9_]+)(?:\s+(.*))?$', str(_txt or ''))
+				except Exception:
+					match = None
+				if match is None:
+					return _txt
+				stage = str(match.group(1) or '').strip()
+				payload_text = str(match.group(2) or '').strip()
+				payload = None
+				if payload_text != '':
+					try:
+						payload = ast.literal_eval(payload_text)
+					except Exception:
+						payload = None
+				if stage == 'cast_shape_recursion_blocked_user':
+					shape = '?'
+					if isinstance(payload, dict):
+						try:
+							shape = str(payload.get('shape', '?'))
+						except Exception:
+							shape = '?'
+					return f"[physics] Ignored recursive world.castShape() call from user script to avoid stack overflow (shape={shape})."
+				if stage == 'cast_shape_recursion_blocked':
+					shape = '?'
+					if isinstance(payload, dict):
+						try:
+							shape = str(payload.get('shape', '?'))
+						except Exception:
+							shape = '?'
+					return f"[physics] Ignored recursive world.castShape() call in runtime wrapper (shape={shape})."
+				if payload_text != '':
+					return f"[physics] cast debug ({stage}): {payload_text}"
+				return f"[physics] cast debug ({stage})"
 			def _mirror_runtime_print (*args, sep = ' ', end = '\n', file = None, flush = False):
 				# Preserve direct file-directed prints without mirror prefixing.
 				if file is not None:
@@ -8050,6 +8301,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					except Exception:
 						text = ''
 				text = str(text).rstrip('\n')
+				text = _format_gbc_cast_debug_text(text)
 				phase = 'init' if bool(script_info.get('is_init')) else 'update'
 				prefix = f"[{script_label}:{phase}:runtime] {owner}"
 				if phase == 'update':
@@ -8795,7 +9047,7 @@ def _gbc_palette4_from_rgba (rgba):
 		return _GBC_DEFAULT_BG_COLORS[: 4]
 	return _gbc_quantize_palette4(pix, lock_extremes = True)
 
-def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None):
+def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0):
 	code = bytearray()
 	def emit(*vals):
 		code.extend(vals)
@@ -8926,6 +9178,16 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		sprite_tiles_h = max(1, sprite_tile_count // sprite_tiles_w)
 	sprite_w_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, sprite_tiles_w * 8))
 	sprite_h_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, sprite_tiles_h * 8))
+	if collision_w_px is None:
+		collision_w_px = int(sprite_w_px)
+	if collision_h_px is None:
+		collision_h_px = int(sprite_h_px)
+	collision_w_px = max(1, min(255, int(collision_w_px)))
+	collision_h_px = max(1, min(255, int(collision_h_px)))
+	collision_off_x_px = max(-127, min(127, int(collision_off_x_px)))
+	collision_off_y_px = max(-127, min(127, int(collision_off_y_px)))
+	collision_off_x_u8 = int(collision_off_x_px) & 0xFF
+	collision_off_y_u8 = int(collision_off_y_px) & 0xFF
 	sprite_tile_palette_idxs = [max(0, min(7, int(v))) for v in list(sprite_tile_palette_idxs or [])]
 	oam_left_visible_min = (256 - int(sprite_w_px)) & 0xFF
 	oam_top_visible_min = (256 - int(sprite_h_px)) & 0xFF
@@ -9192,7 +9454,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0x47)  # ld b,a
 		emit(0x23)  # inc hl ; skip collider h (reserved for phase-2)
 		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)  # ld a,(x)
-		emit(0xC6, sprite_w_px & 0xFF)  # add a, sprite_w
+		emit(0xC6, collision_off_x_u8)  # add a, collision_off_x (signed byte)
+		emit(0xC6, collision_w_px & 0xFF)  # add a, collision_w
 		emit(0xBA)  # cp d
 		jr_collider_next_x_before = jr(0x38)  # jr c, next
 		jr_collider_next_x_touch = jr(0x28)  # jr z, next
@@ -9200,21 +9463,28 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0x80)  # add a,b ; a = collider_right
 		emit(0x47)  # ld b,a
 		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)  # ld a,(x)
+		emit(0xC6, collision_off_x_u8)  # add a, collision_off_x (signed byte)
 		emit(0xB8)  # cp b
 		jr_collider_next_x_after = jr(0x30)  # jr nc, next
 		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # ld a,(y)
+		emit(0xC6, collision_off_y_u8)  # add a, collision_off_y (signed byte)
 		emit(0xBB)  # cp e
 		jr_collider_next_y_below_top = jr(0x30)  # jr nc, next
 		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # ld a,(y)
-		emit(0xC6, sprite_h_px & 0xFF)  # add a, sprite_h
+		emit(0xC6, collision_off_y_u8)  # add a, collision_off_y (signed byte)
+		emit(0xC6, collision_h_px & 0xFF)  # add a, collision_h
 		emit(0xBB)  # cp e
 		jr_collider_next_y_above_top = jr(0x38)  # jr c, next
 		# Hit: snap sprite on top of collider and clear fall velocity.
 		emit(0x7B)  # ld a,e
-		emit(0xD6, sprite_h_px & 0xFF)  # sub sprite_h
+		emit(0xD6, collision_h_px & 0xFF)  # sub collision_h
 		jr_store_hit_y = jr(0x30)  # jr nc, store_y
 		emit(0xAF)  # xor a
 		store_hit_y_addr = len(code)
+		emit(0xD6, collision_off_y_u8)  # sub collision_off_y (signed byte)
+		jr_store_hit_y_off = jr(0x30)  # jr nc, store_y
+		emit(0xAF)  # xor a
+		store_hit_y_final_addr = len(code)
 		emit(0xEA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
 		emit(0xAF)  # xor a
 		emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
@@ -9233,6 +9503,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		patch_jr(jr_collider_done_hit, collider_done_addr)
 		patch_jr(jr_collider_loop, collider_loop_addr)
 		patch_jr(jr_store_hit_y, store_hit_y_addr)
+		patch_jr(jr_store_hit_y_off, store_hit_y_final_addr)
 		collider_skip_addr = len(code)
 		patch_jr(jr_skip_collider_world_x, collider_skip_addr)
 		patch_jr(jr_skip_collider_world_y, collider_skip_addr)
@@ -9351,7 +9622,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	patch_call(call_copy_bg_attr_patch, copy_addr)
 	return bytes(code)
 
-def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette_bank, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None):
+def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette_bank, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0):
 	tile_data_len = 384 * 16
 	tilemap_len = 32 * 32
 	attrmap_len = 32 * 32
@@ -9380,13 +9651,13 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	rom_size = 0x8000
 	sprite_tile_count = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_TILES, int((len(sprite_tile_bytes) if sprite_tile_bytes else 0) // 16)))
 	collider_count = len(collider_payload) // 4
-	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs)
+	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs, collision_w_px = collision_w_px, collision_h_px = collision_h_px, collision_off_x_px = collision_off_x_px, collision_off_y_px = collision_off_y_px)
 	bg_data_addr = code_start + len(probe)
 	if bg_data_addr & 0xF:
 		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
 	sprite_data_addr = bg_data_addr + len(bg_payload)
 	collider_data_addr = sprite_data_addr + sprite_tile_count * 16
-	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs)
+	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs, collision_w_px = collision_w_px, collision_h_px = collision_h_px, collision_off_x_px = collision_off_x_px, collision_off_y_px = collision_off_y_px)
 	total_need = collider_data_addr + len(collider_payload)
 	if total_need > rom_size:
 		raise RuntimeError('GBC dynamic physics export exceeds 32KB ROM size.')
@@ -10652,8 +10923,42 @@ def _gbc_pair_transfer_shift (src_mass_q : int, dst_mass_q : int, damping : floa
 			best_shift = shift
 	return int(best_shift)
 
-def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignored_names = None, scroll_x_gba : float = 0.0, scroll_y_gba : float = 0.0, preconverted_names = None, debug_rows = None):
+def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignored_names = None, scroll_x_gba : float = 0.0, scroll_y_gba : float = 0.0, preconverted_names = None, debug_rows = None, debug_include_ignored : bool = False, rect_meta = None):
 	rects = []
+	def _safe_abs_scale_xy (_ob):
+		try:
+			sc = getattr(_ob, 'scale', (1.0, 1.0, 1.0))
+			sx = abs(float(sc[0])) if len(sc) > 0 else 1.0
+			sy = abs(float(sc[1])) if len(sc) > 1 else 1.0
+			return max(1e-9, sx), max(1e-9, sy)
+		except Exception:
+			return 1.0, 1.0
+	def _collider_center_raw (ob):
+		# Collider centers follow physics object origins (ob.location), not
+		# image blit origins (GetImagePosition top-left semantics).
+		base_x = float(ob.location.x)
+		base_y = -float(ob.location.y)
+		off = getattr(ob, 'colliderPosOff', (0.0, 0.0))
+		try:
+			off_x = float(off[0]) if len(off) > 0 else 0.0
+			off_y = float(off[1]) if len(off) > 1 else 0.0
+		except Exception:
+			off_x = 0.0
+			off_y = 0.0
+		rot_z = 0.0
+		try:
+			rot_z = float(ob.rotation_euler.z)
+		except Exception:
+			rot_z = 0.0
+		rot_off = Rotate2DByAngle(Vector((off_x, off_y, 0.0)), rot_z)
+		cx = float(base_x + rot_off.x)
+		cy = float(base_y - rot_off.y)
+		return cx, cy, {
+			'base' : [base_x, base_y],
+			'off' : [off_x, off_y],
+			'rot_off' : [float(rot_off.x), float(rot_off.y)],
+			'rot_deg' : float(math.degrees(rot_z)),
+		}
 	ignored = set()
 	if isinstance(ignored_name, str) and ignored_name:
 		ignored.add(ignored_name)
@@ -10667,7 +10972,8 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 	for ob in scene_obs or []:
 		if not getattr(ob, 'exportOb', False) or ob.hide_get():
 			continue
-		if ob.name in ignored:
+		is_ignored = (ob.name in ignored)
+		if is_ignored and not bool(debug_include_ignored):
 			continue
 		if not getattr(ob, 'colliderExists', False):
 			continue
@@ -10676,8 +10982,7 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 		if getattr(ob, 'isSensor', False):
 			continue
 		shape = str(getattr(ob, 'colliderShapeType', ''))
-		cx_raw = float(ob.location.x) + float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[0])
-		cy_raw = -float(ob.location.y) - float(getattr(ob, 'colliderPosOff', (0.0, 0.0))[1])
+		cx_raw, cy_raw, center_debug = _collider_center_raw(ob)
 		w = 0.0
 		h = 0.0
 		if shape in ('cuboid', 'roundCuboid'):
@@ -10701,6 +11006,21 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 			continue
 		if w <= 0.0 or h <= 0.0:
 			continue
+		sx, sy = _safe_abs_scale_xy(ob)
+		w = float(w) * float(sx)
+		h = float(h) * float(sy)
+		# Approximate authored collider rotation by expanding to an axis-aligned box.
+		try:
+			rot_total = float(ob.rotation_euler.z) + float(getattr(ob, 'colliderRotOff', 0.0))
+		except Exception:
+			rot_total = 0.0
+		if shape in ('cuboid', 'roundCuboid', 'capsule') and abs(rot_total) > 1e-7:
+			ca = abs(math.cos(rot_total))
+			sa = abs(math.sin(rot_total))
+			w0 = float(w)
+			h0 = float(h)
+			w = (w0 * ca) + (h0 * sa)
+			h = (w0 * sa) + (h0 * ca)
 		if ob.name in preconverted:
 			cx = float(cx_raw) + float(scroll_x_gba)
 			cy = float(cy_raw) + float(scroll_y_gba)
@@ -10719,11 +11039,23 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 		top = max(0, min(255, top))
 		w_gbc = max(1, min(255 - left, int(w_gbc)))
 		h_gbc = max(1, min(255 - top, int(h_gbc)))
-		rects.append((left, top, w_gbc, h_gbc))
+		if not is_ignored:
+			rects.append((left, top, w_gbc, h_gbc))
+			if isinstance(rect_meta, list):
+				rect_meta.append({
+					'name' : str(ob.name),
+					'preconverted' : bool(ob.name in preconverted),
+					'rect' : [left, top, w_gbc, h_gbc],
+				})
 		if isinstance(debug_rows, list):
 			debug_rows.append(
 				str(ob.name) +
+				':ign=' + ('1' if is_ignored else '0') +
 				':pre=' + ('1' if ob.name in preconverted else '0') +
+				',base=' + str([TryChangeToInt(center_debug['base'][0]), TryChangeToInt(center_debug['base'][1])]) +
+				',off=' + str([TryChangeToInt(center_debug['off'][0]), TryChangeToInt(center_debug['off'][1])]) +
+				',roff=' + str([TryChangeToInt(center_debug['rot_off'][0]), TryChangeToInt(center_debug['rot_off'][1])]) +
+				',rot=' + str(TryChangeToInt(center_debug['rot_deg'])) +
 				',raw=' + str([TryChangeToInt(cx_raw), TryChangeToInt(cy_raw)]) +
 				',gba=' + str([TryChangeToInt(cx), TryChangeToInt(cy)]) +
 				',gbc=' + str([left, top, w_gbc, h_gbc])
@@ -10731,7 +11063,7 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 	return rects
 
 class _GbcPhase1MirrorSim:
-	def __init__ (self, x : int, y : int, vx : int, vy : int, grav_step_x : int, grav_step_y : int, sprite_w_px : int, sprite_h_px : int, collider_rects, offscreen_bottom_y : int, velocity_script = None):
+	def __init__ (self, x : int, y : int, vx : int, vy : int, grav_step_x : int, grav_step_y : int, sprite_w_px : int, sprite_h_px : int, collider_rects, offscreen_bottom_y : int, velocity_script = None, collider_positions = None, owner_collider_positions = None, collider_rect_meta = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0):
 		self.x = max(0, min(65535, int(x)))
 		self.y = max(0, min(65535, int(y)))
 		self.vx = int(vx)
@@ -10745,11 +11077,70 @@ class _GbcPhase1MirrorSim:
 		self.collider_rects = list(collider_rects or [])
 		self.offscreen_bottom_y = max(145, min(252, int(offscreen_bottom_y)))
 		self.velocity_script = velocity_script if isinstance(velocity_script, dict) else None
+		self.collider_positions = dict(collider_positions) if isinstance(collider_positions, dict) else {}
+		self.owner_collider_positions = dict(owner_collider_positions) if isinstance(owner_collider_positions, dict) else {}
+		self.collider_rect_meta = list(collider_rect_meta) if isinstance(collider_rect_meta, list) else []
+		self.collision_w_px = max(1, int(collision_w_px if collision_w_px is not None else self.sprite_w_px))
+		self.collision_h_px = max(1, int(collision_h_px if collision_h_px is not None else self.sprite_h_px))
+		self.collision_off_x_px = int(collision_off_x_px)
+		self.collision_off_y_px = int(collision_off_y_px)
 		self.x_subacc = int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2)
 		self.y_subacc = int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2)
+		self._collision_trace_seen = set()
 		self.dead = False
 	def _to_local (self, v):
 		return int(v) - _GBC_POSITION_BIAS
+	def _get_collider_label (self, idx):
+		try:
+			if int(idx) < 0 or int(idx) >= len(self.collider_rect_meta):
+				return ''
+			meta = self.collider_rect_meta[int(idx)]
+			if isinstance(meta, dict):
+				return str(meta.get('name', '') or '')
+		except Exception:
+			pass
+		return ''
+	def _trace_collision_contact (self, source, idx, player_rect, collider_rect):
+		try:
+			sig = (str(source), int(idx))
+			if sig in self._collision_trace_seen:
+				return
+			self._collision_trace_seen.add(sig)
+			_g = __import__('builtins').globals()
+			_trace = _g.get('_append_gbc_trace_lines', None)
+			if not callable(_trace):
+				return
+			ax, ay, aw, ah = [float(v) for v in player_rect]
+			bx, by, bw, bh = [float(v) for v in collider_rect]
+			pen_left = (ax + aw) - bx
+			pen_right = (bx + bw) - ax
+			pen_top = (ay + ah) - by
+			pen_bottom = (by + bh) - ay
+			pens = {
+				'left' : float(pen_left),
+				'right' : float(pen_right),
+				'top' : float(pen_top),
+				'bottom' : float(pen_bottom),
+			}
+			overlap_side = min(pens.keys(), key = lambda k : abs(pens[k]))
+			label = self._get_collider_label(idx)
+			_trace([
+				'[gbc-trace] Phase1Contact'
+				+ ':source=' + str(source)
+				+ ',collider_idx=' + str(int(idx))
+				+ ',collider_name=' + repr(label)
+				+ ',player=' + str([TryChangeToInt(ax), TryChangeToInt(ay), TryChangeToInt(aw), TryChangeToInt(ah)])
+				+ ',collider=' + str([TryChangeToInt(bx), TryChangeToInt(by), TryChangeToInt(bw), TryChangeToInt(bh)])
+				+ ',pen=' + str({
+					'left' : TryChangeToInt(pen_left),
+					'right' : TryChangeToInt(pen_right),
+					'top' : TryChangeToInt(pen_top),
+					'bottom' : TryChangeToInt(pen_bottom),
+				})
+				+ ',side=' + str(overlap_side)
+			])
+		except Exception:
+			pass
 	def _step_gravity_axis (self, step, acc, vel):
 		if step == 0:
 			return acc, vel
@@ -10780,14 +11171,16 @@ class _GbcPhase1MirrorSim:
 	def _is_supported (self):
 		local_y = self._to_local(self.y)
 		local_x = self._to_local(self.x)
-		feet_y = int(local_y) + int(self.sprite_h_px)
+		col_x = int(local_x) + int(self.collision_off_x_px)
+		col_y = int(local_y) + int(self.collision_off_y_px)
+		feet_y = int(col_y) + int(self.collision_h_px)
 		for cx, cy, cw, _ch in self.collider_rects:
 			if feet_y != int(cy):
 				continue
 			right = int(cx) + int(cw)
-			if (int(local_x) + int(self.sprite_w_px)) <= int(cx):
+			if (int(col_x) + int(self.collision_w_px)) <= int(cx):
 				continue
-			if int(local_x) >= right:
+			if int(col_x) >= right:
 				continue
 			return True
 		return False
@@ -10830,19 +11223,27 @@ class _GbcPhase1MirrorSim:
 		if self.vy > 0:
 			local_x = self._to_local(self.x)
 			local_y = self._to_local(self.y)
+			col_x = int(local_x) + int(self.collision_off_x_px)
+			col_y = int(local_y) + int(self.collision_off_y_px)
 			if local_y >= int(self.offscreen_bottom_y):
 				return
-			for cx, cy, cw, _ch in self.collider_rects:
+			for idx, (cx, cy, cw, _ch) in enumerate(self.collider_rects):
 				right = int(cx) + int(cw)
-				if (local_x + self.sprite_w_px) <= int(cx):
+				if (col_x + self.collision_w_px) <= int(cx):
 					continue
-				if local_x >= right:
+				if col_x >= right:
 					continue
-				if local_y >= int(cy):
+				if col_y >= int(cy):
 					continue
-				if (local_y + self.sprite_h_px) < int(cy):
+				if (col_y + self.collision_h_px) < int(cy):
 					continue
-				self.y = (_GBC_POSITION_BIAS + max(0, int(cy) - self.sprite_h_px)) & _GBC_POSITION_MASK
+				self._trace_collision_contact(
+					'step_downward_resolve',
+					idx,
+					[col_x, col_y, self.collision_w_px, self.collision_h_px],
+					[cx, cy, cw, _ch],
+				)
+				self.y = (_GBC_POSITION_BIAS + max(0, int(cy) - self.collision_h_px - self.collision_off_y_px)) & _GBC_POSITION_MASK
 				self.vy = 0
 				self.gacc_y = 0
 				break
@@ -10866,9 +11267,197 @@ class _GbcPhase1MirrorSim:
 			pass
 	def get_rigid_body_position (self, _rigidBody):
 		return [float(self.x - _GBC_POSITION_BIAS), -float(self.y - _GBC_POSITION_BIAS)]
+	def set_collider_position (self, _collider, pos, wakeUp = True):
+		try:
+			key = str(_collider)
+		except Exception:
+			key = ''
+		if key != '' and key in self.collider_positions:
+			try:
+				self.collider_positions[key] = [float(pos[0]), float(pos[1])]
+				return None
+			except Exception:
+				pass
+		return self.set_rigid_body_position(_collider, pos, wakeUp)
+	def get_collider_position (self, _collider):
+		try:
+			key = str(_collider)
+		except Exception:
+			key = ''
+		def _trace_colpos (_source, _lookup_key, _pos):
+			try:
+				_g = __import__('builtins').globals()
+				_seen = _g.get('_gbc_phase1_colpos_trace_seen', None)
+				if not isinstance(_seen, set):
+					_seen = set()
+					_g['_gbc_phase1_colpos_trace_seen'] = _seen
+				_sig = (str(_source), str(_lookup_key), repr(_pos))
+				if _sig in _seen:
+					return
+				_seen.add(_sig)
+				_trace = _g.get('_append_gbc_trace_lines', None)
+				if callable(_trace):
+					_trace([
+						'[gbc-trace] Phase1ColPos'
+						+ f':source={_source}'
+						+ f',input={repr(key)}'
+						+ f',lookup={repr(_lookup_key)}'
+						+ f',out={repr(_pos)}'
+					])
+			except Exception:
+				pass
+		if key != '':
+			# Owner-bound scripts often pass symbolic object keys (for example
+			# __gbc_spawn_* draw-proxy names). Prefer authored collider position
+			# mapped by owner key before touching runtime-handle fallbacks.
+			if key in self.owner_collider_positions:
+				try:
+					p = self.owner_collider_positions[key]
+					out = [float(p[0]), float(p[1])]
+					_trace_colpos('owner_map_direct', key, out)
+					return out
+				except Exception:
+					out = [0.0, 0.0]
+					_trace_colpos('owner_map_direct_err', key, out)
+					return out
+			candidates = [key]
+			if key.startswith('_'):
+				candidates.append(key[1:])
+			else:
+				candidates.append('_' + key)
+			if not key.endswith(':0'):
+				candidates.append(key + ':0')
+				if key.startswith('_'):
+					candidates.append(key[1:] + ':0')
+				else:
+					candidates.append('_' + key + ':0')
+			for cand in candidates:
+				if cand in self.owner_collider_positions:
+					try:
+						p = self.owner_collider_positions[cand]
+						out = [float(p[0]), float(p[1])]
+						_trace_colpos('owner_map_candidate', cand, out)
+						return out
+					except Exception:
+						out = [0.0, 0.0]
+						_trace_colpos('owner_map_candidate_err', cand, out)
+						return out
+				if cand in self.collider_positions:
+					try:
+						p = self.collider_positions[cand]
+						out = [float(p[0]), float(p[1])]
+						_trace_colpos('handle_map', cand, out)
+						return out
+					except Exception:
+						out = [0.0, 0.0]
+						_trace_colpos('handle_map_err', cand, out)
+						return out
+				# Last key-based fallback: resolve visual/runtime object position
+				# by owner key so missing collider handles don't collapse to body pos.
+				try:
+					_spawn_pos_overrides = __import__('builtins').globals().get('_gbc_spawn_owner_pos_overrides', {})
+					if isinstance(_spawn_pos_overrides, dict):
+						_sp = _spawn_pos_overrides.get(cand, None)
+						if _sp is None and isinstance(cand, str) and cand.startswith('__gbc_spawnphys_'):
+							_sp = _spawn_pos_overrides.get('__gbc_spawn_' + cand[len('__gbc_spawnphys_'):], None)
+						if _sp is None and isinstance(cand, str):
+							# Fuzzy fallback for spawn owner maps when exact draw/proxy
+							# key differs between script owner and stored override key.
+							_suffix = ''
+							if cand.startswith('__gbc_spawn_'):
+								_suffix = cand[len('__gbc_spawn_'):]
+							elif cand.startswith('__gbc_spawnphys_'):
+								_suffix = cand[len('__gbc_spawnphys_'):]
+							if _suffix != '':
+								_source = _suffix
+								_sep = _source.find('_')
+								if _sep > 0 and _source[:_sep].isdigit() and _source[_sep + 1:] != '':
+									_source = _source[_sep + 1:]
+								for _k, _v in list(_spawn_pos_overrides.items()):
+									if not isinstance(_k, str):
+										continue
+									if _k.endswith('_' + _suffix):
+										_sp = _v
+										break
+									if _source != '' and _k.endswith('_' + _source):
+										_sp = _v
+										break
+						if isinstance(_sp, (list, tuple)) and len(_sp) >= 2:
+							out = [float(_sp[0]), float(_sp[1])]
+							_trace_colpos('spawn_owner_pos', cand, out)
+							return out
+				except Exception:
+					pass
+				try:
+					_get_pos = __import__('builtins').globals().get('get_object_position', None)
+					if callable(_get_pos):
+						p = _get_pos(cand)
+						if p is not None:
+							out = [float(p[0]), float(p[1])]
+							_trace_colpos('object_pos', cand, out)
+							return out
+				except Exception:
+					pass
+		# Never use dynamic body fallback for spawned owner collider keys; that
+		# path produces misleading moving-body coordinates for static spawn proxies.
+		try:
+			if isinstance(key, str) and (key.startswith('__gbc_spawn_') or key.startswith('__gbc_spawnphys_')):
+				src = ''
+				if key.startswith('__gbc_spawn_'):
+					src = key[len('__gbc_spawn_'):]
+				else:
+					src = key[len('__gbc_spawnphys_'):]
+				src_with_idx = str(src)
+				if src != '':
+					sep_idx = src.find('_')
+					if sep_idx > 0 and src[:sep_idx].isdigit() and src[sep_idx + 1:] != '':
+						src = src[sep_idx + 1:]
+					try:
+						_spawn_pos_overrides = __import__('builtins').globals().get('_gbc_spawn_owner_pos_overrides', {})
+						if isinstance(_spawn_pos_overrides, dict):
+							_sp = _spawn_pos_overrides.get(key, None)
+							if _sp is None and src_with_idx != '':
+								for _k, _v in list(_spawn_pos_overrides.items()):
+									if not isinstance(_k, str):
+										continue
+									if _k.endswith('_' + src_with_idx):
+										_sp = _v
+										break
+							if _sp is None and src != '':
+								for _k, _v in list(_spawn_pos_overrides.items()):
+									if not isinstance(_k, str):
+										continue
+									if _k.endswith('_' + src):
+										_sp = _v
+										break
+							if isinstance(_sp, (list, tuple)) and len(_sp) >= 2:
+								out = [float(_sp[0]), float(_sp[1])]
+								_trace_colpos('spawn_terminal_owner_pos', src, out)
+								return out
+					except Exception:
+						pass
+					_get_pos = __import__('builtins').globals().get('get_object_position', None)
+					if callable(_get_pos):
+						p = _get_pos(src)
+						if p is not None:
+							out = [float(p[0]), float(p[1])]
+							_trace_colpos('spawn_source_terminal', src, out)
+							return out
+				out = [0.0, 0.0]
+				_trace_colpos('spawn_no_body_fallback', key, out)
+				return out
+		except Exception:
+			pass
+		out = self.get_rigid_body_position(_collider)
+		_trace_colpos('body_fallback', key, out)
+		return out
 	def set_rigid_body_rotation (self, _rigidBody, rot, wakeUp = True):
 		return None
 	def get_rigid_body_rotation (self, _rigidBody):
+		return 0.0
+	def set_collider_rotation (self, _collider, rot, wakeUp = True):
+		return None
+	def get_collider_rotation (self, _collider):
 		return 0.0
 	def set_angular_velocity (self, _rigidBody, angVel, wakeUp = True):
 		return None
@@ -10900,26 +11489,25 @@ class _GbcPhase1MirrorSim:
 			and (float(ay) < (float(by) + float(bh)))
 			and ((float(ay) + float(ah)) > float(by))
 		)
-	def cast_shape (self, shapePos, _shapeRot, shapeVel, _shape, maxToi, stopAtPenetration, _collisionGroupFilter = None):
+	def cast_collider (self, shape, shapeVel, shapePos, shapeRot, collisionGroupFilter = None):
 		start = self._coerce_vec2(shapePos, [0.0, 0.0])
 		vel = self._coerce_vec2(shapeVel, [0.0, 0.0])
-		try:
-			toi_max = float(maxToi)
-		except Exception:
-			toi_max = 1.0
-		if toi_max < 0.0:
-			toi_max = 0.0
 		# Mirror scripts use Y-up; collider rects use Y-down.
-		start_x = float(start[0])
-		start_y = -float(start[1])
-		dx = float(vel[0]) * float(toi_max)
-		dy = -float(vel[1]) * float(toi_max)
-		shape_w = float(self.sprite_w_px)
-		shape_h = float(self.sprite_h_px)
-		if bool(stopAtPenetration):
-			for idx, (cx, cy, cw, ch) in enumerate(self.collider_rects):
-				if self._aabb_overlaps(start_x, start_y, shape_w, shape_h, cx, cy, cw, ch):
-					return self._cast_hit_entry(idx, 0.0, start_x, start_y)
+		start_x = float(start[0]) + float(self.collision_off_x_px)
+		start_y = -float(start[1]) + float(self.collision_off_y_px)
+		dx = float(vel[0])
+		dy = -float(vel[1])
+		shape_w = float(self.collision_w_px)
+		shape_h = float(self.collision_h_px)
+		for idx, (cx, cy, cw, ch) in enumerate(self.collider_rects):
+			if self._aabb_overlaps(start_x, start_y, shape_w, shape_h, cx, cy, cw, ch):
+				self._trace_collision_contact(
+					'cast_start_overlap',
+					idx,
+					[start_x, start_y, shape_w, shape_h],
+					[cx, cy, cw, ch],
+				)
+				return self._cast_hit_entry(idx, 0.0, start_x, start_y)
 		max_delta = max(abs(dx), abs(dy), 1.0)
 		steps = max(1, int(math.ceil(max_delta)))
 		for step_i in range(1, steps + 1):
@@ -10928,23 +11516,46 @@ class _GbcPhase1MirrorSim:
 			py = start_y + (dy * t)
 			for idx, (cx, cy, cw, ch) in enumerate(self.collider_rects):
 				if self._aabb_overlaps(px, py, shape_w, shape_h, cx, cy, cw, ch):
-					return self._cast_hit_entry(idx, t * toi_max, px, py)
+					self._trace_collision_contact(
+						'cast_step_overlap',
+						idx,
+						[px, py, shape_w, shape_h],
+						[cx, cy, cw, ch],
+					)
+					return self._cast_hit_entry(idx, t, px, py)
 		return None
-	def cast_collider (self, shape, shapeVel, shapePos, shapeRot, collisionGroupFilter = None):
-		return self.cast_shape(shapePos, shapeRot, shapeVel, shape, 1.0, True, collisionGroupFilter)
 	def __getattr__ (self, _name):
 		# Keep phase1 print-mirror API permissive like script compat shims:
-		# unknown physics helpers (e.g. cast_collider/cast_shape) should be callable.
-		if isinstance(_name, str) and (_name.startswith('get_') or _name.startswith('cast_')):
+		# unknown physics helpers (e.g. cast_collider) should be callable.
+		if isinstance(_name, str) and (
+			_name.startswith('get_')
+			or _name.startswith('cast_')
+			or _name.startswith('cast')
+		):
 			return (lambda *args, **kwargs: None)
 		return (lambda *args, **kwargs: 0)
 
-def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects, velocity_script = None, physics_scene_obs = None, runtime_handle_env = None):
+def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects, velocity_script = None, physics_scene_obs = None, runtime_handle_env = None, collider_rect_meta = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0):
 	if sprite_ob is None:
 		return {}
 	sprite_w_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, int(sprite_tiles_w) * 8))
 	sprite_h_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, int(sprite_tiles_h) * 8))
 	offscreen_bottom_y = max(145, min(252, 144 + int(sprite_tiles_h) * 8))
+	collider_positions = {}
+	owner_collider_positions = {}
+	def _authored_collider_position (_ob):
+		try:
+			pos, _rot = _gba_get_object_pose(_ob)
+		except Exception:
+			return [0.0, 0.0]
+		try:
+			off = getattr(_ob, 'colliderPosOff', (0.0, 0.0))
+			off_x = float(off[0]) if len(off) > 0 else 0.0
+			off_y = float(off[1]) if len(off) > 1 else 0.0
+		except Exception:
+			off_x = 0.0
+			off_y = 0.0
+		return [float(pos[0]) + off_x, float(pos[1]) - off_y]
 	sim = _GbcPhase1MirrorSim(
 		x = init_x,
 		y = init_y,
@@ -10957,6 +11568,13 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 		collider_rects = collider_rects,
 		offscreen_bottom_y = offscreen_bottom_y,
 		velocity_script = velocity_script,
+		collider_positions = collider_positions,
+		owner_collider_positions = owner_collider_positions,
+		collider_rect_meta = collider_rect_meta,
+		collision_w_px = collision_w_px,
+		collision_h_px = collision_h_px,
+		collision_off_x_px = collision_off_x_px,
+		collision_off_y_px = collision_off_y_px,
 	)
 	handle = str(GetVarNameForObject(sprite_ob))
 	rigid_bodies_named = {}
@@ -10981,8 +11599,6 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 	def _set_collider_aliases (_ob):
 		if _ob is None:
 			return
-		if not getattr(_ob, 'colliderExists', False):
-			return
 		try:
 			ob_var = str(GetVarNameForObject(_ob))
 		except Exception:
@@ -10991,9 +11607,38 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 		if ob_var == '' and ob_name == '':
 			return
 		col_handle = (ob_var if ob_var != '' else ob_name)
-		for key in [ob_var, '_' + ob_var, ob_name, '_' + ob_name]:
+		alias_keys = [ob_var, '_' + ob_var, ob_name, '_' + ob_name]
+		for base_key in list(alias_keys):
+			if isinstance(base_key, str) and base_key != '' and not base_key.endswith(':0'):
+				alias_keys.append(base_key + ':0')
+		apos = _authored_collider_position(_ob)
+		owner_aliases = []
+		for base_name in [ob_var, ob_name]:
+			if not (isinstance(base_name, str) and base_name != ''):
+				continue
+			owner_aliases.append(base_name)
+			try:
+				for cand in list(_script_lookup_candidate_names(base_name) or []):
+					if isinstance(cand, str) and cand != '':
+						owner_aliases.append(cand)
+			except Exception:
+				pass
+		for key in alias_keys:
 			if isinstance(key, str) and key != '':
 				colliders_named.setdefault(key, col_handle)
+				collider_positions.setdefault(key, apos)
+				try:
+					mapped_handle = colliders_named.get(key, None)
+				except Exception:
+					mapped_handle = None
+				if mapped_handle is not None:
+					try:
+						collider_positions.setdefault(str(mapped_handle), apos)
+					except Exception:
+						pass
+		for owner_key in owner_aliases:
+			if isinstance(owner_key, str) and owner_key != '':
+				owner_collider_positions.setdefault(owner_key, apos)
 	_set_collider_aliases(sprite_ob)
 	for _ob in list(physics_scene_obs or []):
 		if not getattr(_ob, 'exportOb', False) or _ob.hide_get():
@@ -12257,7 +12902,10 @@ def _gba_get_object_pose (ob):
 	ob.rotation_mode = 'XYZ'
 	rot_deg = math.degrees(ob.rotation_euler.z)
 	if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE':
-		pos = GetImagePosition(ob)
+		# Runtime physics/object transforms use image center coordinates.
+		# Derive center from GetImagePosition so image-position math stays
+		# consistent across export paths.
+		pos = GetImageCenterPosition(ob)
 	else:
 		pos = GetObjectPosition(ob)
 	ob.rotation_mode = prev_rot_mode
@@ -12921,6 +13569,7 @@ def BuildGbc (world):
 		fallback_spawn_entries = []
 		fallback_spawn_source_names = {}
 		fallback_spawn_physics_source_names = {}
+		fallback_spawn_owner_direct_overrides = {}
 		fallback_draw_template_obs = []
 		fallback_surface_source_obs = []
 		fallback_spawn_physics_obs = []
@@ -12943,17 +13592,29 @@ def BuildGbc (world):
 				try:
 					wm_pos = inst_ob.matrix_world.to_translation()
 					wm_rot = inst_ob.matrix_world.to_euler('XYZ')
-					inst_x = float(wm_pos.x)
-					inst_y = float(wm_pos.y)
+					world = bpy.data.worlds[0]
+					scale = float(getattr(world, 'exportScale', 1.0))
+					off = Vector(getattr(world, 'exportOff', [0.0, 0.0]))
+					inst_x = float(wm_pos.x * scale + off.x)
+					inst_y_down = float(-wm_pos.y * scale + off.y)
+					# spawn_prefab fallback call positions use script-space Y-up.
+					inst_y = float(-inst_y_down)
 					inst_rot = float(-math.degrees(wm_rot.z))
 				except Exception:
-					inst_x = float(getattr(inst_ob.location, 'x', 0.0))
-					inst_y = float(getattr(inst_ob.location, 'y', 0.0))
+					world = bpy.data.worlds[0]
+					scale = float(getattr(world, 'exportScale', 1.0))
+					off = Vector(getattr(world, 'exportOff', [0.0, 0.0]))
+					loc = getattr(inst_ob, 'location', Vector((0.0, 0.0, 0.0)))
+					inst_x = float(float(loc.x) * scale + off.x)
+					inst_y_down = float(-float(loc.y) * scale + off.y)
+					inst_y = float(-inst_y_down)
 					inst_rot = float(-math.degrees(getattr(inst_ob.rotation_euler, 'z', 0.0)))
 				fallback_spawn_calls.append({
 					'prefab_name' : str(inst_coll.name),
 					'pos' : [inst_x, inst_y],
 					'rot' : float(inst_rot),
+					# Preserve one fallback spawn per scene instance empty.
+					'scene_instance_name' : str(getattr(inst_ob, 'name', '') or ''),
 				})
 			raw_spawn_call_count = len(fallback_spawn_calls)
 			deduped_spawn_calls = []
@@ -12962,6 +13623,7 @@ def BuildGbc (world):
 				prefab_name = str(call.get('prefab_name', '') or '')
 				pos_val = call.get('pos', None)
 				rot_val = float(call.get('rot', 0.0) or 0.0)
+				scene_instance_name = str(call.get('scene_instance_name', '') or '')
 				if pos_val is None:
 					# Dynamic/unresolved calls cannot be safely deduped by pose.
 					deduped_spawn_calls.append(call)
@@ -12973,6 +13635,7 @@ def BuildGbc (world):
 					round(x, 4),
 					round(y, 4),
 					round(rot_val, 4),
+					scene_instance_name,
 				)
 				if key in seen_spawn_keys:
 					continue
@@ -12988,6 +13651,17 @@ def BuildGbc (world):
 					prefab_name = str(call.get('prefab_name', '') or '')
 					if prefab_name == '':
 						continue
+					spawn_pos = call.get('pos', None)
+					try:
+						spawn_x = float(spawn_pos[0]) if (spawn_pos is not None and len(spawn_pos) > 0) else 0.0
+						spawn_y = float(spawn_pos[1]) if (spawn_pos is not None and len(spawn_pos) > 1) else 0.0
+					except Exception:
+						spawn_x = 0.0
+						spawn_y = 0.0
+					# Seed direct spawn-owner coordinates even when draw/physics proxy
+					# baking is skipped; phase1 print mirror can consume these keys.
+					fallback_spawn_owner_direct_overrides['__gbc_spawn_%i_%s' %(call_idx, prefab_name)] = [spawn_x, spawn_y]
+					fallback_spawn_owner_direct_overrides['__gbc_spawnphys_%i_%s' %(call_idx, prefab_name)] = [spawn_x, spawn_y]
 					coll = bpy.data.collections.get(prefab_name)
 					if not coll or not getattr(coll, 'exportPrefab', False):
 						continue
@@ -13000,9 +13674,13 @@ def BuildGbc (world):
 						if ob.type != 'EMPTY' or ob.empty_display_type != 'IMAGE' or not ob.data or not ob.data.filepath:
 							continue
 						prefab_imgs.append(ob)
+					for ob in prefab_export_obs:
+						ob_name = str(getattr(ob, 'name', '') or '')
+						if ob_name != '':
+							fallback_spawn_owner_direct_overrides['__gbc_spawn_%i_%s' %(call_idx, ob_name)] = [spawn_x, spawn_y]
+							fallback_spawn_owner_direct_overrides['__gbc_spawnphys_%i_%s' %(call_idx, ob_name)] = [spawn_x, spawn_y]
 					if not prefab_imgs:
 						continue
-					spawn_pos = call.get('pos', None)
 					# Fallback spawn calls use gbc/js-style screen-space rotation
 					# (clockwise-positive in Y-down space). The compositor's software
 					# rotate path is counterclockwise-positive, so mirror sign here.
@@ -13022,38 +13700,106 @@ def BuildGbc (world):
 					coll_set = set(coll.all_objects)
 					root_candidates = [ob for ob in prefab_export_obs if ob.parent not in coll_set or ob.parent is None]
 					anchor_ob = root_candidates[0] if root_candidates else prefab_export_obs[0]
+					scene_instance_name = str(call.get('scene_instance_name', '') or '')
 					def _get_fallback_pose (src_ob):
 						# GBC rendering uses screen-space Y-down coordinates, so authored
 						# Blender Z rotation must be mirrored to preserve visual direction.
 						rot_deg = -math.degrees(src_ob.rotation_euler.z)
 						if src_ob.type == 'EMPTY' and src_ob.empty_display_type == 'IMAGE' and getattr(src_ob, 'data', None):
-							return GetImagePosition(src_ob), float(rot_deg)
+							return GetImageCenterPosition(src_ob), float(rot_deg)
 						return Vector((float(src_ob.location.x), float(-src_ob.location.y), 0.0)), float(rot_deg)
-					anchor_pos, anchor_rot = _get_fallback_pose(anchor_ob)
+					if scene_instance_name != '':
+						# Scene collection instances should anchor prefab children to the
+						# collection origin/instance offset, not the first root object.
+						try:
+							inst_off = getattr(coll, 'instance_offset', Vector((0.0, 0.0, 0.0)))
+							anchor_pos = Vector((float(inst_off[0]), float(-inst_off[1]), 0.0))
+						except Exception:
+							anchor_pos = Vector((0.0, 0.0, 0.0))
+						anchor_rot = 0.0
+					else:
+						anchor_pos, anchor_rot = _get_fallback_pose(anchor_ob)
 					req_x_gbc = float(spawn_pos[0]) if len(spawn_pos) > 0 else 0.0
 					req_y_gbc = -float(spawn_pos[1]) if len(spawn_pos) > 1 else 0.0
 					# Fallback spawn calls come from gbc-py scripts; map their GBC
 					# screen-space coords into the 240x160 composite space.
 					req_x, req_y = _gbc_to_gba_cover_point(req_x_gbc, req_y_gbc)
+					def _rotated_bbox_origin_offset (_w, _h, _angle_deg):
+						if abs(float(_angle_deg)) < 1e-7:
+							return (0.0, 0.0)
+						w = max(1.0, float(_w))
+						h = max(1.0, float(_h))
+						rad = math.radians(float(_angle_deg))
+						cos_a = math.cos(rad)
+						sin_a = math.sin(rad)
+						cx = (w - 1.0) * 0.5
+						cy = (h - 1.0) * 0.5
+						def _rot_fwd (px, py):
+							dx = float(px) - cx
+							dy = float(py) - cy
+							return (
+								dx * cos_a + dy * sin_a + cx,
+								-dx * sin_a + dy * cos_a + cy,
+							)
+						minx = float('inf')
+						miny = float('inf')
+						for px, py in ((0.0, 0.0), (w - 1.0, 0.0), (w - 1.0, h - 1.0), (0.0, h - 1.0)):
+							qx, qy = _rot_fwd(px, py)
+							minx = min(minx, qx)
+							miny = min(miny, qy)
+						ox0 = float(math.floor(minx + 1e-9))
+						oy0 = float(math.floor(miny + 1e-9))
+						return (ox0, oy0)
+					def _image_center_to_topleft (_src_ob, _center_x, _center_y, _world_rot_deg):
+						size = _src_ob.scale * _src_ob.empty_display_size
+						try:
+							_img_data = getattr(_src_ob, 'data', None)
+							_img_size = Vector(list(_img_data.size) + [0]) if _img_data else None
+						except Exception:
+							_img_size = None
+						if _img_size is not None and _img_size.x != 0 and _img_size.y != 0:
+							if _img_size.x > _img_size.y:
+								size.x *= _img_size.x / _img_size.y
+							else:
+								size.y *= _img_size.y / _img_size.x
+						# Match compositor dimensions exactly.
+						tw = max(1, int(round(abs(float(size.x)))))
+						th = max(1, int(round(abs(float(size.y)))))
+						ox0, oy0 = _rotated_bbox_origin_offset(tw, th, float(_world_rot_deg))
+						cx = (float(tw) - 1.0) * 0.5
+						cy = (float(th) - 1.0) * 0.5
+						# _gba_rotate_rgba_degrees keeps source center at (cx - ox0, cy - oy0)
+						# in rotated output space, so place that point at requested center.
+						return Vector((float(_center_x) - cx + ox0, float(_center_y) - cy + oy0, 0.0))
 					def _spawn_proxy_for_template_node (template_id, world_x, world_y, world_rot):
 						src_ob = image_obs_by_name.get(template_id)
 						if src_ob is None:
 							return
 						proxy = type('SpawnImageProxy', (), {})()
 						proxy.name = '__gbc_spawn_%i_%s' %(call_idx, src_ob.name)
+						proxy.type = 'EMPTY'
+						proxy.empty_display_type = 'IMAGE'
 						proxy.data = src_ob.data
 						proxy.scale = src_ob.scale
 						proxy.empty_display_size = src_ob.empty_display_size
+						proxy.empty_image_offset = getattr(src_ob, 'empty_image_offset', [0.0, 0.0])
 						proxy.tint = src_ob.tint
 						proxy.color = src_ob.color
-						proxy.location = src_ob.location
+						# Keep helper rotation aligned with draw overrides.
+						proxy_rot_deg = float(world_rot)
+						proxy.rotation_euler = Vector((0.0, 0.0, math.radians(proxy_rot_deg)))
+						# Keep proxy.location at spawned center; derive draw top-left via
+						# GetImagePosition, then add rotated-bbox origin offset to match
+						# _gba_rotate_rgba_degrees expansion behavior.
+						proxy.location = Vector((float(world_x), float(-world_y), 0.0))
+						draw_pos = _image_center_to_topleft(src_ob, world_x, world_y, proxy_rot_deg)
 						fallback_spawn_entries.append((proxy, {
-							'x' : float(world_x),
-							'y' : float(world_y),
+							'x' : float(draw_pos.x),
+							'y' : float(draw_pos.y),
 							'rot_deg' : float(world_rot),
 						}))
 						fallback_spawn_source_names[proxy.name] = src_ob.name
-						baked.append(proxy.name + '<-' + src_ob.name + '@gba(' + str(TryChangeToInt(world_x)) + ',' + str(TryChangeToInt(world_y)) + ')')
+						baked.append(proxy.name + '<-' + src_ob.name + '@gba(' + str(TryChangeToInt(draw_pos.x)) + ',' + str(TryChangeToInt(draw_pos.y)) + ')')
 						if src_ob not in fallback_surface_source_obs:
 							fallback_surface_source_obs.append(src_ob)
 					def _spawn_proxy_for_physics (src_ob, world_x, world_y, world_rot):
@@ -13069,16 +13815,12 @@ def BuildGbc (world):
 						proxy.empty_image_offset = getattr(src_ob, 'empty_image_offset', [0.0, 0.0])
 						proxy.tint = getattr(src_ob, 'tint', [1.0, 1.0, 1.0])
 						proxy.color = getattr(src_ob, 'color', [1.0, 1.0, 1.0, 1.0])
-						proxy.rotation_euler = Vector((0.0, 0.0, math.radians(world_rot)))
-						if proxy.type == 'EMPTY' and proxy.empty_display_type == 'IMAGE' and proxy.data:
-							size = proxy.scale * proxy.empty_display_size
-							local_offset = Vector((size.x * proxy.empty_image_offset[0], size.y * (proxy.empty_image_offset[1] + 1), 0))
-							rotated_offset = Rotate2DByAngle(local_offset, math.radians(world_rot))
-							loc_x = float(world_x) - float(rotated_offset.x)
-							loc_y = -float(world_y) - float(rotated_offset.y)
-						else:
-							loc_x = float(world_x)
-							loc_y = -float(world_y)
+						# Keep proxy helper rotation sign aligned with draw overrides.
+						proxy_rot_deg = float(world_rot)
+						proxy.rotation_euler = Vector((0.0, 0.0, math.radians(proxy_rot_deg)))
+						# Keep physics proxy origin at spawned center.
+						loc_x = float(world_x)
+						loc_y = -float(world_y)
 						proxy.location = Vector((loc_x, loc_y, 0.0))
 						proxy.rigidBodyExists = bool(getattr(src_ob, 'rigidBodyExists', False))
 						proxy.rigidBodyEnable = bool(getattr(src_ob, 'rigidBodyEnable', True))
@@ -13117,7 +13859,7 @@ def BuildGbc (world):
 							proxy.name + '<-' + src_ob.name +
 							':rb=' + ('1' if bool(getattr(src_ob, 'rigidBodyExists', False)) else '0') +
 							',co=' + ('1' if bool(getattr(src_ob, 'colliderExists', False)) else '0') +
-							',rot=' + str(TryChangeToInt(world_rot))
+							',rot=' + str(TryChangeToInt(proxy_rot_deg))
 						)
 					for ob in prefab_export_obs:
 						src_pos, src_rot = _get_fallback_pose(ob)
@@ -13188,9 +13930,31 @@ def BuildGbc (world):
 				# Mirror Blender Z rotation for the Y-down GBC composite render.
 				'rot_deg' : float(-math.degrees(ob.rotation_euler.z)),
 			}
+		try:
+			pose_rows = []
+			for ob in composite_imgs:
+				if not (ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE' and getattr(ob, 'data', None)):
+					continue
+				tl = GetImagePosition(ob)
+				ctr = GetImageCenterPosition(ob)
+				off = list(getattr(ob, 'empty_image_offset', [0.0, 0.0]))
+				pose_rows.append(
+					str(ob.name)
+					+ ':off=' + str([TryChangeToInt(float(off[0]) if len(off) > 0 else 0.0), TryChangeToInt(float(off[1]) if len(off) > 1 else 0.0)])
+					+ ',loc=' + str([TryChangeToInt(float(ob.location.x)), TryChangeToInt(float(-ob.location.y))])
+					+ ',tl=' + str([TryChangeToInt(float(tl.x)), TryChangeToInt(float(tl.y))])
+					+ ',ctr=' + str([TryChangeToInt(float(ctr.x)), TryChangeToInt(float(ctr.y))])
+				)
+			if pose_rows:
+				_append_gbc_trace_lines([
+					'[gbc-trace] BuildGbc:image_pose_debug=' + ', '.join(pose_rows),
+				])
+		except Exception:
+			pass
 		fallback_spawn_draw_debug = []
 		global _gbc_spawn_owner_pos_overrides
 		_gbc_spawn_owner_pos_overrides = {}
+		_gbc_spawn_owner_pos_overrides.update(dict(fallback_spawn_owner_direct_overrides))
 		if fallback_spawn_entries:
 			for proxy_ob, override in fallback_spawn_entries:
 				composite_imgs.append(proxy_ob)
@@ -13253,7 +14017,11 @@ def BuildGbc (world):
 		for ph_ob in fallback_spawn_physics_obs:
 			fallback_proxy_names.add(str(ph_ob.name))
 		def _get_runtime_sprite_pos_gba (sprite_ob):
-			if str(sprite_ob.name) in fallback_proxy_names:
+			name = str(sprite_ob.name)
+			if name in composite_transform_overrides:
+				override = composite_transform_overrides.get(name) or {}
+				return float(override.get('x', 0.0)), float(override.get('y', 0.0))
+			if name in fallback_proxy_names:
 				pos = GetImagePosition(sprite_ob)
 				return float(pos.x), float(pos.y)
 			return _gbc_authored_image_pos_to_gba(sprite_ob)
@@ -13511,6 +14279,31 @@ def BuildGbc (world):
 				sprite_w, sprite_h = _gba_get_image_size(sprite_ob)
 				sprite_w = _gba_to_gbc_cover_len(sprite_w)
 				sprite_h = _gba_to_gbc_cover_len(sprite_h)
+				collision_w_px = int(round(sprite_w))
+				collision_h_px = int(round(sprite_h))
+				collision_off_x_px = 0
+				collision_off_y_px = 0
+				# Use the same helper as runtime world-collider export so player-vs-world
+				# contact uses identical rect size/placement semantics.
+				try:
+					sprite_self_rects = _gbc_collect_runtime_colliders(
+						[sprite_ob],
+						preconverted_names = fallback_proxy_names,
+					)
+				except Exception:
+					sprite_self_rects = []
+				if len(sprite_self_rects) > 0:
+					try:
+						col_left, col_top, col_w, col_h = [int(v) for v in sprite_self_rects[0]]
+						collision_w_px = max(1, int(col_w))
+						collision_h_px = max(1, int(col_h))
+						init_x_src_tmp, init_y_src_tmp = _get_runtime_sprite_pos_gba(sprite_ob)
+						sprite_x_gbc, sprite_y_gbc = _gba_to_gbc_cover_point(float(init_x_src_tmp), float(init_y_src_tmp))
+						collision_off_x_px = int(col_left - int(sprite_x_gbc))
+						collision_off_y_px = int(col_top - int(sprite_y_gbc))
+					except Exception:
+						collision_off_x_px = 0
+						collision_off_y_px = 0
 				sprite_name = str(getattr(sprite_ob, 'name', '') or '')
 				needs_large_sprite = int(round(sprite_w)) > 32 or int(round(sprite_h)) > 32
 				sprite_max_tiles = _GBC_RUNTIME_MAX_METASPRITE_TILES if needs_large_sprite else (9 if sprite_name.startswith('__gbc_spawnphys_') else 16)
@@ -13542,14 +14335,49 @@ def BuildGbc (world):
 				grav_step_x = int(grav_step_x)
 				grav_step_y = int(grav_step_y)
 				collider_debug_rows = []
+				collider_rect_meta = []
 				collider_rects = _gbc_collect_runtime_colliders(
 					physics_scene_obs,
 					ignored_name = sprite_ob.name,
 					preconverted_names = fallback_proxy_names,
 					debug_rows = collider_debug_rows,
+					debug_include_ignored = True,
+					rect_meta = collider_rect_meta,
 				)
 				_append_gbc_trace_lines([
 					'[gbc-trace] BuildGbc:single_body_collider_debug=' + (', '.join(collider_debug_rows) if collider_debug_rows else '<none>'),
+				])
+				player_w_px = int(collision_w_px)
+				player_h_px = int(collision_h_px)
+				probe_rows = []
+				for idx, rect in enumerate(list(collider_rects or [])):
+					try:
+						cx, cy, cw, ch = [int(v) for v in rect]
+					except Exception:
+						continue
+					collider_name = ''
+					try:
+						if idx < len(collider_rect_meta) and isinstance(collider_rect_meta[idx], dict):
+							collider_name = str(collider_rect_meta[idx].get('name', '') or '')
+					except Exception:
+						collider_name = ''
+					# If the player's top-left enters this AABB, axis-aligned overlap begins.
+					contact_aabb = [
+						cx - player_w_px - int(collision_off_x_px),
+						cy - player_h_px - int(collision_off_y_px),
+						cx + cw - int(collision_off_x_px),
+						cy + ch - int(collision_off_y_px),
+					]
+					probe_rows.append(
+						str(idx) +
+						':' + (collider_name if collider_name != '' else '<unnamed>') +
+						':rect=' + str([cx, cy, cw, ch]) +
+						':player_tl_contact_aabb=' + str(contact_aabb)
+					)
+				_append_gbc_trace_lines([
+					'[gbc-trace] BuildGbc:phase1_contact_probe:sprite_wh=' + str([player_w_px, player_h_px]),
+					'[gbc-trace] BuildGbc:phase1_contact_probe:sprite_off=' + str([int(collision_off_x_px), int(collision_off_y_px)]),
+					'[gbc-trace] BuildGbc:phase1_contact_probe:rows=' + (', '.join(probe_rows) if probe_rows else '<none>'),
 				])
 				if init_vx != 0 or init_vy != 0:
 					print('GBC export: phase1 seeded sprite velocity from gbc-py script =', [init_vx, init_vy])
@@ -13577,6 +14405,10 @@ def BuildGbc (world):
 					scroll_step_x = scroll_profile.get('step_dx', 0),
 					scroll_step_y = scroll_profile.get('step_dy', 0),
 					sprite_tile_palette_idxs = sprite_tile_pal_idx,
+					collision_w_px = collision_w_px,
+					collision_h_px = collision_h_px,
+					collision_off_x_px = collision_off_x_px,
+					collision_off_y_px = collision_off_y_px,
 				)
 		else:
 			_gba_apply_script_surface_ops(
@@ -13632,6 +14464,11 @@ def BuildGbc (world):
 						velocity_script = velocity_script if has_physics else None,
 						physics_scene_obs = runtime_print_scene_obs,
 						runtime_handle_env = phase1_runtime_handles,
+						collider_rect_meta = collider_rect_meta,
+						collision_w_px = collision_w_px,
+						collision_h_px = collision_h_px,
+						collision_off_x_px = collision_off_x_px,
+						collision_off_y_px = collision_off_y_px,
 					)
 			else:
 				runtime_print_env = _build_runtime_print_physics_env(world, runtime_print_scene_obs)
