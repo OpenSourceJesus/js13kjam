@@ -2319,7 +2319,7 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 		return None
 	return None
 
-def _gba_draw_circle_from_script (canvas, circle : dict, frame : int = None, start_time : float = None):
+def _gba_draw_circle_from_script (canvas, circle : dict, frame : int = None, start_time : float = None, camera_offset = None):
 	if not isinstance(circle, dict):
 		return
 	cond = circle.get('condition')
@@ -2349,6 +2349,19 @@ def _gba_draw_circle_from_script (canvas, circle : dict, frame : int = None, sta
 		if c is None:
 			c = 255 if i < 3 else 255
 		color.append(int(max(0, min(255, round(c)))))
+	cam_x = 0.0
+	cam_y = 0.0
+	if isinstance(camera_offset, (list, tuple)) and len(camera_offset) >= 2:
+		try:
+			cam_x = float(camera_offset[0])
+		except Exception:
+			cam_x = 0.0
+		try:
+			cam_y = float(camera_offset[1])
+		except Exception:
+			cam_y = 0.0
+	cx = float(cx) - cam_x
+	cy = float(cy) - cam_y
 	_gba_draw_circle_rgba(canvas, [cx, cy], float(radius), color, float(width))
 
 def _is_pygame_draw_circle_call (call_node):
@@ -2654,6 +2667,79 @@ def _extract_dynamic_surface_scroll_ops_from_stmts (stmts, is_init : bool, paren
 			scroll_ops.extend(_extract_dynamic_surface_scroll_ops_from_stmts(stmt.body, is_init, body_cond))
 			scroll_ops.extend(_extract_dynamic_surface_scroll_ops_from_stmts(stmt.orelse, is_init, else_cond))
 	return scroll_ops
+
+def _extract_set_camera_pos_xy_nodes (call_node):
+	if not isinstance(call_node, ast.Call):
+		return None, None
+	args = list(call_node.args or [])
+	x_node = None
+	y_node = None
+	if len(args) >= 2:
+		x_node = args[0]
+		y_node = args[1]
+	for kw in list(call_node.keywords or []):
+		if kw.arg == 'x':
+			x_node = kw.value
+		elif kw.arg == 'y':
+			y_node = kw.value
+	return x_node, y_node
+
+def _extract_dynamic_set_camera_ops_from_script (code : str, is_init : bool):
+	try:
+		tree = ast.parse(code or '')
+	except Exception:
+		return []
+	return _extract_dynamic_set_camera_ops_from_stmts(getattr(tree, 'body', []), is_init, parent_condition = None)
+
+def _extract_dynamic_set_camera_ops_from_stmts (stmts, is_init : bool, parent_condition = None):
+	camera_ops = []
+	for stmt in list(stmts or []):
+		if isinstance(stmt, ast.Expr):
+			node = stmt.value
+			if (
+				isinstance(node, ast.Call)
+				and isinstance(node.func, ast.Name)
+				and str(node.func.id) == 'set_camera_pos'
+			):
+				x_node, y_node = _extract_set_camera_pos_xy_nodes(node)
+				if x_node is not None and y_node is not None:
+					op = {
+						'op' : 'set_display_camera_pos',
+						'x' : _serialize_script_expr(x_node),
+						'y' : _serialize_script_expr(y_node),
+						'is_init' : bool(is_init),
+					}
+					if parent_condition is not None:
+						op['condition'] = parent_condition
+					camera_ops.append(op)
+		if isinstance(stmt, ast.If):
+			truth = _literal_truthy_from_ast_node(stmt.test)
+			if truth is True:
+				camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(stmt.body, is_init, parent_condition))
+				continue
+			if truth is False:
+				camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(stmt.orelse, is_init, parent_condition))
+				continue
+			test_expr = _serialize_script_expr(stmt.test)
+			body_cond = _combine_expr_conditions(parent_condition, test_expr)
+			else_cond = _combine_expr_conditions(parent_condition, _negate_expr_condition(test_expr))
+			camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(stmt.body, is_init, body_cond))
+			camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(stmt.orelse, is_init, else_cond))
+			continue
+		if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+			camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(getattr(stmt, 'body', []), is_init, parent_condition))
+			camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(getattr(stmt, 'orelse', []), is_init, parent_condition))
+			continue
+		if isinstance(stmt, (ast.With, ast.AsyncWith)):
+			camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(getattr(stmt, 'body', []), is_init, parent_condition))
+			continue
+		if isinstance(stmt, ast.Try):
+			camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(getattr(stmt, 'body', []), is_init, parent_condition))
+			for _handler in list(getattr(stmt, 'handlers', []) or []):
+				camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(getattr(_handler, 'body', []), is_init, parent_condition))
+			camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(getattr(stmt, 'orelse', []), is_init, parent_condition))
+			camera_ops.extend(_extract_dynamic_set_camera_ops_from_stmts(getattr(stmt, 'finalbody', []), is_init, parent_condition))
+	return camera_ops
 
 def _is_print_call (call_node):
 	return isinstance(call_node, ast.Call) and isinstance(call_node.func, ast.Name) and call_node.func.id == 'print'
@@ -3330,8 +3416,22 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	# (for example `if False:`) do not leak into baked fallback rendering.
 	init_draw = []
 	update_draw = []
-	init_display_ops = [op for op in list(script_runtime.get('init_display_ops') or []) if isinstance(op, dict)]
-	update_display_ops = [op for op in list(script_runtime.get('update_display_ops') or []) if isinstance(op, dict)]
+	init_display_ops = []
+	for op in list(script_runtime.get('init_display_ops') or []):
+		if not isinstance(op, dict):
+			continue
+		# Rebuild display scrolling from source scripts to keep dead branches
+		# deterministic. Keep pre-parsed camera ops as a fallback path.
+		if str(op.get('op') or '') in ('scroll_display_surface',):
+			continue
+		init_display_ops.append(op)
+	update_display_ops = []
+	for op in list(script_runtime.get('update_display_ops') or []):
+		if not isinstance(op, dict):
+			continue
+		if str(op.get('op') or '') in ('scroll_display_surface',):
+			continue
+		update_display_ops.append(op)
 	surface_ops = []
 	for op in list(script_runtime.get('surface_ops') or []):
 		if isinstance(op, dict) and op.get('op') == 'draw_circle_surface_member':
@@ -3415,6 +3515,12 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 				surface_ops.append(op)
 			else:
 				continue
+		extracted_camera_ops = _extract_dynamic_set_camera_ops_from_script(analysis_code, is_init)
+		for camera_op in extracted_camera_ops:
+			if is_init:
+				init_display_ops.append(camera_op)
+			else:
+				update_display_ops.append(camera_op)
 		for info in _extract_print_calls_from_script(
 			analysis_code,
 			is_init,
@@ -3478,6 +3584,25 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			continue
 		extracted_print_keys.add(key)
 		print_calls.append(info)
+	has_set_camera_op = False
+	for _op in list(init_display_ops or []):
+		if isinstance(_op, dict) and str(_op.get('op') or '') == 'set_display_camera_pos':
+			has_set_camera_op = True
+			break
+	if not has_set_camera_op:
+		for _op in list(update_display_ops or []):
+			if isinstance(_op, dict) and str(_op.get('op') or '') == 'set_display_camera_pos':
+				has_set_camera_op = True
+				break
+	if has_set_camera_op:
+		init_display_ops = [
+			_op for _op in list(init_display_ops or [])
+			if not (isinstance(_op, dict) and str(_op.get('op') or '') == 'scroll_display_surface')
+		]
+		update_display_ops = [
+			_op for _op in list(update_display_ops or [])
+			if not (isinstance(_op, dict) and str(_op.get('op') or '') == 'scroll_display_surface')
+		]
 	script_runtime['init_draw_circles'] = init_draw
 	script_runtime['update_draw_circles'] = update_draw
 	script_runtime['init_display_ops'] = init_display_ops
@@ -3504,6 +3629,34 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        sim = physics\n'
 		'    except:\n'
 		'        sim = None\n'
+		'_js13k_gbc_cam_x = int(globals().get("_js13k_gbc_cam_x", 0) or 0)\n'
+		'_js13k_gbc_cam_y = int(globals().get("_js13k_gbc_cam_y", 0) or 0)\n'
+		'_js13k_gbc_cam_x = int(_js13k_gbc_cam_x) & 0xFFFF\n'
+		'_js13k_gbc_cam_y = int(_js13k_gbc_cam_y) & 0xFFFF\n'
+		'def set_camera_pos(x, y):\n'
+		'    global _js13k_gbc_cam_x, _js13k_gbc_cam_y\n'
+		'    try:\n'
+		'        new_x = int(round(float(x)))\n'
+		'    except:\n'
+		'        new_x = int(_js13k_gbc_cam_x)\n'
+		'    try:\n'
+		'        new_y = int(round(float(y)))\n'
+		'    except:\n'
+		'        new_y = int(_js13k_gbc_cam_y)\n'
+		'    new_x = int(new_x) & 0xFFFF\n'
+		'    new_y = int(new_y) & 0xFFFF\n'
+		'    _js13k_gbc_cam_x = int(new_x)\n'
+		'    _js13k_gbc_cam_y = int(new_y)\n'
+		'    globals()["_js13k_gbc_cam_x"] = int(_js13k_gbc_cam_x)\n'
+		'    globals()["_js13k_gbc_cam_y"] = int(_js13k_gbc_cam_y)\n'
+		'    try:\n'
+		'        _off = globals().get("off", None)\n'
+		'        if _off is not None:\n'
+		'            _off.x = float(_js13k_gbc_cam_x)\n'
+		'            _off.y = float(_js13k_gbc_cam_y)\n'
+		'    except:\n'
+		'        pass\n'
+		'    return [float(_js13k_gbc_cam_x), float(_js13k_gbc_cam_y)]\n'
 		'def _js13k_gbc_validate_cast_shape_args(*args, **kwargs):\n'
 		'    if len(args) < 6:\n'
 		'        raise TypeError("world.castShape requires at least 6 positional args: shapePos, shapeRot, shapeVel, shape, maxToi, stopAtPenetration")\n'
@@ -4785,6 +4938,25 @@ mousePosWorld = pygame.math.Vector2()
 prevMousePos = pygame.math.Vector2()
 prevMousePosWorld = pygame.math.Vector2()
 off = pygame.math.Vector2()
+_cameraPos = pygame.math.Vector2()
+
+def set_camera_pos (x, y):
+	global off, _cameraPos
+	try:
+		_x = int(round(float(x)))
+	except Exception:
+		_x = int(round(float(_cameraPos.x)))
+	try:
+		_y = int(round(float(y)))
+	except Exception:
+		_y = int(round(float(_cameraPos.y)))
+	_x = int(_x) & 0xFFFF
+	_y = int(_y) & 0xFFFF
+	_cameraPos.x = float(_x)
+	_cameraPos.y = float(_y)
+	off.x = float(_cameraPos.x)
+	off.y = float(_cameraPos.y)
+	return [_cameraPos.x, _cameraPos.y]
 
 def add (v, v2):
 	return pygame.math.Vector2(v[0] + v2[0], v[1] + v2[1])
@@ -12302,22 +12474,37 @@ def _gba_scroll_rgba_in_place (surf, dx : int, dy : int):
 	surf[dst_y0 : dst_y1, dst_x0 : dst_x1] = src[src_y0 : src_y1, src_x0 : src_x1]
 
 def _gba_normalize_display_scroll_delta (dx : int, dy : int):
-	# Match pygame.display surface semantics to the logical GBC viewport.
-	def _wrap_signed (_v, _size):
-		try:
-			_v = int(_v)
-		except Exception:
-			_v = 0
-		if _size <= 0:
-			return _v
-		# Normalize into the shortest signed wrapped offset:
-		# 159 on a 160-wide surface becomes -1, matching reverse step intent.
-		_v = _v % _size
-		half = _size // 2
-		if _v > half:
-			_v -= _size
-		return _v
-	return _wrap_signed(dx, 160), _wrap_signed(dy, 144)
+	# Display scroll deltas should not be wrapped by viewport size; preserve
+	# full signed intent so camera-style movement can cross 16-bit ranges.
+	try:
+		dx_i = int(dx)
+	except Exception:
+		dx_i = 0
+	try:
+		dy_i = int(dy)
+	except Exception:
+		dy_i = 0
+	return dx_i, dy_i
+
+def _gbc_wrap_u16 (_v):
+	try:
+		return int(_v) & 0xFFFF
+	except Exception:
+		return 0
+
+def _gbc_delta_u16 (_prev, _curr):
+	prev = _gbc_wrap_u16(_prev)
+	curr = _gbc_wrap_u16(_curr)
+	delta = (curr - prev) & 0xFFFF
+	if delta >= 0x8000:
+		delta -= 0x10000
+	return int(delta)
+
+def _gbc_u16_to_signed (_v):
+	v = _gbc_wrap_u16(_v)
+	if v >= 0x8000:
+		v -= 0x10000
+	return int(v)
 
 def _gba_load_saved_image_rgba (ob):
 	try:
@@ -12485,7 +12672,7 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list, fr
 			image_surfaces[owner_name] = override
 	return image_surfaces
 
-def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None, start_time : float = None):
+def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None, start_time : float = None, camera_state = None):
 	if not isinstance(op, dict):
 		return
 	cond = op.get('condition')
@@ -12505,6 +12692,29 @@ def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None,
 		dx, dy = _gba_normalize_display_scroll_delta(dx, dy)
 		_gba_scroll_rgba_in_place(canvas, dx, dy)
 		return
+	if op_type == 'set_display_camera_pos':
+		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time)
+		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time)
+		try:
+			new_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
+			new_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
+		except Exception:
+			return
+		prev_x = _gbc_wrap_u16(0)
+		prev_y = _gbc_wrap_u16(0)
+		if isinstance(camera_state, dict):
+			try:
+				prev_x = _gbc_wrap_u16(camera_state.get('x', 0))
+			except Exception:
+				prev_x = _gbc_wrap_u16(0)
+			try:
+				prev_y = _gbc_wrap_u16(camera_state.get('y', 0))
+			except Exception:
+				prev_y = _gbc_wrap_u16(0)
+		if isinstance(camera_state, dict):
+			camera_state['x'] = _gbc_wrap_u16(new_x)
+			camera_state['y'] = _gbc_wrap_u16(new_y)
+		return
 	if op_type == 'blit_display_surface':
 		src_owner = op.get('src_owner_name')
 		src_member = op.get('src_member')
@@ -12518,23 +12728,46 @@ def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None,
 			y = int(round(float(0.0 if y_val is None else y_val)))
 		except Exception:
 			return
+		cam_x = 0
+		cam_y = 0
+		if isinstance(camera_state, dict):
+			cam_x = _gbc_u16_to_signed(camera_state.get('x', 0))
+			cam_y = _gbc_u16_to_signed(camera_state.get('y', 0))
+		x -= int(cam_x)
+		y -= int(cam_y)
 		_gba_blit_rgba(canvas, src, x, y, (1.0, 1.0, 1.0), 1.0)
 
-def _gba_apply_display_draw_circles (canvas, script_runtime, image_surfaces = None, frame : int = None, start_time : float = None):
+def _gba_apply_display_draw_circles (canvas, script_runtime, image_surfaces = None, frame : int = None, start_time : float = None, camera_offset = None):
 	if canvas is None:
 		return canvas
 	runtime = script_runtime or {}
 	owner_members = {}
+	initial_x = _gbc_wrap_u16(0)
+	initial_y = _gbc_wrap_u16(0)
+	if isinstance(camera_offset, (list, tuple)) and len(camera_offset) >= 2:
+		try:
+			initial_x = _gbc_wrap_u16(int(round(float(camera_offset[0]))))
+		except Exception:
+			initial_x = _gbc_wrap_u16(0)
+		try:
+			initial_y = _gbc_wrap_u16(int(round(float(camera_offset[1]))))
+		except Exception:
+			initial_y = _gbc_wrap_u16(0)
+	camera_state = {'x' : int(initial_x), 'y' : int(initial_y)}
+	camera_offset_signed = (
+		float(_gbc_u16_to_signed(initial_x)),
+		float(_gbc_u16_to_signed(initial_y)),
+	)
 	for owner_name, surf in (image_surfaces or {}).items():
 		owner_members[owner_name] = {'surface' : surf}
 	for circle in list(runtime.get('init_draw_circles') or []):
-		_gba_draw_circle_from_script(canvas, circle, frame = frame, start_time = start_time)
+		_gba_draw_circle_from_script(canvas, circle, frame = frame, start_time = start_time, camera_offset = camera_offset_signed)
 	for circle in list(runtime.get('update_draw_circles') or []):
-		_gba_draw_circle_from_script(canvas, circle, frame = frame, start_time = start_time)
+		_gba_draw_circle_from_script(canvas, circle, frame = frame, start_time = start_time, camera_offset = camera_offset_signed)
 	for op in list(runtime.get('init_display_ops') or []):
-		_gba_apply_display_op(canvas, op, owner_members = owner_members, frame = frame, start_time = start_time)
+		_gba_apply_display_op(canvas, op, owner_members = owner_members, frame = frame, start_time = start_time, camera_state = camera_state)
 	for op in list(runtime.get('update_display_ops') or []):
-		_gba_apply_display_op(canvas, op, owner_members = owner_members, frame = frame, start_time = start_time)
+		_gba_apply_display_op(canvas, op, owner_members = owner_members, frame = frame, start_time = start_time, camera_state = camera_state)
 	return canvas
 
 def _gba_composite_scene (world, image_empties, image_surfaces = None, transform_overrides = None, script_runtime = None, frame : int = None):
@@ -12548,6 +12781,7 @@ def _gba_composite_scene (world, image_empties, image_surfaces = None, transform
 	canvas[:, :, 1] = bg[1]
 	canvas[:, :, 2] = bg[2]
 	canvas[:, :, 3] = 1.0
+	cam_x, cam_y = _gba_eval_display_camera_pos(script_runtime, frame = frame, include_update = True)
 	for ob in image_empties:
 		pix = None
 		if image_surfaces:
@@ -12577,8 +12811,14 @@ def _gba_composite_scene (world, image_empties, image_surfaces = None, transform
 		else:
 			pos = GetImagePosition(ob)
 		tint = list(ob.tint)
-		_gba_blit_rgba(canvas, scaled, int(pos.x), int(pos.y), tint, ob.color[3])
-	_gba_apply_display_draw_circles(canvas, script_runtime, image_surfaces = image_surfaces, frame = frame)
+		_gba_blit_rgba(canvas, scaled, int(pos.x - cam_x), int(pos.y - cam_y), tint, ob.color[3])
+	_gba_apply_display_draw_circles(
+		canvas,
+		script_runtime,
+		image_surfaces = image_surfaces,
+		frame = frame,
+		camera_offset = [cam_x, cam_y],
+	)
 	return canvas
 
 def _gba_try_build_and_install_pyrapier2d ():
@@ -13059,29 +13299,100 @@ def _gba_eval_display_scroll_offset (script_runtime, frame : int = 1, start_time
 		ops.extend(list(runtime.get('update_display_ops') or []))
 	dx_total = 0
 	dy_total = 0
+	camera_x = _gbc_wrap_u16(0)
+	camera_y = _gbc_wrap_u16(0)
 	for op in ops:
 		if not isinstance(op, dict):
 			continue
-		if str(op.get('op') or '') != 'scroll_display_surface':
+		op_type = str(op.get('op') or '')
+		cond = op.get('condition')
+		if cond is not None and cond != '':
+			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
+			if cond_val is None or abs(float(cond_val)) <= 1e-9:
+				continue
+		if op_type == 'scroll_display_surface':
+			dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
+			dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
+			try:
+				dx = int(round(float(0.0 if dx_val is None else dx_val)))
+				dy = int(round(float(0.0 if dy_val is None else dy_val)))
+			except Exception:
+				continue
+			dx, dy = _gba_normalize_display_scroll_delta(dx, dy)
+			dx_total += dx
+			dy_total += dy
+			continue
+		if op_type == 'set_display_camera_pos':
+			x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time)
+			y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time)
+			try:
+				new_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
+				new_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
+			except Exception:
+				continue
+			dx = -_gbc_delta_u16(camera_x, new_x)
+			dy = -_gbc_delta_u16(camera_y, new_y)
+			camera_x = _gbc_wrap_u16(new_x)
+			camera_y = _gbc_wrap_u16(new_y)
+			dx_total += dx
+			dy_total += dy
+	return int(dx_total), int(dy_total)
+
+def _gba_eval_display_camera_pos (script_runtime, frame : int = 1, start_time : float = None, include_update : bool = True):
+	runtime = script_runtime or {}
+	ops = []
+	ops.extend(list(runtime.get('init_display_ops') or []))
+	if include_update:
+		ops.extend(list(runtime.get('update_display_ops') or []))
+	camera_x = _gbc_wrap_u16(0)
+	camera_y = _gbc_wrap_u16(0)
+	for op in ops:
+		if not isinstance(op, dict):
+			continue
+		if str(op.get('op') or '') != 'set_display_camera_pos':
 			continue
 		cond = op.get('condition')
 		if cond is not None and cond != '':
 			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
 			if cond_val is None or abs(float(cond_val)) <= 1e-9:
 				continue
-		dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
-		dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
+		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time)
+		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time)
 		try:
-			dx = int(round(float(0.0 if dx_val is None else dx_val)))
-			dy = int(round(float(0.0 if dy_val is None else dy_val)))
+			camera_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
+			camera_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
 		except Exception:
 			continue
-		dx, dy = _gba_normalize_display_scroll_delta(dx, dy)
-		dx_total += dx
-		dy_total += dy
-	return int(dx_total), int(dy_total)
+	return _gbc_u16_to_signed(camera_x), _gbc_u16_to_signed(camera_y)
 
 def _gba_get_runtime_display_scroll_profile (script_runtime, frame : int = 1, start_time : float = None):
+	runtime = script_runtime or {}
+	has_camera_ops = False
+	for _op in list(runtime.get('init_display_ops') or []):
+		if isinstance(_op, dict) and str(_op.get('op') or '') == 'set_display_camera_pos':
+			has_camera_ops = True
+			break
+	if not has_camera_ops:
+		for _op in list(runtime.get('update_display_ops') or []):
+			if isinstance(_op, dict) and str(_op.get('op') or '') == 'set_display_camera_pos':
+				has_camera_ops = True
+				break
+	if has_camera_ops:
+		# set_camera_pos is an absolute camera command. We cannot replay full
+		# per-frame script evaluation in the fixed-step phase1 runtime, so bake
+		# the resolved frame-1 camera offset into init scroll and disable drift.
+		total_dx, total_dy = _gba_eval_display_scroll_offset(
+			script_runtime,
+			frame = frame,
+			start_time = start_time,
+			include_update = True,
+		)
+		return {
+			'init_dx' : int(total_dx),
+			'init_dy' : int(total_dy),
+			'step_dx' : 0,
+			'step_dy' : 0,
+		}
 	init_dx, init_dy = _gba_eval_display_scroll_offset(
 		script_runtime,
 		frame = frame,
@@ -13105,11 +13416,17 @@ def _gba_runtime_without_display_scroll (script_runtime):
 	runtime = dict(script_runtime or {})
 	runtime['init_display_ops'] = [
 		op for op in list(runtime.get('init_display_ops') or [])
-		if not (isinstance(op, dict) and str(op.get('op') or '') == 'scroll_display_surface')
+		if not (
+			isinstance(op, dict)
+			and str(op.get('op') or '') in ('scroll_display_surface', 'set_display_camera_pos')
+		)
 	]
 	runtime['update_display_ops'] = [
 		op for op in list(runtime.get('update_display_ops') or [])
-		if not (isinstance(op, dict) and str(op.get('op') or '') == 'scroll_display_surface')
+		if not (
+			isinstance(op, dict)
+			and str(op.get('op') or '') in ('scroll_display_surface', 'set_display_camera_pos')
+		)
 	]
 	return runtime
 
@@ -13911,6 +14228,28 @@ def BuildGbc (world):
 		_append_gbc_trace_lines([
 			'[gbc-trace] BuildGbc:after ExportGbcPyAssembly',
 		])
+		try:
+			_init_ops = [op for op in list((script_runtime or {}).get('init_display_ops') or []) if isinstance(op, dict)]
+			_update_ops = [op for op in list((script_runtime or {}).get('update_display_ops') or []) if isinstance(op, dict)]
+			def _fmt_ops (_ops):
+				rows = []
+				for _op in _ops[:8]:
+					_t = str(_op.get('op') or '')
+					if _t == 'set_display_camera_pos':
+						rows.append(_t + '(x=' + repr(_op.get('x')) + ',y=' + repr(_op.get('y')) + ')')
+					elif _t == 'scroll_display_surface':
+						rows.append(_t + '(dx=' + repr(_op.get('dx')) + ',dy=' + repr(_op.get('dy')) + ')')
+					else:
+						rows.append(_t)
+				if len(_ops) > 8:
+					rows.append('...+' + str(len(_ops) - 8))
+				return rows
+			_append_gbc_trace_lines([
+				'[gbc-trace] BuildGbc:display_ops:init_count=' + str(len(_init_ops)) + ',ops=' + (', '.join(_fmt_ops(_init_ops)) if _init_ops else '<none>'),
+				'[gbc-trace] BuildGbc:display_ops:update_count=' + str(len(_update_ops)) + ',ops=' + (', '.join(_fmt_ops(_update_ops)) if _update_ops else '<none>'),
+			])
+		except Exception:
+			pass
 		image_surfaces = {}
 		for ob in image_source_obs:
 			pix = _gba_load_saved_image_rgba(ob)
