@@ -2294,6 +2294,29 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 		'keys' : key_state,
 		'js13k_get_pressed' : (lambda : key_state),
 	})
+	try:
+		runtime_globals = __import__('builtins').globals()
+	except Exception:
+		runtime_globals = {}
+	sim_runtime = runtime_globals.get('sim', runtime_globals.get('physics', None))
+	rigid_bodies_runtime = runtime_globals.get('rigidBodiesIds', runtime_globals.get('rigidbodies', {}))
+	rigid_bodies_named = runtime_globals.get('rigidBodies', runtime_globals.get('rbs', {}))
+	colliders_runtime = runtime_globals.get('collidersIds', runtime_globals.get('colliders', {}))
+	colliders_named = runtime_globals.get('cols', colliders_runtime)
+	def _get_rigidbody_for_eval (_name):
+		try:
+			return _resolve_script_lookup_from_sources(_name, rigid_bodies_runtime, rigid_bodies_named)
+		except Exception:
+			return None
+	def _get_collider_for_eval (_name):
+		try:
+			return _resolve_script_lookup_from_sources(_name, colliders_runtime, colliders_named)
+		except Exception:
+			return None
+	eval_locals['sim'] = sim_runtime
+	eval_locals['physics'] = sim_runtime
+	eval_locals['get_rigidbody'] = _get_rigidbody_for_eval
+	eval_locals['get_collider'] = _get_collider_for_eval
 	for k, v in const_env.items():
 		name = str(k)
 		if re.fullmatch(r'[A-Za-z_]\w*', name) and not name.startswith('__'):
@@ -2428,6 +2451,103 @@ def _serialize_script_expr (node):
 		return '<expr:' + ast.unparse(node) + '>'
 	except Exception:
 		return '<expr:0>'
+
+def _inline_runtime_expr_with_env (value, const_env = None, expr_env = None, rb_alias = None, owner_name : str = None):
+	'''Inline known symbolic names in <expr:...> placeholders using script env.'''
+	const_env = const_env if isinstance(const_env, dict) else {}
+	expr_env = expr_env if isinstance(expr_env, dict) else {}
+	rb_alias = rb_alias if isinstance(rb_alias, dict) else {}
+	if not isinstance(value, str):
+		return value
+	match = re.fullmatch(r'(?i)<expr:\s*(.*?)\s*>', str(value).strip())
+	if not match:
+		return value
+	expr = str(match.group(1) or '').strip()
+	if expr == '':
+		return value
+	def _expr_env_value_to_ast (_value):
+		if isinstance(_value, (int, float, bool)) or _value is None:
+			return ast.Constant(value = _value)
+		if isinstance(_value, str):
+			m = re.fullmatch(r'(?i)<expr:\s*(.*?)\s*>', _value.strip())
+			src = m.group(1).strip() if m else _value
+			try:
+				return ast.parse(src, mode = 'eval').body
+			except Exception:
+				return None
+		return None
+	def _owner_rb_lookup_expr ():
+		try:
+			owner_candidates = _script_lookup_candidate_names(str(owner_name or ''))
+		except Exception:
+			owner_candidates = [str(owner_name or '')]
+		owner_candidates = [c for c in list(owner_candidates or []) if isinstance(c, str) and c != '']
+		if owner_candidates == []:
+			return None
+		expr_text = 'None'
+		for key in reversed(owner_candidates):
+			call_expr = 'get_rigidbody(' + repr(key) + ')'
+			expr_text = '(' + call_expr + ' if (' + call_expr + ') is not None else ' + expr_text + ')'
+		try:
+			return ast.parse(expr_text, mode = 'eval').body
+		except Exception:
+			return None
+	def _owner_col_lookup_expr ():
+		try:
+			owner_candidates = _script_lookup_candidate_names(str(owner_name or ''))
+		except Exception:
+			owner_candidates = [str(owner_name or '')]
+		owner_candidates = [c for c in list(owner_candidates or []) if isinstance(c, str) and c != '']
+		if owner_candidates == []:
+			return None
+		expr_text = 'None'
+		for key in reversed(owner_candidates):
+			call_expr = 'get_collider(' + repr(key) + ')'
+			expr_text = '(' + call_expr + ' if (' + call_expr + ') is not None else ' + expr_text + ')'
+		try:
+			return ast.parse(expr_text, mode = 'eval').body
+		except Exception:
+			return None
+	class _InlineRuntimeExprNames(ast.NodeTransformer):
+		def visit_Attribute (self, node):
+			node = self.generic_visit(node)
+			if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == 'this':
+				if node.attr == 'rb':
+					repl = _owner_rb_lookup_expr()
+					if repl is not None:
+						return ast.copy_location(repl, node)
+				if node.attr == 'col':
+					repl = _owner_col_lookup_expr()
+					if repl is not None:
+						return ast.copy_location(repl, node)
+			return node
+		def visit_Name (self, node):
+			if _is_runtime_script_binding_name(node.id):
+				return node
+			if node.id in const_env:
+				try:
+					repl = ast.parse(repr(const_env[node.id]), mode = 'eval').body
+					return ast.copy_location(repl, node)
+				except Exception:
+					return node
+			if node.id in expr_env:
+				repl = _expr_env_value_to_ast(expr_env[node.id])
+				if repl is not None:
+					return ast.copy_location(repl, node)
+			if node.id in rb_alias and isinstance(rb_alias.get(node.id), str):
+				try:
+					repl = ast.parse('get_rigidbody(' + repr(rb_alias.get(node.id)) + ')', mode = 'eval').body
+					return ast.copy_location(repl, node)
+				except Exception:
+					return node
+			return node
+	try:
+		root = ast.parse(expr, mode = 'eval').body
+		root = _InlineRuntimeExprNames().visit(copy.deepcopy(root))
+		root = ast.fix_missing_locations(root)
+		return _serialize_script_expr(root)
+	except Exception:
+		return value
 
 def _is_simple_const_value (value):
 	if isinstance(value, (int, float, bool, str)) or value is None:
@@ -2668,7 +2788,7 @@ def _extract_dynamic_surface_scroll_ops_from_stmts (stmts, is_init : bool, paren
 			scroll_ops.extend(_extract_dynamic_surface_scroll_ops_from_stmts(stmt.orelse, is_init, else_cond))
 	return scroll_ops
 
-def _extract_set_camera_pos_xy_nodes (call_node):
+def _extract_set_camera_position_xy_nodes (call_node):
 	if not isinstance(call_node, ast.Call):
 		return None, None
 	args = list(call_node.args or [])
@@ -2699,9 +2819,9 @@ def _extract_dynamic_set_camera_ops_from_stmts (stmts, is_init : bool, parent_co
 			if (
 				isinstance(node, ast.Call)
 				and isinstance(node.func, ast.Name)
-				and str(node.func.id) == 'set_camera_pos'
+				and str(node.func.id) == 'set_camera_position'
 			):
-				x_node, y_node = _extract_set_camera_pos_xy_nodes(node)
+				x_node, y_node = _extract_set_camera_position_xy_nodes(node)
 				if x_node is not None and y_node is not None:
 					op = {
 						'op' : 'set_display_camera_pos',
@@ -3515,12 +3635,6 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 				surface_ops.append(op)
 			else:
 				continue
-		extracted_camera_ops = _extract_dynamic_set_camera_ops_from_script(analysis_code, is_init)
-		for camera_op in extracted_camera_ops:
-			if is_init:
-				init_display_ops.append(camera_op)
-			else:
-				update_display_ops.append(camera_op)
 		for info in _extract_print_calls_from_script(
 			analysis_code,
 			is_init,
@@ -3552,6 +3666,37 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		# Backward-compat fallback map (owner scoped) for pre-existing entries.
 		print_const_env_by_owner[owner_name] = dict(env.get('const_env', {}))
 		print_expr_env_by_owner[owner_name] = dict(env.get('expr_env', {}))
+		extracted_camera_ops = _extract_dynamic_set_camera_ops_from_script(analysis_code, is_init)
+		for camera_op in extracted_camera_ops:
+			camera_op = dict(camera_op or {})
+			camera_op['owner_name'] = owner_name
+			camera_op['scope_key'] = scope_key
+			camera_op['x'] = _inline_runtime_expr_with_env(
+				camera_op.get('x', 0.0),
+				const_env = env.get('const_env', {}),
+				expr_env = env.get('expr_env', {}),
+				rb_alias = env.get('rb_alias', {}),
+				owner_name = owner_name,
+			)
+			camera_op['y'] = _inline_runtime_expr_with_env(
+				camera_op.get('y', 0.0),
+				const_env = env.get('const_env', {}),
+				expr_env = env.get('expr_env', {}),
+				rb_alias = env.get('rb_alias', {}),
+				owner_name = owner_name,
+			)
+			if camera_op.get('condition') is not None:
+				camera_op['condition'] = _inline_runtime_expr_with_env(
+					camera_op.get('condition'),
+					const_env = env.get('const_env', {}),
+					expr_env = env.get('expr_env', {}),
+					rb_alias = env.get('rb_alias', {}),
+					owner_name = owner_name,
+				)
+			if is_init:
+				init_display_ops.append(camera_op)
+			else:
+				update_display_ops.append(camera_op)
 		mirror_scripts.append({
 			'scope_key' : scope_key,
 			'owner_name' : owner_name,
@@ -3616,6 +3761,216 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	script_runtime['mirror_scripts'] = mirror_scripts
 	return script_runtime
 
+def _runtime_expr_extra_env_for_display_op (op):
+	if not isinstance(op, dict):
+		return {}
+	owner_name = str(op.get('owner_name') or '')
+	scope_key = str(op.get('scope_key') or '')
+	if owner_name == '' and scope_key == '':
+		return {}
+	try:
+		runtime_globals = __import__('builtins').globals()
+	except Exception:
+		runtime_globals = {}
+	all_script_locals = runtime_globals.get('scriptLocals', {})
+	if not isinstance(all_script_locals, dict):
+		return {}
+	owner_candidates = []
+	try:
+		owner_candidates = list(_script_lookup_candidate_names(owner_name))
+	except Exception:
+		owner_candidates = [owner_name]
+	if owner_name not in owner_candidates:
+		owner_candidates.insert(0, owner_name)
+	scope_key_obj = None
+	if scope_key != '':
+		try:
+			scope_key_obj = ast.literal_eval(scope_key)
+		except Exception:
+			scope_key_obj = None
+	owner_scopes = []
+	for candidate in owner_candidates:
+		scope = all_script_locals.get(candidate)
+		if isinstance(scope, dict):
+			owner_scopes.append(scope)
+	# Fallback: include fuzzy owner-key matches if direct lookup misses.
+	if owner_scopes == [] and owner_name != '':
+		try:
+			owner_norm = _normalize_script_lookup_key(owner_name)
+		except Exception:
+			owner_norm = owner_name.lower().replace(' ', '_')
+		for key, scope in list(all_script_locals.items()):
+			if not isinstance(key, str) or not isinstance(scope, dict):
+				continue
+			try:
+				key_norm = _normalize_script_lookup_key(key)
+			except Exception:
+				key_norm = key.lower().replace(' ', '_')
+			if (
+				key_norm == owner_norm
+				or key_norm.endswith('_' + owner_norm)
+				or key_norm.endswith(owner_norm)
+				or key_norm.startswith(owner_norm + '_')
+				or key_norm.startswith(owner_norm)
+			):
+				owner_scopes.append(scope)
+	def _resolve_exact_nested_scope (_scope_dict):
+		if not isinstance(_scope_dict, dict) or scope_key == '':
+			return None
+		exact = _scope_dict.get(scope_key)
+		if isinstance(exact, dict):
+			return dict(exact)
+		if scope_key_obj is not None:
+			exact_obj = _scope_dict.get(scope_key_obj)
+			if isinstance(exact_obj, dict):
+				return dict(exact_obj)
+		if any(isinstance(v, dict) for v in _scope_dict.values()):
+			for nested_key, nested in _scope_dict.items():
+				if not isinstance(nested, dict):
+					continue
+				if str(nested_key) == scope_key:
+					return dict(nested)
+				if scope_key_obj is not None and nested_key == scope_key_obj:
+					return dict(nested)
+		return None
+	base_env = {}
+	for scope in owner_scopes:
+		exact = _resolve_exact_nested_scope(scope)
+		if isinstance(exact, dict):
+			base_env.update(exact)
+			break
+	# Legacy layout: scriptLocals[owner] = locals dict.
+	if base_env == {}:
+		for scope in owner_scopes:
+			if isinstance(scope, dict) and not any(isinstance(v, dict) for v in scope.values()):
+				base_env.update(dict(scope))
+				break
+	# Owner-level fallback: merge nested script locals (latest wins) so dynamic
+	# camera expressions can still resolve names like `pos` when scope keys differ.
+	merged = {}
+	for scope in owner_scopes:
+		if not isinstance(scope, dict):
+			continue
+		if any(isinstance(v, dict) for v in scope.values()):
+			for nested in scope.values():
+				if isinstance(nested, dict):
+					merged.update(dict(nested))
+		else:
+			merged.update(dict(scope))
+	if merged:
+		base_env.update(merged)
+	if scope_key != '':
+		for owner_scope in all_script_locals.values():
+			if not isinstance(owner_scope, dict):
+				continue
+			if scope_key in owner_scope and isinstance(owner_scope.get(scope_key), dict):
+				base_env.update(dict(owner_scope.get(scope_key)))
+				break
+			if scope_key_obj is not None and scope_key_obj in owner_scope and isinstance(owner_scope.get(scope_key_obj), dict):
+				base_env.update(dict(owner_scope.get(scope_key_obj)))
+				break
+	# Always provide core runtime helpers so camera expressions can resolve even
+	# when scriptLocals scope keys differ from extracted op metadata.
+	sim_runtime = runtime_globals.get('sim', runtime_globals.get('physics', None))
+	rigid_bodies_runtime = runtime_globals.get('rigidBodiesIds', runtime_globals.get('rigidbodies', {}))
+	rigid_bodies_named = runtime_globals.get('rigidBodies', runtime_globals.get('rbs', {}))
+	colliders_runtime = runtime_globals.get('collidersIds', runtime_globals.get('colliders', {}))
+	colliders_named = runtime_globals.get('cols', colliders_runtime)
+	def _get_rigidbody_for_eval (_name):
+		try:
+			return _resolve_script_lookup_from_sources(_name, rigid_bodies_runtime, rigid_bodies_named)
+		except Exception:
+			return None
+	def _get_collider_for_eval (_name):
+		try:
+			return _resolve_script_lookup_from_sources(_name, colliders_runtime, colliders_named)
+		except Exception:
+			return None
+	base_env.setdefault('sim', sim_runtime)
+	base_env.setdefault('physics', sim_runtime)
+	base_env.setdefault('get_rigidbody', _get_rigidbody_for_eval)
+	base_env.setdefault('get_collider', _get_collider_for_eval)
+	# Synthesize owner-scoped bindings for common camera expressions like
+	# `int(pos[0])` and `sim.get_rigid_body_position(this.rb)[0]`.
+	if owner_name != '':
+		rb = _get_rigidbody_for_eval(owner_name)
+		col = _get_collider_for_eval(owner_name)
+		if 'this' not in base_env:
+			try:
+				_this_obj = type('DisplayOpThis', (), {})()
+				_this_obj.id = owner_name
+				_this_obj.name = owner_name
+				_this_obj.rb = rb
+				_this_obj.col = col
+				base_env['this'] = _this_obj
+			except Exception:
+				pass
+		if 'rb' not in base_env and rb is not None:
+			base_env['rb'] = rb
+		if 'col' not in base_env and col is not None:
+			base_env['col'] = col
+		if 'pos' not in base_env and sim_runtime is not None and rb is not None and hasattr(sim_runtime, 'get_rigid_body_position'):
+			try:
+				_pos = sim_runtime.get_rigid_body_position(rb)
+				if isinstance(_pos, (list, tuple)) and len(_pos) >= 2:
+					base_env['pos'] = [float(_pos[0]), float(_pos[1])]
+				else:
+					base_env['pos'] = _pos
+			except Exception:
+				pass
+		# Export-time fallback: when runtime physics handles are not available yet,
+		# synthesize `pos` from authored object transforms so expressions like
+		# `int(pos[0])` still resolve deterministically.
+		if 'pos' not in base_env:
+			try:
+				_spawn_overrides = runtime_globals.get('_gbc_spawn_owner_pos_overrides', {})
+				_spawn_pos = _resolve_script_lookup(_spawn_overrides, owner_name) if isinstance(_spawn_overrides, dict) else None
+			except Exception:
+				_spawn_pos = None
+			if isinstance(_spawn_pos, (list, tuple)) and len(_spawn_pos) >= 2:
+				try:
+					base_env['pos'] = [float(_spawn_pos[0]), float(_spawn_pos[1])]
+				except Exception:
+					pass
+		if 'pos' not in base_env:
+			try:
+				_bpy = globals().get('bpy', None)
+				_owner_ob = getattr(getattr(_bpy, 'data', None), 'objects', {}).get(owner_name) if _bpy is not None else None
+			except Exception:
+				_owner_ob = None
+			if _owner_ob is not None:
+				try:
+					if (
+						getattr(_owner_ob, 'type', None) == 'EMPTY'
+						and getattr(_owner_ob, 'empty_display_type', None) == 'IMAGE'
+						and getattr(_owner_ob, 'data', None) is not None
+					):
+						_ctr = GetImageCenterPosition(_owner_ob)
+						base_env['pos'] = [float(_ctr.x), float(_ctr.y)]
+					else:
+						base_env['pos'] = [float(_owner_ob.location.x), float(-_owner_ob.location.y)]
+				except Exception:
+					pass
+	return base_env
+
+def _trace_display_camera_eval (stage, op, frame, x_expr, y_expr, x_val, y_val, x_u16, y_u16):
+	try:
+		_append_gbc_trace_lines([
+			'[gbc-trace] CameraEval'
+			+ ':stage=' + str(stage)
+			+ ',frame=' + str(int(frame or 0))
+			+ ',owner=' + str(op.get('owner_name') or '')
+			+ ',scope=' + str(op.get('scope_key') or '')
+			+ ',x_expr=' + repr(x_expr)
+			+ ',y_expr=' + repr(y_expr)
+			+ ',x_val=' + repr(x_val)
+			+ ',y_val=' + repr(y_val)
+			+ ',x_u16=' + str(int(x_u16) & 0xFFFF)
+			+ ',y_u16=' + str(int(y_u16) & 0xFFFF),
+		])
+	except Exception:
+		pass
+
 def _inject_gbc_signed_position_wrappers (code : str):
 	code = str(code or '')
 	if '_js13k_gbc_signed_pos_wrapped' in code:
@@ -3633,7 +3988,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'_js13k_gbc_cam_y = int(globals().get("_js13k_gbc_cam_y", 0) or 0)\n'
 		'_js13k_gbc_cam_x = int(_js13k_gbc_cam_x) & 0xFFFF\n'
 		'_js13k_gbc_cam_y = int(_js13k_gbc_cam_y) & 0xFFFF\n'
-		'def set_camera_pos(x, y):\n'
+		'def set_camera_position(x, y):\n'
 		'    global _js13k_gbc_cam_x, _js13k_gbc_cam_y\n'
 		'    try:\n'
 		'        new_x = int(round(float(x)))\n'
@@ -4940,7 +5295,7 @@ prevMousePosWorld = pygame.math.Vector2()
 off = pygame.math.Vector2()
 _cameraPos = pygame.math.Vector2()
 
-def set_camera_pos (x, y):
+def set_camera_position (x, y):
 	global off, _cameraPos
 	try:
 		_x = int(round(float(x)))
@@ -12675,15 +13030,16 @@ def _gba_apply_script_surface_ops (image_surfaces : dict, surface_ops : list, fr
 def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None, start_time : float = None, camera_state = None):
 	if not isinstance(op, dict):
 		return
+	extra_env = _runtime_expr_extra_env_for_display_op(op)
 	cond = op.get('condition')
 	if cond is not None and cond != '':
-		cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
+		cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time, extra_env = extra_env)
 		if cond_val is None or abs(float(cond_val)) <= 1e-9:
 			return
 	op_type = str(op.get('op') or '')
 	if op_type == 'scroll_display_surface':
-		dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
-		dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
+		dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
+		dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
 		try:
 			dx = int(round(float(0.0 if dx_val is None else dx_val)))
 			dy = int(round(float(0.0 if dy_val is None else dy_val)))
@@ -12693,13 +13049,24 @@ def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None,
 		_gba_scroll_rgba_in_place(canvas, dx, dy)
 		return
 	if op_type == 'set_display_camera_pos':
-		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time)
-		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time)
+		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
+		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
 		try:
 			new_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
 			new_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
 		except Exception:
 			return
+		_trace_display_camera_eval(
+			'apply_display_op',
+			op,
+			frame,
+			op.get('x', 0.0),
+			op.get('y', 0.0),
+			x_val,
+			y_val,
+			new_x,
+			new_y,
+		)
 		prev_x = _gbc_wrap_u16(0)
 		prev_y = _gbc_wrap_u16(0)
 		if isinstance(camera_state, dict):
@@ -12721,8 +13088,8 @@ def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None,
 		src = owner_members.get(src_owner, {}).get(src_member) if isinstance(owner_members, dict) and src_member else None
 		if src is None:
 			return
-		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time)
-		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time)
+		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
+		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
 		try:
 			x = int(round(float(0.0 if x_val is None else x_val)))
 			y = int(round(float(0.0 if y_val is None else y_val)))
@@ -13304,15 +13671,16 @@ def _gba_eval_display_scroll_offset (script_runtime, frame : int = 1, start_time
 	for op in ops:
 		if not isinstance(op, dict):
 			continue
+		extra_env = _runtime_expr_extra_env_for_display_op(op)
 		op_type = str(op.get('op') or '')
 		cond = op.get('condition')
 		if cond is not None and cond != '':
-			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
+			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time, extra_env = extra_env)
 			if cond_val is None or abs(float(cond_val)) <= 1e-9:
 				continue
 		if op_type == 'scroll_display_surface':
-			dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time)
-			dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time)
+			dx_val = _eval_runtime_expr_value(op.get('dx', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
+			dy_val = _eval_runtime_expr_value(op.get('dy', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
 			try:
 				dx = int(round(float(0.0 if dx_val is None else dx_val)))
 				dy = int(round(float(0.0 if dy_val is None else dy_val)))
@@ -13323,8 +13691,8 @@ def _gba_eval_display_scroll_offset (script_runtime, frame : int = 1, start_time
 			dy_total += dy
 			continue
 		if op_type == 'set_display_camera_pos':
-			x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time)
-			y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time)
+			x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
+			y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
 			try:
 				new_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
 				new_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
@@ -13349,21 +13717,61 @@ def _gba_eval_display_camera_pos (script_runtime, frame : int = 1, start_time : 
 	for op in ops:
 		if not isinstance(op, dict):
 			continue
+		extra_env = _runtime_expr_extra_env_for_display_op(op)
 		if str(op.get('op') or '') != 'set_display_camera_pos':
 			continue
 		cond = op.get('condition')
 		if cond is not None and cond != '':
-			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time)
+			cond_val = _eval_runtime_expr_value(cond, frame = frame, start_time = start_time, extra_env = extra_env)
 			if cond_val is None or abs(float(cond_val)) <= 1e-9:
 				continue
-		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time)
-		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time)
+		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
+		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
 		try:
 			camera_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
 			camera_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
 		except Exception:
 			continue
+		_trace_display_camera_eval(
+			'eval_display_camera_pos',
+			op,
+			frame,
+			op.get('x', 0.0),
+			op.get('y', 0.0),
+			x_val,
+			y_val,
+			camera_x,
+			camera_y,
+		)
 	return _gbc_u16_to_signed(camera_x), _gbc_u16_to_signed(camera_y)
+
+def _gba_has_set_camera_ops (script_runtime):
+	runtime = script_runtime or {}
+	for _op in list(runtime.get('init_display_ops') or []):
+		if isinstance(_op, dict) and str(_op.get('op') or '') == 'set_display_camera_pos':
+			return True
+	for _op in list(runtime.get('update_display_ops') or []):
+		if isinstance(_op, dict) and str(_op.get('op') or '') == 'set_display_camera_pos':
+			return True
+	return False
+
+def _gbc_shift_collider_rects_by_camera (rects, cam_x : int = 0, cam_y : int = 0):
+	try:
+		cx = int(round(float(cam_x)))
+	except Exception:
+		cx = 0
+	try:
+		cy = int(round(float(cam_y)))
+	except Exception:
+		cy = 0
+	out = []
+	for rect in list(rects or []):
+		try:
+			x, y, w, h = [int(v) for v in rect]
+		except Exception:
+			continue
+		out.append([int(x - cx), int(y - cy), int(w), int(h)])
+	return out
 
 def _gba_get_runtime_display_scroll_profile (script_runtime, frame : int = 1, start_time : float = None):
 	runtime = script_runtime or {}
@@ -13378,7 +13786,7 @@ def _gba_get_runtime_display_scroll_profile (script_runtime, frame : int = 1, st
 				has_camera_ops = True
 				break
 	if has_camera_ops:
-		# set_camera_pos is an absolute camera command. We cannot replay full
+		# set_camera_position is an absolute camera command. We cannot replay full
 		# per-frame script evaluation in the fixed-step phase1 runtime, so bake
 		# the resolved frame-1 camera offset into init scroll and disable drift.
 		total_dx, total_dy = _gba_eval_display_scroll_offset(
@@ -14361,15 +14769,77 @@ def BuildGbc (world):
 			name = str(sprite_ob.name)
 			if name in composite_transform_overrides:
 				override = composite_transform_overrides.get(name) or {}
-				return float(override.get('x', 0.0)), float(override.get('y', 0.0))
+				x = float(override.get('x', 0.0))
+				y = float(override.get('y', 0.0))
+				try:
+					cam_xy = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
+					x -= float(cam_xy[0])
+					y -= float(cam_xy[1])
+				except Exception:
+					pass
+				return x, y
 			if name in fallback_proxy_names:
 				pos = GetImagePosition(sprite_ob)
-				return float(pos.x), float(pos.y)
-			return _gbc_authored_image_pos_to_gba(sprite_ob)
+				x = float(pos.x)
+				y = float(pos.y)
+				try:
+					cam_xy = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
+					x -= float(cam_xy[0])
+					y -= float(cam_xy[1])
+				except Exception:
+					pass
+				return x, y
+			x, y = _gbc_authored_image_pos_to_gba(sprite_ob)
+			try:
+				cam_xy = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
+				x -= float(cam_xy[0])
+				y -= float(cam_xy[1])
+			except Exception:
+				pass
+			return x, y
 		has_physics = bool(getattr(world, 'usePhysics', True)) and _gb_scene_has_physics(physics_scene_obs)
 		use_multi_body_runtime = False
 		if has_physics:
 			scroll_profile = _gba_get_runtime_display_scroll_profile(script_runtime, frame = 1)
+			camera_ops_present = _gba_has_set_camera_ops(script_runtime)
+			camera_offset_x = 0
+			camera_offset_y = 0
+			if camera_ops_present:
+				try:
+					camera_offset_x, camera_offset_y = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
+				except Exception:
+					camera_offset_x, camera_offset_y = (0, 0)
+				# Phase1 hardware scroll registers are 8-bit; keep camera in
+				# world-space offsets instead of register scrolling to avoid wrap.
+				scroll_profile = {
+					'init_dx' : 0,
+					'init_dy' : 0,
+					'step_dx' : 0,
+					'step_dy' : 0,
+				}
+			phase1_transform_overrides = composite_transform_overrides
+			if camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
+				phase1_transform_overrides = {}
+				for _name, _ov in list((composite_transform_overrides or {}).items()):
+					if not isinstance(_ov, dict):
+						continue
+					ov2 = dict(_ov)
+					try:
+						ov2['x'] = float(_ov.get('x', 0.0)) - float(camera_offset_x)
+					except Exception:
+						ov2['x'] = float(_ov.get('x', 0.0))
+					try:
+						ov2['y'] = float(_ov.get('y', 0.0)) - float(camera_offset_y)
+					except Exception:
+						ov2['y'] = float(_ov.get('y', 0.0))
+					phase1_transform_overrides[_name] = ov2
+			_append_gbc_trace_lines([
+				'[gbc-trace] BuildGbc:scroll_profile:init_dx=' + str(int(scroll_profile.get('init_dx', 0)))
+				+ ',init_dy=' + str(int(scroll_profile.get('init_dy', 0)))
+				+ ',step_dx=' + str(int(scroll_profile.get('step_dx', 0)))
+				+ ',step_dy=' + str(int(scroll_profile.get('step_dy', 0))),
+				'[gbc-trace] BuildGbc:camera_offset_bake:x=' + str(int(camera_offset_x)) + ',y=' + str(int(camera_offset_y)) + ',camera_ops=' + ('1' if camera_ops_present else '0'),
+			])
 			bake_runtime = _gba_runtime_without_display_scroll(script_runtime)
 			rigid_sprite_obs = [
 				ob for ob in physics_image_obs
@@ -14426,7 +14896,7 @@ def BuildGbc (world):
 					world,
 					bg_imgs,
 					image_surfaces = image_surfaces,
-					transform_overrides = composite_transform_overrides,
+					transform_overrides = phase1_transform_overrides,
 					script_runtime = bake_runtime,
 					frame = 1,
 				)
@@ -14531,7 +15001,7 @@ def BuildGbc (world):
 						world,
 						bg_imgs,
 						image_surfaces = image_surfaces,
-						transform_overrides = composite_transform_overrides,
+						transform_overrides = phase1_transform_overrides,
 						script_runtime = bake_runtime,
 						frame = 1,
 					)
@@ -14568,6 +15038,8 @@ def BuildGbc (world):
 					preconverted_names = fallback_proxy_names,
 					debug_rows = collider_debug_rows,
 				)
+				if camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
+					collider_rects = _gbc_shift_collider_rects_by_camera(collider_rects, camera_offset_x, camera_offset_y)
 				_append_gbc_trace_lines([
 					'[gbc-trace] BuildGbc:multi_body_collider_debug=' + (', '.join(collider_debug_rows) if collider_debug_rows else '<none>'),
 				])
@@ -14609,7 +15081,7 @@ def BuildGbc (world):
 					world,
 					bg_imgs,
 					image_surfaces = image_surfaces,
-					transform_overrides = composite_transform_overrides,
+					transform_overrides = phase1_transform_overrides,
 					script_runtime = bake_runtime,
 					frame = 1,
 				)
@@ -14685,6 +15157,8 @@ def BuildGbc (world):
 					debug_include_ignored = True,
 					rect_meta = collider_rect_meta,
 				)
+				if camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
+					collider_rects = _gbc_shift_collider_rects_by_camera(collider_rects, camera_offset_x, camera_offset_y)
 				_append_gbc_trace_lines([
 					'[gbc-trace] BuildGbc:single_body_collider_debug=' + (', '.join(collider_debug_rows) if collider_debug_rows else '<none>'),
 				])

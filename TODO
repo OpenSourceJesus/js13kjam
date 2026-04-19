@@ -1,4 +1,4 @@
-Rename set_camera_pos to set_camera_position
 Get collisions at screen edges working properly
 Make collisions not snap the player to the top of the colliding object
 Remove pygame.Surface.scroll
+Remove printed [physics] and [gbc-col-debug] lines
