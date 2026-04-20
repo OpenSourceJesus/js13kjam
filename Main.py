@@ -3667,6 +3667,18 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		print_const_env_by_owner[owner_name] = dict(env.get('const_env', {}))
 		print_expr_env_by_owner[owner_name] = dict(env.get('expr_env', {}))
 		extracted_camera_ops = _extract_dynamic_set_camera_ops_from_script(analysis_code, is_init)
+		# Safety net: if parser extraction missed set_camera_position calls
+		# (for example due transformed wrappers), still emit a deterministic
+		# owner camera op so GBC fallback does not drop camera control entirely.
+		if not extracted_camera_ops and re.search(r'\bset_camera_position\s*\(', str(analysis_code or '')):
+			owner_pos = _resolve_static_owner_camera_position(owner_name)
+			if isinstance(owner_pos, (list, tuple)) and len(owner_pos) >= 2:
+				extracted_camera_ops = [{
+					'op' : 'set_display_camera_pos',
+					'x' : float(owner_pos[0]),
+					'y' : float(owner_pos[1]),
+					'is_init' : bool(is_init),
+				}]
 		for camera_op in extracted_camera_ops:
 			camera_op = dict(camera_op or {})
 			camera_op['owner_name'] = owner_name
@@ -3693,6 +3705,23 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 					rb_alias = env.get('rb_alias', {}),
 					owner_name = owner_name,
 				)
+			# Deterministic export fallback: if camera expression still references
+			# transient local `pos`, rewrite to static owner coordinates so camera
+			# bake never collapses to (0,0) when locals are unavailable.
+			try:
+				x_expr_txt = str(camera_op.get('x', ''))
+			except Exception:
+				x_expr_txt = ''
+			try:
+				y_expr_txt = str(camera_op.get('y', ''))
+			except Exception:
+				y_expr_txt = ''
+			if ('pos[' in x_expr_txt) or ('pos[' in y_expr_txt):
+				owner_pos = _resolve_static_owner_camera_position(owner_name)
+				if isinstance(owner_pos, (list, tuple)) and len(owner_pos) >= 2:
+					camera_op['x'] = float(owner_pos[0])
+					camera_op['y'] = float(owner_pos[1])
+					camera_op['resolved_from_owner_pos'] = True
 			if is_init:
 				init_display_ops.append(camera_op)
 			else:
@@ -3761,6 +3790,110 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	script_runtime['mirror_scripts'] = mirror_scripts
 	return script_runtime
 
+def _resolve_static_owner_camera_position (owner_name):
+	'''Best-effort static owner position for export-time camera op fallback.'''
+	if not isinstance(owner_name, str) or owner_name == '' or owner_name == '__world__':
+		return None
+	def _author_pos_from_object (_ob):
+		try:
+			# Script-facing fallback should mirror authored Blender location directly.
+			return [float(_ob.location.x), float(_ob.location.y)]
+		except Exception:
+			pass
+		try:
+			_pose, _rot = _gba_get_object_pose(_ob)
+			return [float(_pose[0]), float(_pose[1])]
+		except Exception:
+			pass
+		return None
+	def _norm_owner_key (_name):
+		try:
+			s = str(_name)
+		except Exception:
+			return ''
+		s = s.lstrip('_').lower()
+		out = ''
+		for ch in s:
+			if ('a' <= ch <= 'z') or ('0' <= ch <= '9') or ch == '_':
+				out += ch
+		return out
+	try:
+		owner_candidates = list(_script_lookup_candidate_names(owner_name))
+	except Exception:
+		owner_candidates = [owner_name]
+	if owner_name not in owner_candidates:
+		owner_candidates.insert(0, owner_name)
+	try:
+		runtime_globals = __import__('builtins').globals()
+	except Exception:
+		runtime_globals = {}
+	_spawn_overrides = runtime_globals.get('_gbc_spawn_owner_pos_overrides', {})
+	if isinstance(_spawn_overrides, dict):
+		for cand in owner_candidates:
+			try:
+				_pos = _resolve_script_lookup(_spawn_overrides, cand)
+			except Exception:
+				_pos = None
+			if isinstance(_pos, (list, tuple)) and len(_pos) >= 2:
+				try:
+					_x = float(_pos[0]); _y = float(_pos[1])
+					if (abs(_x) + abs(_y)) > 1e-6:
+						return [_x, _y]
+				except Exception:
+					pass
+	try:
+		_objects = bpy.data.objects
+	except Exception:
+		_objects = None
+	if _objects is not None:
+		for cand in owner_candidates:
+			try:
+				_ob = _objects.get(cand)
+			except Exception:
+				_ob = None
+			if _ob is None:
+				continue
+			try:
+				_p = _author_pos_from_object(_ob)
+				if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+					return [float(_p[0]), float(_p[1])]
+			except Exception:
+				try:
+					_pos = GetObjectPosition(_ob)
+					if isinstance(_pos, (list, tuple)) and len(_pos) >= 2:
+						return [float(_pos[0]), float(_pos[1])]
+				except Exception:
+					pass
+				continue
+		# Fuzzy fallback for normalized script keys (example: "_Ground001"
+		# should resolve authored object "Ground.001").
+		target_norms = set()
+		for cand in owner_candidates:
+			norm = _norm_owner_key(cand)
+			if norm != '':
+				target_norms.add(norm)
+		for norm in list(target_norms):
+			for _ob in list(_objects):
+				try:
+					name_norm = _norm_owner_key(getattr(_ob, 'name', ''))
+				except Exception:
+					name_norm = ''
+				if name_norm != norm:
+					continue
+				try:
+					_p = _author_pos_from_object(_ob)
+					if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+						return [float(_p[0]), float(_p[1])]
+				except Exception:
+					try:
+						_pos = GetObjectPosition(_ob)
+						if isinstance(_pos, (list, tuple)) and len(_pos) >= 2:
+							return [float(_pos[0]), float(_pos[1])]
+					except Exception:
+						pass
+					continue
+	return None
+
 def _runtime_expr_extra_env_for_display_op (op):
 	if not isinstance(op, dict):
 		return {}
@@ -3774,7 +3907,7 @@ def _runtime_expr_extra_env_for_display_op (op):
 		runtime_globals = {}
 	all_script_locals = runtime_globals.get('scriptLocals', {})
 	if not isinstance(all_script_locals, dict):
-		return {}
+		all_script_locals = {}
 	owner_candidates = []
 	try:
 		owner_candidates = list(_script_lookup_candidate_names(owner_name))
@@ -3953,14 +4086,25 @@ def _runtime_expr_extra_env_for_display_op (op):
 					pass
 	return base_env
 
-def _trace_display_camera_eval (stage, op, frame, x_expr, y_expr, x_val, y_val, x_u16, y_u16):
+def _trace_display_camera_eval (stage, op, frame, x_expr, y_expr, x_val, y_val, x_u16, y_u16, extra_env = None):
 	try:
+		_pos_present = False
+		_pos_preview = None
+		if isinstance(extra_env, dict):
+			_pos_present = ('pos' in extra_env)
+			if _pos_present:
+				try:
+					_pos_preview = extra_env.get('pos')
+				except Exception:
+					_pos_preview = None
 		_append_gbc_trace_lines([
 			'[gbc-trace] CameraEval'
 			+ ':stage=' + str(stage)
 			+ ',frame=' + str(int(frame or 0))
 			+ ',owner=' + str(op.get('owner_name') or '')
 			+ ',scope=' + str(op.get('scope_key') or '')
+			+ ',pos_present=' + ('1' if _pos_present else '0')
+			+ ',pos=' + repr(_pos_preview)
 			+ ',x_expr=' + repr(x_expr)
 			+ ',y_expr=' + repr(y_expr)
 			+ ',x_val=' + repr(x_val)
@@ -3970,6 +4114,127 @@ def _trace_display_camera_eval (stage, op, frame, x_expr, y_expr, x_val, y_val, 
 		])
 	except Exception:
 		pass
+
+def _fallback_owner_camera_position (op, extra_env = None):
+	if not isinstance(op, dict):
+		return None
+	owner_name = str(op.get('owner_name') or '')
+	if owner_name == '':
+		return None
+	try:
+		owner_candidates = list(_script_lookup_candidate_names(owner_name))
+	except Exception:
+		owner_candidates = [owner_name]
+	if owner_name not in owner_candidates:
+		owner_candidates.insert(0, owner_name)
+	# First try runtime physics binding from eval env.
+	try:
+		env = extra_env if isinstance(extra_env, dict) else {}
+		_sim = env.get('sim', env.get('physics', None))
+		_rb = env.get('rb', None)
+		if _rb is None and callable(env.get('get_rigidbody', None)):
+			for cand in owner_candidates:
+				_rb = env.get('get_rigidbody')(cand)
+				if _rb is not None:
+					break
+		if _sim is not None and _rb is not None and hasattr(_sim, 'get_rigid_body_position'):
+			_pos = _sim.get_rigid_body_position(_rb)
+			if isinstance(_pos, (list, tuple)) and len(_pos) >= 2:
+				return [float(_pos[0]), float(_pos[1])]
+	except Exception:
+		pass
+	# Then try export-time spawn owner overrides.
+	try:
+		runtime_globals = __import__('builtins').globals()
+		_spawn_overrides = runtime_globals.get('_gbc_spawn_owner_pos_overrides', {})
+		_spawn_pos = None
+		if isinstance(_spawn_overrides, dict):
+			_spawn_pos = _resolve_script_lookup(_spawn_overrides, owner_name)
+			if _spawn_pos is None:
+				for cand in owner_candidates:
+					_spawn_pos = _resolve_script_lookup(_spawn_overrides, cand)
+					if _spawn_pos is not None:
+						break
+		if isinstance(_spawn_pos, (list, tuple)) and len(_spawn_pos) >= 2:
+			return [float(_spawn_pos[0]), float(_spawn_pos[1])]
+	except Exception:
+		pass
+	# Runtime object position fallback (works even when physics handles are not bound).
+	try:
+		runtime_globals = __import__('builtins').globals()
+		_get_pos = runtime_globals.get('get_object_position', None)
+		if callable(_get_pos):
+			for cand in owner_candidates:
+				try:
+					_obj_pos = _get_pos(cand)
+				except Exception:
+					_obj_pos = None
+				if isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2:
+					return [float(_obj_pos[0]), float(_obj_pos[1])]
+		_obs = runtime_globals.get('obs', runtime_globals.get('objects', {}))
+		if isinstance(_obs, dict):
+			for cand in owner_candidates:
+				_entry = _resolve_script_lookup(_obs, cand)
+				if isinstance(_entry, dict):
+					try:
+						_obj_pos = _entry.get('pos', _entry.get('position', None))
+					except Exception:
+						_obj_pos = None
+					if isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2:
+						return [float(_obj_pos[0]), float(_obj_pos[1])]
+	except Exception:
+		pass
+	# Last resort: authored object position.
+	try:
+		_bpy = globals().get('bpy', None)
+		_owner_ob = None
+		_objects = getattr(getattr(_bpy, 'data', None), 'objects', None) if _bpy is not None else None
+		if _objects is not None:
+			for cand in owner_candidates:
+				try:
+					_owner_ob = _objects.get(cand)
+				except Exception:
+					_owner_ob = None
+				if _owner_ob is not None:
+					break
+			if _owner_ob is None:
+				try:
+					owner_norm = _normalize_script_lookup_key(owner_name)
+				except Exception:
+					owner_norm = owner_name.lower().replace(' ', '_')
+				try:
+					for ob in list(_objects):
+						name = str(getattr(ob, 'name', ''))
+						try:
+							name_norm = _normalize_script_lookup_key(name)
+						except Exception:
+							name_norm = name.lower().replace(' ', '_')
+						if (
+							name_norm == owner_norm
+							or name_norm.endswith('_' + owner_norm)
+							or name_norm.endswith(owner_norm)
+							or name_norm.startswith(owner_norm + '_')
+							or name_norm.startswith(owner_norm)
+						):
+							_owner_ob = ob
+							break
+				except Exception:
+					pass
+	except Exception:
+		_owner_ob = None
+	if _owner_ob is not None:
+		try:
+			if (
+				getattr(_owner_ob, 'type', None) == 'EMPTY'
+				and getattr(_owner_ob, 'empty_display_type', None) == 'IMAGE'
+				and getattr(_owner_ob, 'data', None) is not None
+			):
+				_ctr = GetImageCenterPosition(_owner_ob)
+				return [float(_ctr.x), float(_ctr.y)]
+			return [float(_owner_ob.location.x), float(-_owner_ob.location.y)]
+		except Exception:
+			pass
+	return None
 
 def _inject_gbc_signed_position_wrappers (code : str):
 	code = str(code or '')
@@ -4363,22 +4628,38 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'            except:\n'
 		'                pass\n'
 		'    return _collider\n'
-		'if (sim is not None) and hasattr(sim, "get_rigid_body_position") and not getattr(sim, "_js13k_gbc_get_rbpos_safe", False):\n'
+		'class _GbcMutableSimProxy:\n'
+		'    def __init__(self, _sim):\n'
+		'        self._sim = _sim\n'
+		'    def __getattr__(self, _name):\n'
+		'        return getattr(self._sim, _name)\n'
+		'if (sim is not None) and not isinstance(sim, _GbcMutableSimProxy):\n'
+		'    try:\n'
+		'        sim = _GbcMutableSimProxy(sim)\n'
+		'    except:\n'
+		'        pass\n'
+		'if False and (sim is not None) and hasattr(sim, "get_rigid_body_position") and not getattr(sim, "_js13k_gbc_get_rbpos_safe", False):\n'
 		'    _js13k_gbc_orig_get_rigid_body_position = sim.get_rigid_body_position\n'
 		'    def _js13k_gbc_get_rigid_body_position_safe(rigidBody):\n'
 		'        try:\n'
 		'            return _js13k_gbc_unbias_pos_for_get(_js13k_gbc_orig_get_rigid_body_position(rigidBody))\n'
 		'        except:\n'
 		'            return [0.0, 0.0]\n'
-		'    sim.get_rigid_body_position = _js13k_gbc_get_rigid_body_position_safe\n'
-		'    sim._js13k_gbc_get_rbpos_safe = True\n'
-		'if (sim is not None) and hasattr(sim, "set_rigid_body_position") and not getattr(sim, "_js13k_gbc_set_rbpos_safe", False):\n'
+		'    try:\n'
+		'        sim.get_rigid_body_position = _js13k_gbc_get_rigid_body_position_safe\n'
+		'        sim._js13k_gbc_get_rbpos_safe = True\n'
+		'    except:\n'
+		'        pass\n'
+		'if False and (sim is not None) and hasattr(sim, "set_rigid_body_position") and not getattr(sim, "_js13k_gbc_set_rbpos_safe", False):\n'
 		'    _js13k_gbc_orig_set_rigid_body_position = sim.set_rigid_body_position\n'
 		'    def _js13k_gbc_set_rigid_body_position_safe(rigidBody, pos, wakeUp = True):\n'
 		'        return _js13k_gbc_orig_set_rigid_body_position(rigidBody, _js13k_gbc_bias_pos_for_set(pos), wakeUp)\n'
-		'    sim.set_rigid_body_position = _js13k_gbc_set_rigid_body_position_safe\n'
-		'    sim._js13k_gbc_set_rbpos_safe = True\n'
-		'if (sim is not None) and hasattr(sim, "get_collider_position") and not getattr(sim, "_js13k_gbc_get_colpos_safe", False):\n'
+		'    try:\n'
+		'        sim.set_rigid_body_position = _js13k_gbc_set_rigid_body_position_safe\n'
+		'        sim._js13k_gbc_set_rbpos_safe = True\n'
+		'    except:\n'
+		'        pass\n'
+		'if False and (sim is not None) and hasattr(sim, "get_collider_position") and not getattr(sim, "_js13k_gbc_get_colpos_safe", False):\n'
 		'    _js13k_gbc_orig_get_collider_position = sim.get_collider_position\n'
 		'    def _js13k_gbc_get_collider_position_safe(collider):\n'
 		'        try:\n'
@@ -4409,15 +4690,21 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'            return _js13k_gbc_unbias_pos_for_get(_raw_pos)\n'
 		'        except:\n'
 		'            return [0.0, 0.0]\n'
-		'    sim.get_collider_position = _js13k_gbc_get_collider_position_safe\n'
-		'    sim._js13k_gbc_get_colpos_safe = True\n'
-		'if (sim is not None) and hasattr(sim, "set_collider_position") and not getattr(sim, "_js13k_gbc_set_colpos_safe", False):\n'
+		'    try:\n'
+		'        sim.get_collider_position = _js13k_gbc_get_collider_position_safe\n'
+		'        sim._js13k_gbc_get_colpos_safe = True\n'
+		'    except:\n'
+		'        pass\n'
+		'if False and (sim is not None) and hasattr(sim, "set_collider_position") and not getattr(sim, "_js13k_gbc_set_colpos_safe", False):\n'
 		'    _js13k_gbc_orig_set_collider_position = sim.set_collider_position\n'
 		'    def _js13k_gbc_set_collider_position_safe(collider, pos, wakeUp = True):\n'
 		'        collider = _js13k_gbc_resolve_collider_handle(collider)\n'
 		'        return _js13k_gbc_orig_set_collider_position(collider, _js13k_gbc_bias_pos_for_set(pos), wakeUp)\n'
-		'    sim.set_collider_position = _js13k_gbc_set_collider_position_safe\n'
-		'    sim._js13k_gbc_set_colpos_safe = True\n'
+		'    try:\n'
+		'        sim.set_collider_position = _js13k_gbc_set_collider_position_safe\n'
+		'        sim._js13k_gbc_set_colpos_safe = True\n'
+		'    except:\n'
+		'        pass\n'
 	)
 	out_code = str(code or '')
 	try:
@@ -5030,6 +5317,20 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'rb' : None,
 			'col' : None,
 		}
+		try:
+			_pos = [float(_ob.location.x), float(_ob.location.y)]
+			if isinstance(_pos, (list, tuple)) and len(_pos) >= 2:
+				entry['pos'] = _pos
+				entry['position'] = list(_pos)
+		except Exception:
+			try:
+				_pose, _rot = _gba_get_object_pose(_ob)
+				if isinstance(_pose, (list, tuple)) and len(_pose) >= 2:
+					_pos = [float(_pose[0]), float(_pose[1])]
+					entry['pos'] = _pos
+					entry['position'] = list(_pos)
+			except Exception:
+				pass
 		for _attr_name, _attr_value in attr_map.items():
 			entry[str(_attr_name)] = _attr_value
 		gbc_obs_data[str(_owner_name)] = entry
@@ -5586,25 +5887,36 @@ def _get_script_locals (instanceName, scriptKey, this):
 	def _safe_get_collider (name):
 		return _safe_lookup_handle(name, collidersIds, globals().get('colliders', {}))
 	def _safe_get_object_position (name):
-		_fn = __import__('builtins').globals().get('get_object_position')
-		if callable(_fn):
-			return _fn(name)
+		_obs_pos_fn = globals().get('_runtime_obs_position_nonzero', None)
+		_obs_pos = _obs_pos_fn(name) if callable(_obs_pos_fn) else None
+		if _obs_pos is not None:
+			return _obs_pos
 		rb = _safe_get_rigidbody(name)
 		if rb is not None:
 			try:
-				return sim.get_rigid_body_position(rb)
+				pos = _normalize_gbc_script_position(sim.get_rigid_body_position(rb))
+				return _prefer_static_pos_when_dynamic_zero(name, pos)
 			except Exception:
 				pass
 		col = _safe_get_collider(name)
 		if col is not None:
 			try:
-				return sim.get_collider_position(col)
+				pos = _normalize_gbc_script_position(sim.get_collider_position(col))
+				return _prefer_static_pos_when_dynamic_zero(name, pos)
 			except Exception:
 				pass
 		_spawn_pos = _safe_lookup_handle(name, __import__('builtins').globals().get('_gbc_spawn_owner_pos_overrides', {}))
 		if isinstance(_spawn_pos, (list, tuple)) and len(_spawn_pos) >= 2:
 			try:
-				return [float(_spawn_pos[0]), float(_spawn_pos[1])]
+				_x = float(_spawn_pos[0]); _y = float(_spawn_pos[1])
+				if (abs(_x) + abs(_y)) > 1e-6:
+					return [_x, _y]
+			except Exception:
+				pass
+		_fn = __import__('builtins').globals().get('get_object_position')
+		if callable(_fn):
+			try:
+				return _fn(name)
 			except Exception:
 				pass
 		return [0.0, 0.0]
@@ -5782,24 +6094,124 @@ def degrees (ang):
 def radians (ang):
 	return float(math.radians(ang))
 
-def get_object_position (name):
-	rigid_body = _resolve_script_lookup_from_sources(name, rigidBodiesIds, globals().get('rigidBodies', {}))
-	if rigid_body is not None:
-		return sim.get_rigid_body_position(rigid_body)
-	collider = _resolve_script_lookup_from_sources(name, collidersIds, globals().get('colliders', {}))
-	if collider is not None:
-		return sim.get_collider_position(collider)
-	# Visual-only fallback for exported spawned draw proxies.
+def _normalize_gbc_script_position (_pos):
 	try:
-		for candidate in _script_lookup_candidate_names(name):
-			if candidate in surfacesRects and candidate in pivots:
-				return add(surfacesRects[candidate].topleft, pivots[candidate])
-			if candidate in surfacesRects:
-				rect = surfacesRects[candidate]
-				return [float(rect.centerx), float(rect.centery)]
+		x = float(_pos[0])
+		y = float(_pos[1])
+	except Exception:
+		return _pos
+	# Some runtimes expose bias-encoded signed values directly.
+	# Normalize those back into script-space coordinates.
+	half_bias = float(_GBC_POSITION_BIAS) * 0.5
+	if x < -half_bias:
+		x = x + float(_GBC_POSITION_BIAS)
+	elif x > half_bias:
+		x = x - float(_GBC_POSITION_BIAS)
+	if y < -half_bias:
+		y = -(y + float(_GBC_POSITION_BIAS))
+	elif y > half_bias:
+		y = -(y - float(_GBC_POSITION_BIAS))
+	return [x, y]
+
+def _prefer_static_pos_when_dynamic_zero (_name, _dynamic_pos):
+	try:
+		dx = abs(float(_dynamic_pos[0])) + abs(float(_dynamic_pos[1]))
+	except Exception:
+		return _dynamic_pos
+	if dx > 1e-6:
+		return _dynamic_pos
+	# If a resolved rigid-body/collider reports [0,0], prefer exported runtime
+	# object position data for this owner before falling back further.
+	try:
+		_obs = globals().get('obs', globals().get('objects', {}))
+		if isinstance(_obs, dict):
+			_entry = _resolve_script_lookup(_obs, str(_name))
+			if isinstance(_entry, dict):
+				_obj_pos = _entry.get('pos', _entry.get('position', None))
+				if isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2:
+					ox = float(_obj_pos[0]); oy = float(_obj_pos[1])
+					if (abs(ox) + abs(oy)) > 1e-6:
+						return [ox, oy]
 	except Exception:
 		pass
-	raise ValueError('name needs to refer to a rigid body or a collider found in rigidBodiesIds or collidersIds')
+	# Spawn-owner overrides can be stale zeros; only trust non-zero entries.
+	try:
+		_spawn = __import__('builtins').globals().get('_gbc_spawn_owner_pos_overrides', {})
+		if isinstance(_spawn, dict):
+			_sp = _resolve_script_lookup(_spawn, str(_name))
+			if isinstance(_sp, (list, tuple)) and len(_sp) >= 2:
+				sx = float(_sp[0]); sy = float(_sp[1])
+				if (abs(sx) + abs(sy)) > 1e-6:
+					return [sx, sy]
+	except Exception:
+		pass
+	try:
+		static_pos = _resolve_static_owner_camera_position(str(_name))
+	except Exception:
+		static_pos = None
+	if isinstance(static_pos, (list, tuple)) and len(static_pos) >= 2:
+		try:
+			sx = abs(float(static_pos[0])) + abs(float(static_pos[1]))
+			if sx > 1e-6:
+				return [float(static_pos[0]), float(static_pos[1])]
+		except Exception:
+			pass
+	return _dynamic_pos
+
+def _runtime_obs_position_nonzero (_name):
+	try:
+		_obs = globals().get('obs', globals().get('objects', {}))
+		if not isinstance(_obs, dict):
+			return None
+		_entry = _resolve_script_lookup(_obs, str(_name))
+		if not isinstance(_entry, dict):
+			return None
+		_obj_pos = _entry.get('pos', _entry.get('position', None))
+		if not (isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2):
+			return None
+		ox = float(_obj_pos[0]); oy = float(_obj_pos[1])
+		if (abs(ox) + abs(oy)) <= 1e-6:
+			return None
+		return [ox, oy]
+	except Exception:
+		return None
+
+def get_object_position (name):
+	_obs_pos_fn = globals().get('_runtime_obs_position_nonzero', None)
+	_obs_pos = _obs_pos_fn(name) if callable(_obs_pos_fn) else None
+	if _obs_pos is not None:
+		return _obs_pos
+	rigid_body = _resolve_script_lookup_from_sources(name, rigidBodiesIds, globals().get('rigidBodies', {}))
+	if rigid_body is not None:
+		pos = _normalize_gbc_script_position(sim.get_rigid_body_position(rigid_body))
+		return _prefer_static_pos_when_dynamic_zero(name, pos)
+	collider = _resolve_script_lookup_from_sources(name, collidersIds, globals().get('colliders', {}))
+	if collider is not None:
+		pos = _normalize_gbc_script_position(sim.get_collider_position(collider))
+		return _prefer_static_pos_when_dynamic_zero(name, pos)
+	# Runtime/exported object fallback (works when physics handles are missing).
+	try:
+		_obs = globals().get('obs', globals().get('objects', {}))
+		if isinstance(_obs, dict):
+			_entry = _resolve_script_lookup(_obs, str(name))
+			if isinstance(_entry, dict):
+				_obj_pos = _entry.get('pos', _entry.get('position', None))
+				if isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2:
+					return [float(_obj_pos[0]), float(_obj_pos[1])]
+	except Exception:
+		pass
+	# For non-physics objects, always report authored object-space position.
+	# (Do not use render-rect/camera-space fallbacks here.)
+	try:
+		static_pos = _resolve_static_owner_camera_position(str(name))
+	except Exception:
+		static_pos = None
+	if isinstance(static_pos, (list, tuple)) and len(static_pos) >= 2:
+		try:
+			return [float(static_pos[0]), float(static_pos[1])]
+		except Exception:
+			pass
+	raise ValueError('name needs to refer to a rigid body, collider, or exported object with an authored position')
 
 def get_object_rotation (name):
 	if name in rigidBodiesIds:
@@ -8541,25 +8953,36 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			def _mirror_get_collider (_name):
 				return _mirror_lookup_handle(_name, env.get('collidersIds', {}), env.get('colliders', {}))
 			def _mirror_get_object_position (_name):
-				_fn = __import__('builtins').globals().get('get_object_position')
-				if callable(_fn):
-					return _fn(_name)
+				_obs_pos_fn = globals().get('_runtime_obs_position_nonzero', None)
+				_obs_pos = _obs_pos_fn(_name) if callable(_obs_pos_fn) else None
+				if _obs_pos is not None:
+					return _obs_pos
 				_rb = _mirror_get_rigidbody(_name)
 				if _rb is not None:
 					try:
-						return env.get('sim').get_rigid_body_position(_rb)
+						_pos = _normalize_gbc_script_position(env.get('sim').get_rigid_body_position(_rb))
+						return _prefer_static_pos_when_dynamic_zero(_name, _pos)
 					except Exception:
 						pass
 				_col = _mirror_get_collider(_name)
 				if _col is not None:
 					try:
-						return env.get('sim').get_collider_position(_col)
+						_pos = _normalize_gbc_script_position(env.get('sim').get_collider_position(_col))
+						return _prefer_static_pos_when_dynamic_zero(_name, _pos)
 					except Exception:
 						pass
 				_spawn_pos = _mirror_lookup_handle(_name, __import__('builtins').globals().get('_gbc_spawn_owner_pos_overrides', {}))
 				if isinstance(_spawn_pos, (list, tuple)) and len(_spawn_pos) >= 2:
 					try:
-						return [float(_spawn_pos[0]), float(_spawn_pos[1])]
+						_x = float(_spawn_pos[0]); _y = float(_spawn_pos[1])
+						if (abs(_x) + abs(_y)) > 1e-6:
+							return [_x, _y]
+					except Exception:
+						pass
+				_fn = __import__('builtins').globals().get('get_object_position')
+				if callable(_fn):
+					try:
+						return _fn(_name)
 					except Exception:
 						pass
 				return [0.0, 0.0]
@@ -11812,6 +12235,17 @@ class _GbcPhase1MirrorSim:
 			key = str(_collider)
 		except Exception:
 			key = ''
+		def _parse_handle_pair (_v):
+			try:
+				if isinstance(_v, str):
+					parsed = ast.literal_eval(_v)
+				else:
+					parsed = _v
+				if isinstance(parsed, (tuple, list)) and len(parsed) == 2:
+					return (int(parsed[0]), int(parsed[1]))
+			except Exception:
+				return None
+			return None
 		def _trace_colpos (_source, _lookup_key, _pos):
 			try:
 				_g = __import__('builtins').globals()
@@ -11835,6 +12269,54 @@ class _GbcPhase1MirrorSim:
 			except Exception:
 				pass
 		if key != '':
+			handle_pair = _parse_handle_pair(key)
+			if handle_pair is not None:
+				for _k, _p in list(getattr(self, 'collider_positions', {}).items()):
+					if _parse_handle_pair(_k) == handle_pair:
+						try:
+							out = [float(_p[0]), float(_p[1])]
+							_trace_colpos('tuple_pair_collider_map', _k, out)
+							return out
+						except Exception:
+							pass
+				_named_cols = getattr(self, 'named_colliders', {})
+				if isinstance(_named_cols, dict):
+					for _owner_key, _h in list(_named_cols.items()):
+						if _parse_handle_pair(_h) != handle_pair:
+							continue
+						try:
+							owner_txt = str(_owner_key)
+						except Exception:
+							owner_txt = ''
+						if owner_txt == '':
+							continue
+						for _cand in list(_script_lookup_candidate_names(owner_txt)):
+							if _cand in self.owner_collider_positions:
+								try:
+									p = self.owner_collider_positions[_cand]
+									out = [float(p[0]), float(p[1])]
+									_trace_colpos('tuple_pair_owner_map', _cand, out)
+									return out
+								except Exception:
+									pass
+							if _cand in self.collider_positions:
+								try:
+									p = self.collider_positions[_cand]
+									out = [float(p[0]), float(p[1])]
+									_trace_colpos('tuple_pair_handle_map', _cand, out)
+									return out
+								except Exception:
+									pass
+						try:
+							_get_pos = __import__('builtins').globals().get('get_object_position', None)
+							if callable(_get_pos):
+								p = _get_pos(owner_txt)
+								if p is not None:
+									out = [float(p[0]), float(p[1])]
+									_trace_colpos('tuple_pair_owner_object_pos', owner_txt, out)
+									return out
+						except Exception:
+							pass
 			# Owner-bound scripts often pass symbolic object keys (for example
 			# __gbc_spawn_* draw-proxy names). Prefer authored collider position
 			# mapped by owner key before touching runtime-handle fallbacks.
@@ -11976,6 +12458,84 @@ class _GbcPhase1MirrorSim:
 				return out
 		except Exception:
 			pass
+		# For unresolved owner-like string keys (for example "_Ground001"),
+		# prefer authored static pose over dynamic sprite/body fallback.
+		try:
+			if isinstance(key, str) and key != '':
+				_pos = _resolve_static_owner_camera_position(key)
+				if isinstance(_pos, (list, tuple)) and len(_pos) >= 2:
+					out = [float(_pos[0]), float(_pos[1])]
+					_trace_colpos('owner_static_terminal', key, out)
+					return out
+		except Exception:
+			pass
+		try:
+			if isinstance(key, str) and key != '':
+				out = [0.0, 0.0]
+				_trace_colpos('owner_string_no_body_fallback', key, out)
+				return out
+		except Exception:
+			pass
+		# Tuple-like collider handles (for example "(1, 0)") should never
+		# fall back to sprite body position; resolve by reverse owner lookup.
+		try:
+			is_tuple_handle = (
+				isinstance(key, str)
+				and len(key) >= 5
+				and key[0] == '('
+				and key[-1] == ')'
+				and ',' in key
+			)
+		except Exception:
+			is_tuple_handle = False
+		if is_tuple_handle:
+			try:
+				_col_ids = __import__('builtins').globals().get('collidersIds', {})
+			except Exception:
+				_col_ids = {}
+			if isinstance(_col_ids, dict):
+				for _owner_key, _owner_handle in list(_col_ids.items()):
+					try:
+						if str(_owner_handle) != key:
+							continue
+					except Exception:
+						continue
+					try:
+						owner_txt = str(_owner_key)
+					except Exception:
+						owner_txt = ''
+					if owner_txt == '':
+						continue
+					for _cand in list(_script_lookup_candidate_names(owner_txt)):
+						if _cand in self.owner_collider_positions:
+							try:
+								p = self.owner_collider_positions[_cand]
+								out = [float(p[0]), float(p[1])]
+								_trace_colpos('tuple_owner_reverse_map', _cand, out)
+								return out
+							except Exception:
+								pass
+						if _cand in self.collider_positions:
+							try:
+								p = self.collider_positions[_cand]
+								out = [float(p[0]), float(p[1])]
+								_trace_colpos('tuple_handle_reverse_map', _cand, out)
+								return out
+							except Exception:
+								pass
+					try:
+						_get_pos = __import__('builtins').globals().get('get_object_position', None)
+						if callable(_get_pos):
+							p = _get_pos(owner_txt)
+							if p is not None:
+								out = [float(p[0]), float(p[1])]
+								_trace_colpos('tuple_owner_object_pos', owner_txt, out)
+								return out
+					except Exception:
+						pass
+			out = [0.0, 0.0]
+			_trace_colpos('tuple_no_body_fallback', key, out)
+			return out
 		out = self.get_rigid_body_position(_collider)
 		_trace_colpos('body_fallback', key, out)
 		return out
@@ -12172,6 +12732,8 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 		if not getattr(_ob, 'exportOb', False) or _ob.hide_get():
 			continue
 		_set_collider_aliases(_ob)
+	sim.named_colliders = colliders_named
+	sim.named_rigid_bodies = rigid_bodies_named
 	return {
 		'objects' : {},
 		'sim' : sim,
@@ -13051,6 +13613,13 @@ def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None,
 	if op_type == 'set_display_camera_pos':
 		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
 		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
+		if x_val is None or y_val is None:
+			_fallback_pos = _fallback_owner_camera_position(op, extra_env = extra_env)
+			if isinstance(_fallback_pos, (list, tuple)) and len(_fallback_pos) >= 2:
+				if x_val is None:
+					x_val = float(_fallback_pos[0])
+				if y_val is None:
+					y_val = float(_fallback_pos[1])
 		try:
 			new_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
 			new_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
@@ -13066,6 +13635,7 @@ def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None,
 			y_val,
 			new_x,
 			new_y,
+			extra_env = extra_env,
 		)
 		prev_x = _gbc_wrap_u16(0)
 		prev_y = _gbc_wrap_u16(0)
@@ -13693,6 +14263,13 @@ def _gba_eval_display_scroll_offset (script_runtime, frame : int = 1, start_time
 		if op_type == 'set_display_camera_pos':
 			x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
 			y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
+			if x_val is None or y_val is None:
+				_fallback_pos = _fallback_owner_camera_position(op, extra_env = extra_env)
+				if isinstance(_fallback_pos, (list, tuple)) and len(_fallback_pos) >= 2:
+					if x_val is None:
+						x_val = float(_fallback_pos[0])
+					if y_val is None:
+						y_val = float(_fallback_pos[1])
 			try:
 				new_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
 				new_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
@@ -13727,6 +14304,13 @@ def _gba_eval_display_camera_pos (script_runtime, frame : int = 1, start_time : 
 				continue
 		x_val = _eval_runtime_expr_value(op.get('x', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
 		y_val = _eval_runtime_expr_value(op.get('y', 0.0), frame = frame, start_time = start_time, extra_env = extra_env)
+		if x_val is None or y_val is None:
+			_fallback_pos = _fallback_owner_camera_position(op, extra_env = extra_env)
+			if isinstance(_fallback_pos, (list, tuple)) and len(_fallback_pos) >= 2:
+				if x_val is None:
+					x_val = float(_fallback_pos[0])
+				if y_val is None:
+					y_val = float(_fallback_pos[1])
 		try:
 			camera_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
 			camera_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
@@ -13742,6 +14326,7 @@ def _gba_eval_display_camera_pos (script_runtime, frame : int = 1, start_time : 
 			y_val,
 			camera_x,
 			camera_y,
+			extra_env = extra_env,
 		)
 	return _gbc_u16_to_signed(camera_x), _gbc_u16_to_signed(camera_y)
 
