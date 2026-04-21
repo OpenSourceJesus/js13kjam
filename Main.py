@@ -3717,6 +3717,7 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			except Exception:
 				y_expr_txt = ''
 			if ('pos[' in x_expr_txt) or ('pos[' in y_expr_txt):
+				camera_op['camera_follow_owner'] = owner_name
 				owner_pos = _resolve_static_owner_camera_position(owner_name)
 				if isinstance(owner_pos, (list, tuple)) and len(owner_pos) >= 2:
 					camera_op['x'] = float(owner_pos[0])
@@ -3797,7 +3798,7 @@ def _resolve_static_owner_camera_position (owner_name):
 	def _author_pos_from_object (_ob):
 		try:
 			# Script-facing fallback should mirror authored Blender location directly.
-			return [float(_ob.location.x), float(_ob.location.y)]
+			return [float(_ob.location.x), float(-_ob.location.y)]
 		except Exception:
 			pass
 		try:
@@ -4720,6 +4721,52 @@ def _normalize_gb_script_code (code : str, is_init : bool, script_type : str = '
 		out = _py2gb_normalize_gb_script_code(code, is_init, script_type, owner_name)
 	if script_type == 'gbc-py':
 		out = _inject_gbc_signed_position_wrappers(out)
+		# Keep position/rotation helpers callable even if user/runtime locals
+		# accidentally shadow helper names with non-callables.
+		try:
+			out = re.sub(
+				r'(?<!\.)\b(?:gbc_get_object_position|get_object_position)\s*\(',
+				'_js13k_call_get_object_position(',
+				str(out),
+			)
+			out = re.sub(
+				r'(?<!\.)\b(?:gbc_get_object_rotation|get_object_rotation)\s*\(',
+				'_js13k_call_get_object_rotation(',
+				str(out),
+			)
+			# Route bare print() through a protected runtime alias so object
+			# attributes/locals named "print" cannot break script logging.
+			out = re.sub(
+				r'(?<!\.)\bprint\s*\(',
+				'_js13k_call_print(',
+				str(out),
+			)
+			out = re.sub(
+				r'(?<!\.)\b_js13k_print\s*\(',
+				'_js13k_call_print(',
+				str(out),
+			)
+		except Exception:
+			pass
+		try:
+			out = _protect_runtime_binding_assignments(
+				str(out),
+				{
+					'print',
+					'_js13k_print',
+					'get_object_position',
+					'get_object_rotation',
+					'gbc_get_object_position',
+					'gbc_get_object_rotation',
+					'_js13k_internal_get_object_position',
+					'_js13k_internal_get_object_rotation',
+					'_js13k_call_print',
+					'_js13k_call_get_object_position',
+					'_js13k_call_get_object_rotation',
+				},
+			)
+		except Exception:
+			pass
 	return out
 
 def ExportGbaPyAssembly (world, gba_out_path : str):
@@ -4805,6 +4852,14 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'this', 'sim', 'physics', 'objects', 'obs', 'rigidBodies', 'rbs', 'colliders', 'cols',
 			'get_rigidbody', 'get_collider', 'get_object_position', 'get_object_rotation',
 			'gbc_get_rigidbody', 'gbc_get_collider', 'gbc_get_object_position', 'gbc_get_object_rotation',
+			'_js13k_internal_get_object_position', '_js13k_internal_get_object_rotation',
+			'_js13k_pos_resolver', '_js13k_rot_resolver',
+			'_js13k_print',
+			'_js13k_call_print',
+			'_js13k_call_get_object_position',
+			'_js13k_call_get_object_rotation',
+			'__js13k_helpers__',
+			'print',
 		}
 		_owner_key = str(_owner_name or '')
 		if _owner_key != '' and _owner_key != '__world__':
@@ -4994,6 +5049,50 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			return ast.unparse(_tree)
 		except Exception:
 			return str(_code)
+	def _protect_runtime_binding_assignments (_code, _protected_names):
+		if not isinstance(_code, str) or _code.strip() == '':
+			return str(_code or '')
+		protected = {str(_n) for _n in list(_protected_names or []) if isinstance(_n, str) and str(_n) != ''}
+		if protected == set():
+			return str(_code)
+		def _mapped_name (_name):
+			return '_js13k_user_shadow_' + str(_name)
+		try:
+			_tree = ast.parse(_code)
+		except Exception:
+			return str(_code)
+		class _ProtectBindings(ast.NodeTransformer):
+			def visit_Name (self, node):
+				node = self.generic_visit(node)
+				if isinstance(node, ast.Name) and isinstance(node.id, str) and node.id in protected and isinstance(node.ctx, (ast.Store, ast.Del)):
+					return ast.copy_location(ast.Name(id = _mapped_name(node.id), ctx = node.ctx), node)
+				return node
+			def visit_FunctionDef (self, node):
+				node = self.generic_visit(node)
+				if isinstance(node.name, str) and node.name in protected:
+					node.name = _mapped_name(node.name)
+				return node
+			def visit_AsyncFunctionDef (self, node):
+				node = self.generic_visit(node)
+				if isinstance(node.name, str) and node.name in protected:
+					node.name = _mapped_name(node.name)
+				return node
+			def visit_ClassDef (self, node):
+				node = self.generic_visit(node)
+				if isinstance(node.name, str) and node.name in protected:
+					node.name = _mapped_name(node.name)
+				return node
+			def visit_ExceptHandler (self, node):
+				node = self.generic_visit(node)
+				if isinstance(getattr(node, 'name', None), str) and node.name in protected:
+					node.name = _mapped_name(node.name)
+				return node
+		try:
+			_tree = _ProtectBindings().visit(_tree)
+			_tree = ast.fix_missing_locations(_tree)
+			return ast.unparse(_tree)
+		except Exception:
+			return str(_code)
 	def _build_gbc_obs_prefix (_obs_data):
 		_obs_map = dict(_obs_data) if isinstance(_obs_data, dict) else {}
 		return (
@@ -5068,6 +5167,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 		_validate_gbc_object_attributes_for_export(ob)
 	spawn_template_obs = set()
 	template_spawn_instance_tags_by_ob = {}
+	gbc_spawn_owner_pos_overrides = {}
 	def _append_script_entry (_owner_name, _script_txt, _is_init, _is_global, _script, _symbol_hint, _owner_attributes = None):
 		raw_script_txt = _script_txt
 		norm_script_txt = _normalize_gb_script_code(_script_txt, bool(_is_init), 'gbc-py', _owner_name)
@@ -5182,12 +5282,26 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			coll = bpy.data.collections.get(prefab_name)
 			if not coll or not getattr(coll, 'exportPrefab', False):
 				continue
+			call_pos = call.get('pos', None)
+			call_pos_xy = None
+			if isinstance(call_pos, (list, tuple)):
+				try:
+					call_pos_xy = [
+						float(call_pos[0]) if len(call_pos) > 0 else 0.0,
+						float(call_pos[1]) if len(call_pos) > 1 else 0.0,
+					]
+				except Exception:
+					call_pos_xy = None
 			for ob in coll.all_objects:
 				tags = template_spawn_instance_tags_by_ob.setdefault(ob, [])
 				tags.append(call_idx)
+				if call_pos_xy is not None:
+					spawn_owner = '__gbc_spawn_%i_%s' %(int(call_idx), ob.name)
+					gbc_spawn_owner_pos_overrides[str(spawn_owner)] = list(call_pos_xy)
 	except Exception:
 		spawn_template_obs = set()
 		template_spawn_instance_tags_by_ob = {}
+		gbc_spawn_owner_pos_overrides = {}
 	template_local_scripts_skipped = 0
 	template_local_scripts_spawn_included = 0
 	if world:
@@ -5317,6 +5431,23 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'rb' : None,
 			'col' : None,
 		}
+		override_pos = None
+		try:
+			override_pos = gbc_spawn_owner_pos_overrides.get(str(_owner_name), None)
+		except Exception:
+			override_pos = None
+		if isinstance(override_pos, (list, tuple)) and len(override_pos) >= 2:
+			try:
+				_pos = [float(override_pos[0]), float(override_pos[1])]
+				entry['pos'] = _pos
+				entry['position'] = list(_pos)
+			except Exception:
+				pass
+		if 'pos' in entry and 'position' in entry:
+			for _attr_name, _attr_value in attr_map.items():
+				entry[str(_attr_name)] = _attr_value
+			gbc_obs_data[str(_owner_name)] = entry
+			return
 		try:
 			_pos = [float(_ob.location.x), float(_ob.location.y)]
 			if isinstance(_pos, (list, tuple)) and len(_pos) >= 2:
@@ -5887,8 +6018,17 @@ def _get_script_locals (instanceName, scriptKey, this):
 	def _safe_get_collider (name):
 		return _safe_lookup_handle(name, collidersIds, globals().get('colliders', {}))
 	def _safe_get_object_position (name):
-		_obs_pos_fn = globals().get('_runtime_obs_position_nonzero', None)
-		_obs_pos = _obs_pos_fn(name) if callable(_obs_pos_fn) else None
+		def _nonzero_or_none (_p):
+			try:
+				if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+					_x = float(_p[0]); _y = float(_p[1])
+					if (abs(_x) + abs(_y)) > 1e-6:
+						return [_x, _y]
+			except Exception:
+				pass
+			return None
+		_obs_pos_fn = globals().get('_runtime_obs_position_from_sources', None)
+		_obs_pos = _obs_pos_fn(name, localsDict.get('objects', {}), localsDict.get('obs', {}), globals().get('obs', {}), globals().get('objects', {})) if callable(_obs_pos_fn) else None
 		if _obs_pos is not None:
 			return _obs_pos
 		rb = _safe_get_rigidbody(name)
@@ -5916,9 +6056,32 @@ def _get_script_locals (instanceName, scriptKey, this):
 		_fn = __import__('builtins').globals().get('get_object_position')
 		if callable(_fn):
 			try:
-				return _fn(name)
+				_out = _fn(name)
+				_nz = _nonzero_or_none(_out)
+				if _nz is not None:
+					return _nz
 			except Exception:
 				pass
+		try:
+			_obs = globals().get('obs', globals().get('objects', {}))
+			if isinstance(_obs, dict):
+				_entry = _resolve_script_lookup(_obs, str(name))
+				if isinstance(_entry, dict):
+					_obj_pos = _entry.get('pos', _entry.get('position', None))
+					if isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2:
+						_nz = _nonzero_or_none(_obj_pos)
+						if _nz is not None:
+							return _nz
+		except Exception:
+			pass
+		try:
+			_static = _resolve_static_owner_camera_position(str(name))
+			if isinstance(_static, (list, tuple)) and len(_static) >= 2:
+				_nz = _nonzero_or_none(_static)
+				if _nz is not None:
+					return _nz
+		except Exception:
+			pass
 		return [0.0, 0.0]
 	def _safe_get_object_rotation (name):
 		_fn = __import__('builtins').globals().get('get_object_rotation')
@@ -5938,6 +6101,75 @@ def _get_script_locals (instanceName, scriptKey, this):
 				pass
 		return 0.0
 	# Keep helper callables stable across frames even when script locals persist.
+	localsDict['_js13k_print'] = __import__('builtins').print
+	if not callable(localsDict.get('print', None)):
+		localsDict['print'] = localsDict['_js13k_print']
+	def _js13k_call_print (*args, sep = ' ', end = '\n', file = None, flush = False):
+		for _fn in (localsDict.get('_js13k_print', None), localsDict.get('print', None), __import__('builtins').print):
+			if callable(_fn):
+				try:
+					return _fn(*args, sep = sep, end = end, file = file, flush = flush)
+				except Exception:
+					continue
+		return None
+	def _js13k_call_get_object_position (_name):
+		def _nonzero_or_none (_p):
+			try:
+				if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+					_x = float(_p[0]); _y = float(_p[1])
+					if (abs(_x) + abs(_y)) > 1e-6:
+						return [_x, -_y]
+			except Exception:
+				pass
+			return None
+		for _fn in (
+			localsDict.get('_js13k_internal_get_object_position', None),
+			localsDict.get('gbc_get_object_position', None),
+			localsDict.get('get_object_position', None),
+			_safe_get_object_position,
+		):
+			if callable(_fn):
+				try:
+					_out = _fn(_name)
+					_nz = _nonzero_or_none(_out)
+					if _nz is not None:
+						return _nz
+				except Exception:
+					continue
+		try:
+			_fn = __import__('builtins').globals().get('get_object_position', None)
+			if callable(_fn):
+				_out = _fn(_name)
+				_nz = _nonzero_or_none(_out)
+				if _nz is not None:
+					return _nz
+		except Exception:
+			pass
+		try:
+			_static = _resolve_static_owner_camera_position(str(_name))
+			if isinstance(_static, (list, tuple)) and len(_static) >= 2:
+				_nz = _nonzero_or_none(_static)
+				if _nz is not None:
+					return _nz
+		except Exception:
+			pass
+		return [0.0, 0.0]
+	def _js13k_call_get_object_rotation (_name):
+		for _fn in (
+			localsDict.get('_js13k_internal_get_object_rotation', None),
+			localsDict.get('gbc_get_object_rotation', None),
+			localsDict.get('get_object_rotation', None),
+			_safe_get_object_rotation,
+		):
+			if callable(_fn):
+				try:
+					return _fn(_name)
+				except Exception:
+					continue
+		return 0.0
+	localsDict['_js13k_call_print'] = _js13k_call_print
+	localsDict['_js13k_call_get_object_position'] = _js13k_call_get_object_position
+	localsDict['_js13k_call_get_object_rotation'] = _js13k_call_get_object_rotation
 	localsDict['get_rigidbody'] = _safe_get_rigidbody
 	localsDict['get_collider'] = _safe_get_collider
 	localsDict['get_object_position'] = _safe_get_object_position
@@ -5946,6 +6178,87 @@ def _get_script_locals (instanceName, scriptKey, this):
 	localsDict['gbc_get_collider'] = _safe_get_collider
 	localsDict['gbc_get_object_position'] = _safe_get_object_position
 	localsDict['gbc_get_object_rotation'] = _safe_get_object_rotation
+	localsDict['_js13k_internal_get_object_position'] = _safe_get_object_position
+	localsDict['_js13k_internal_get_object_rotation'] = _safe_get_object_rotation
+	localsDict['_js13k_pos_resolver'] = _safe_get_object_position
+	localsDict['_js13k_rot_resolver'] = _safe_get_object_rotation
+	try:
+		class _Js13kScriptHelpers:
+			__slots__ = ('_pos_fn', '_rot_fn')
+			def __init__ (self, _p, _r):
+				object.__setattr__(self, '_pos_fn', _p)
+				object.__setattr__(self, '_rot_fn', _r)
+			def __setattr__ (self, _name, _value):
+				# Prevent scripts from clobbering helper callables.
+				if _name in ('get_object_position', 'get_object_rotation', '_pos_fn', '_rot_fn'):
+					return
+				object.__setattr__(self, _name, _value)
+			def _trace_pos (self, _name, _source, _value):
+				try:
+					_g = globals()
+					_seen = _g.get('_js13k_helper_pos_trace_seen', None)
+					if not isinstance(_seen, set):
+						_seen = set()
+						_g['_js13k_helper_pos_trace_seen'] = _seen
+					_sig = ('locals', str(_name), str(_source), repr(_value))
+					if _sig in _seen:
+						return
+					_seen.add(_sig)
+					_trace = _g.get('_append_gbc_trace_lines', None)
+					if callable(_trace):
+						_trace([
+							'[gbc-trace] HelperGetPos'
+							+ ':scope=locals'
+							+ ',name=' + repr(str(_name))
+							+ ',source=' + str(_source)
+							+ ',out=' + repr(_value)
+						])
+				except Exception:
+					pass
+			def get_object_position (self, _name):
+				try:
+					_fn = globals().get('_runtime_obs_position_from_sources', None)
+					_p = _fn(
+						_name,
+						localsDict.get('objects', {}),
+						localsDict.get('obs', {}),
+						globals().get('objects', {}),
+						globals().get('obs', {}),
+					) if callable(_fn) else None
+					if _p is not None:
+						_out = [float(_p[0]), float(_p[1])]
+						self._trace_pos(_name, 'obs_sources', _out)
+						return _out
+				except Exception:
+					pass
+				_out = self._pos_fn(_name)
+				self._trace_pos(_name, 'pos_fn_fallback', _out)
+				return _out
+			def get_object_rotation (self, _name):
+				return self._rot_fn(_name)
+		_helpers = _Js13kScriptHelpers(_safe_get_object_position, _safe_get_object_rotation)
+		localsDict['__js13k_helpers__'] = _helpers
+	except Exception:
+		pass
+	# Final safety net: recover callable bindings if a script/local clobbered them.
+	try:
+		if not callable(localsDict.get('get_object_position', None)):
+			localsDict['get_object_position'] = _safe_get_object_position
+		if not callable(localsDict.get('get_object_rotation', None)):
+			localsDict['get_object_rotation'] = _safe_get_object_rotation
+		_h = localsDict.get('__js13k_helpers__', None)
+		_pos_ok = callable(getattr(_h, 'get_object_position', None)) if _h is not None else False
+		_rot_ok = callable(getattr(_h, 'get_object_rotation', None)) if _h is not None else False
+		if not (_pos_ok and _rot_ok):
+			class _Js13kScriptHelpersFallback:
+				__slots__ = ()
+				def get_object_position (self, _name):
+					return _safe_get_object_position(_name)
+				def get_object_rotation (self, _name):
+					return _safe_get_object_rotation(_name)
+			localsDict['__js13k_helpers__'] = _Js13kScriptHelpersFallback()
+	except Exception:
+		pass
 	return localsDict
 
 def _exec_script (code, instanceName, this, phase, scriptKey):
@@ -6158,37 +6471,144 @@ def _prefer_static_pos_when_dynamic_zero (_name, _dynamic_pos):
 			pass
 	return _dynamic_pos
 
+def _runtime_obs_position_from_sources (_name, *sources):
+	try:
+		candidates = []
+		seen = set()
+		def _append_cand (_v):
+			try:
+				_s = str(_v)
+			except Exception:
+				return
+			if _s == '' or _s in seen:
+				return
+			seen.add(_s)
+			candidates.append(_s)
+		_append_cand(_name)
+		try:
+			for _cand in list(_script_lookup_candidate_names(_name) or []):
+				_append_cand(_cand)
+		except Exception:
+			pass
+		for _src in list(sources or []):
+			src_dict = _src if isinstance(_src, dict) else None
+			if not isinstance(src_dict, dict):
+				try:
+					if hasattr(_src, 'items'):
+						src_dict = dict(_src.items())
+				except Exception:
+					src_dict = None
+			if not isinstance(src_dict, dict):
+				continue
+			for _cand in candidates:
+				_entry = src_dict.get(_cand, None)
+				if not isinstance(_entry, dict):
+					continue
+				_obj_pos = _entry.get('pos', _entry.get('position', None))
+				if not (isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2):
+					continue
+				try:
+					return [float(_obj_pos[0]), float(_obj_pos[1])]
+				except Exception:
+					continue
+		try:
+			name_norm = _normalize_script_lookup_key(_name)
+		except Exception:
+			name_norm = ''
+		if name_norm != '':
+			for _src in list(sources or []):
+				src_dict = _src if isinstance(_src, dict) else None
+				if not isinstance(src_dict, dict):
+					try:
+						if hasattr(_src, 'items'):
+							src_dict = dict(_src.items())
+					except Exception:
+						src_dict = None
+				if not isinstance(src_dict, dict):
+					continue
+				for _k, _entry in list(src_dict.items()):
+					if not isinstance(_k, str) or not isinstance(_entry, dict):
+						continue
+					if _normalize_script_lookup_key(_k) != name_norm:
+						continue
+					_obj_pos = _entry.get('pos', _entry.get('position', None))
+					if not (isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2):
+						continue
+					try:
+						return [float(_obj_pos[0]), float(_obj_pos[1])]
+					except Exception:
+						continue
+		return None
+	except Exception:
+		return None
+
 def _runtime_obs_position_nonzero (_name):
 	try:
 		_obs = globals().get('obs', globals().get('objects', {}))
-		if not isinstance(_obs, dict):
-			return None
-		_entry = _resolve_script_lookup(_obs, str(_name))
-		if not isinstance(_entry, dict):
-			return None
-		_obj_pos = _entry.get('pos', _entry.get('position', None))
-		if not (isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2):
-			return None
-		ox = float(_obj_pos[0]); oy = float(_obj_pos[1])
-		if (abs(ox) + abs(oy)) <= 1e-6:
-			return None
-		return [ox, oy]
+		_objects = globals().get('objects', {})
+		return _runtime_obs_position_from_sources(_name, _obs, _objects)
 	except Exception:
 		return None
 
 def get_object_position (name):
+	def _trace_return (_source, _value):
+		try:
+			_g = globals()
+			_seen = _g.get('_js13k_get_object_position_trace_seen', None)
+			if not isinstance(_seen, set):
+				_seen = set()
+				_g['_js13k_get_object_position_trace_seen'] = _seen
+			_sig = (str(name), str(_source), repr(_value))
+			if _sig in _seen:
+				return
+			_seen.add(_sig)
+			_trace = _g.get('_append_gbc_trace_lines', None)
+			if callable(_trace):
+				_trace([
+					'[gbc-trace] GetObjectPos'
+					+ ':name=' + repr(str(name))
+					+ ',source=' + str(_source)
+					+ ',out=' + repr(_value)
+				])
+		except Exception:
+			pass
+	# In gbc-py wrapped execution, prefer authored/exported object position
+	# first to avoid transient physics-handle misresolution.
+	try:
+		if bool(globals().get('_js13k_gbc_signed_pos_wrapped', False)):
+			_obs_pos_fn = globals().get('_runtime_obs_position_from_sources', None)
+			_obs_pos = _obs_pos_fn(
+				name,
+				globals().get('objects', {}),
+				globals().get('obs', {}),
+			) if callable(_obs_pos_fn) else None
+			if _obs_pos is not None:
+				_trace_return('gbc_wrapped_obs', _obs_pos)
+				return _obs_pos
+			_static = _resolve_static_owner_camera_position(str(name))
+			if isinstance(_static, (list, tuple)) and len(_static) >= 2:
+				_out = [float(_static[0]), float(_static[1])]
+				_trace_return('gbc_wrapped_static', _out)
+				return _out
+	except Exception:
+		pass
 	_obs_pos_fn = globals().get('_runtime_obs_position_nonzero', None)
 	_obs_pos = _obs_pos_fn(name) if callable(_obs_pos_fn) else None
 	if _obs_pos is not None:
+		_trace_return('obs_nonzero', _obs_pos)
 		return _obs_pos
 	rigid_body = _resolve_script_lookup_from_sources(name, rigidBodiesIds, globals().get('rigidBodies', {}))
 	if rigid_body is not None:
 		pos = _normalize_gbc_script_position(sim.get_rigid_body_position(rigid_body))
-		return _prefer_static_pos_when_dynamic_zero(name, pos)
+		_out = _prefer_static_pos_when_dynamic_zero(name, pos)
+		_trace_return('rigid_body', _out)
+		return _out
 	collider = _resolve_script_lookup_from_sources(name, collidersIds, globals().get('colliders', {}))
 	if collider is not None:
 		pos = _normalize_gbc_script_position(sim.get_collider_position(collider))
-		return _prefer_static_pos_when_dynamic_zero(name, pos)
+		_out = _prefer_static_pos_when_dynamic_zero(name, pos)
+		_trace_return('collider', _out)
+		return _out
 	# Runtime/exported object fallback (works when physics handles are missing).
 	try:
 		_obs = globals().get('obs', globals().get('objects', {}))
@@ -6197,7 +6617,9 @@ def get_object_position (name):
 			if isinstance(_entry, dict):
 				_obj_pos = _entry.get('pos', _entry.get('position', None))
 				if isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2:
-					return [float(_obj_pos[0]), float(_obj_pos[1])]
+					_out = [float(_obj_pos[0]), float(_obj_pos[1])]
+					_trace_return('obs_fallback', _out)
+					return _out
 	except Exception:
 		pass
 	# For non-physics objects, always report authored object-space position.
@@ -6208,7 +6630,9 @@ def get_object_position (name):
 		static_pos = None
 	if isinstance(static_pos, (list, tuple)) and len(static_pos) >= 2:
 		try:
-			return [float(static_pos[0]), float(static_pos[1])]
+			_out = [float(static_pos[0]), float(static_pos[1])]
+			_trace_return('static_fallback', _out)
+			return _out
 		except Exception:
 			pass
 	raise ValueError('name needs to refer to a rigid body, collider, or exported object with an authored position')
@@ -6220,6 +6644,12 @@ def get_object_rotation (name):
 		return sim.get_collider_rotation(collidersIds[name])
 	else:
 		raise ValueError('name needs to refer to a rigid body or a collider found in rigidBodiesIds or collidersIds')
+
+def _js13k_runtime_get_object_position (name):
+	return get_object_position(name)
+
+def _js13k_runtime_get_object_rotation (name):
+	return get_object_rotation(name)
 
 class Particle:
 	name : str
@@ -8655,7 +9085,34 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 		frame = 0
 		init_printed = False
 		mirror_logged_errors = set()
-		def _log_mirror_script_error (kind, owner, scope_key, frame_val, err, code_txt = '', source_code = '', source_line_offset = 0, is_non_local : bool = False):
+		class _ProtectedMirrorLocals:
+			"""Mapping view that blocks non-callable writes to protected callables."""
+			__slots__ = ('_store', '_protected_callable_keys')
+			def __init__ (self, _store, _protected = None):
+				self._store = _store if isinstance(_store, dict) else {}
+				self._protected_callable_keys = set(_protected or [])
+			def __getitem__ (self, _k):
+				return self._store[_k]
+			def __setitem__ (self, _k, _v):
+				try:
+					if isinstance(_k, str) and _k in self._protected_callable_keys:
+						_prev = self._store.get(_k, None)
+						if (callable(_prev) or (_prev is None)) and (not callable(_v)):
+							return
+				except Exception:
+					pass
+				self._store[_k] = _v
+			def __delitem__ (self, _k):
+				if isinstance(_k, str) and _k in self._protected_callable_keys:
+					return
+				del self._store[_k]
+			def __contains__ (self, _k):
+				return _k in self._store
+			def get (self, _k, _default = None):
+				return self._store.get(_k, _default)
+			def keys (self):
+				return self._store.keys()
+		def _log_mirror_script_error (kind, owner, scope_key, frame_val, err, code_txt = '', source_code = '', source_line_offset = 0, is_non_local : bool = False, env_snapshot = None):
 			try:
 				err_text = f'{type(err).__name__}: {err}'
 			except Exception:
@@ -8794,6 +9251,40 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				if caret_line:
 					detail_lines.append(caret_line)
 				detail_lines.append(err_text)
+				# Extra diagnostics for persistent callable-shadowing failures.
+				try:
+					_err_msg = str(err)
+				except Exception:
+					_err_msg = ''
+				if isinstance(err, TypeError) and ('object is not callable' in _err_msg):
+					try:
+						_env = env_snapshot if isinstance(env_snapshot, dict) else {}
+					except Exception:
+						_env = {}
+					try:
+						_h = _env.get('__js13k_helpers__', None)
+					except Exception:
+						_h = None
+					def _type_name (_v):
+						try:
+							return type(_v).__name__
+						except Exception:
+							return '<unknown>'
+					try:
+						_helpers_pos = getattr(_h, 'get_object_position', None) if _h is not None else None
+					except Exception:
+						_helpers_pos = None
+					detail_lines.append(
+						'[gbc-py:debug] callable-types '
+						+ 'print=' + _type_name(_env.get('print', None))
+						+ ', _js13k_print=' + _type_name(_env.get('_js13k_print', None))
+						+ ', _js13k_call_print=' + _type_name(_env.get('_js13k_call_print', None))
+						+ ', get_object_position=' + _type_name(_env.get('get_object_position', None))
+						+ ', _js13k_internal_get_object_position=' + _type_name(_env.get('_js13k_internal_get_object_position', None))
+						+ ', _js13k_call_get_object_position=' + _type_name(_env.get('_js13k_call_get_object_position', None))
+						+ ', __js13k_helpers__=' + _type_name(_h)
+						+ ', __js13k_helpers__.get_object_position=' + _type_name(_helpers_pos)
+					)
 				for _line in detail_lines:
 					print(_line)
 			except Exception:
@@ -8953,8 +9444,17 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			def _mirror_get_collider (_name):
 				return _mirror_lookup_handle(_name, env.get('collidersIds', {}), env.get('colliders', {}))
 			def _mirror_get_object_position (_name):
-				_obs_pos_fn = globals().get('_runtime_obs_position_nonzero', None)
-				_obs_pos = _obs_pos_fn(_name) if callable(_obs_pos_fn) else None
+				def _nonzero_or_none (_p):
+					try:
+						if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+							_x = float(_p[0]); _y = float(_p[1])
+							if (abs(_x) + abs(_y)) > 1e-6:
+								return [_x, _y]
+					except Exception:
+						pass
+					return None
+				_obs_pos_fn = globals().get('_runtime_obs_position_from_sources', None)
+				_obs_pos = _obs_pos_fn(_name, env.get('objects', {}), env.get('obs', {}), globals().get('obs', {}), globals().get('objects', {})) if callable(_obs_pos_fn) else None
 				if _obs_pos is not None:
 					return _obs_pos
 				_rb = _mirror_get_rigidbody(_name)
@@ -8982,9 +9482,32 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				_fn = __import__('builtins').globals().get('get_object_position')
 				if callable(_fn):
 					try:
-						return _fn(_name)
+						_out = _fn(_name)
+						_nz = _nonzero_or_none(_out)
+						if _nz is not None:
+							return _nz
 					except Exception:
 						pass
+				try:
+					_obs = env.get('obs', env.get('objects', globals().get('obs', globals().get('objects', {}))))
+					if isinstance(_obs, dict):
+						_entry = _resolve_script_lookup(_obs, str(_name))
+						if isinstance(_entry, dict):
+							_obj_pos = _entry.get('pos', _entry.get('position', None))
+							if isinstance(_obj_pos, (list, tuple)) and len(_obj_pos) >= 2:
+								_nz = _nonzero_or_none(_obj_pos)
+								if _nz is not None:
+									return _nz
+				except Exception:
+					pass
+				try:
+					_static = _resolve_static_owner_camera_position(str(_name))
+					if isinstance(_static, (list, tuple)) and len(_static) >= 2:
+						_nz = _nonzero_or_none(_static)
+						if _nz is not None:
+							return _nz
+				except Exception:
+					pass
 				return [0.0, 0.0]
 			def _mirror_get_object_rotation (_name):
 				_fn = __import__('builtins').globals().get('get_object_rotation')
@@ -9012,6 +9535,67 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			env['gbc_get_collider'] = _mirror_get_collider
 			env['gbc_get_object_position'] = _mirror_get_object_position
 			env['gbc_get_object_rotation'] = _mirror_get_object_rotation
+			env['_js13k_internal_get_object_position'] = _mirror_get_object_position
+			env['_js13k_internal_get_object_rotation'] = _mirror_get_object_rotation
+			env['_js13k_pos_resolver'] = _mirror_get_object_position
+			env['_js13k_rot_resolver'] = _mirror_get_object_rotation
+			try:
+				class _Js13kMirrorHelpers:
+					__slots__ = ('_pos_fn', '_rot_fn')
+					def __init__ (self, _p, _r):
+						object.__setattr__(self, '_pos_fn', _p)
+						object.__setattr__(self, '_rot_fn', _r)
+					def __setattr__ (self, _name, _value):
+						if _name in ('get_object_position', 'get_object_rotation', '_pos_fn', '_rot_fn'):
+							return
+						object.__setattr__(self, _name, _value)
+					def _trace_pos (self, _name, _source, _value):
+						try:
+							_g = globals()
+							_seen = _g.get('_js13k_helper_pos_trace_seen', None)
+							if not isinstance(_seen, set):
+								_seen = set()
+								_g['_js13k_helper_pos_trace_seen'] = _seen
+							_sig = ('mirror', str(_name), str(_source), repr(_value))
+							if _sig in _seen:
+								return
+							_seen.add(_sig)
+							_trace = _g.get('_append_gbc_trace_lines', None)
+							if callable(_trace):
+								_trace([
+									'[gbc-trace] HelperGetPos'
+									+ ':scope=mirror'
+									+ ',name=' + repr(str(_name))
+									+ ',source=' + str(_source)
+									+ ',out=' + repr(_value)
+								])
+						except Exception:
+							pass
+					def get_object_position (self, _name):
+						try:
+							_fn = globals().get('_runtime_obs_position_from_sources', None)
+							_p = _fn(
+								_name,
+								env.get('objects', {}),
+								env.get('obs', {}),
+								globals().get('objects', {}),
+								globals().get('obs', {}),
+							) if callable(_fn) else None
+							if _p is not None:
+								_out = [float(_p[0]), float(_p[1])]
+								self._trace_pos(_name, 'obs_sources', _out)
+								return _out
+						except Exception:
+							pass
+						_out = self._pos_fn(_name)
+						self._trace_pos(_name, 'pos_fn_fallback', _out)
+						return _out
+					def get_object_rotation (self, _name):
+						return self._rot_fn(_name)
+				_helpers = _Js13kMirrorHelpers(_mirror_get_object_position, _mirror_get_object_rotation)
+				env['__js13k_helpers__'] = _helpers
+			except Exception:
+				pass
 			if owner != '__world__':
 				this_obj = env.get('this')
 				if this_obj is None:
@@ -9068,6 +9652,36 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				env.setdefault('dt', dt)
 				env.setdefault('deltaTime', dt)
 				env.setdefault('frame', int(frame))
+			# Final safety net for persisted mirror locals: re-assert callable
+			# helper/print bindings right before script compile/exec.
+			try:
+				if not callable(env.get('_js13k_print', None)):
+					env['_js13k_print'] = _mirror_runtime_print
+				if not callable(env.get('_js13k_call_print', None)):
+					env['_js13k_call_print'] = _mirror_runtime_print
+				if not callable(env.get('print', None)):
+					env['print'] = _mirror_runtime_print
+				if not callable(env.get('get_object_position', None)):
+					env['get_object_position'] = _mirror_get_object_position
+				if not callable(env.get('get_object_rotation', None)):
+					env['get_object_rotation'] = _mirror_get_object_rotation
+				if not callable(env.get('_js13k_call_get_object_position', None)):
+					env['_js13k_call_get_object_position'] = _mirror_get_object_position
+				if not callable(env.get('_js13k_call_get_object_rotation', None)):
+					env['_js13k_call_get_object_rotation'] = _mirror_get_object_rotation
+				_h = env.get('__js13k_helpers__', None)
+				_pos_ok = callable(getattr(_h, 'get_object_position', None)) if _h is not None else False
+				_rot_ok = callable(getattr(_h, 'get_object_rotation', None)) if _h is not None else False
+				if not (_pos_ok and _rot_ok):
+					class _Js13kMirrorHelpersFallback:
+						__slots__ = ()
+						def get_object_position (self, _name):
+							return _mirror_get_object_position(_name)
+						def get_object_rotation (self, _name):
+							return _mirror_get_object_rotation(_name)
+					env['__js13k_helpers__'] = _Js13kMirrorHelpersFallback()
+			except Exception:
+				pass
 			return env
 		def _mirror_ticks_ms (_frame = None):
 			if _frame is None:
@@ -9121,6 +9735,49 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			source_line_offset = int(script_info.get('source_line_offset', 0) or 0)
 			if code_txt.strip() == '':
 				return
+			# Defensive runtime rewrite: keep print() callable even if script/env
+			# defines a non-callable `print` symbol.
+			try:
+				code_txt = re.sub(
+					r'__js13k_helpers__\s*\.\s*get_object_position\s*\(',
+					'_js13k_call_get_object_position(',
+					str(code_txt),
+				)
+				code_txt = re.sub(
+					r'__js13k_helpers__\s*\.\s*get_object_rotation\s*\(',
+					'_js13k_call_get_object_rotation(',
+					str(code_txt),
+				)
+				code_txt = re.sub(
+					r'(?<!\.)\b(?:gbc_get_object_position|get_object_position)\s*\(',
+					'_js13k_call_get_object_position(',
+					str(code_txt),
+				)
+				code_txt = re.sub(
+					r'(?<!\.)\b(?:gbc_get_object_rotation|get_object_rotation)\s*\(',
+					'_js13k_call_get_object_rotation(',
+					str(code_txt),
+				)
+				code_txt = re.sub(r'(?<!\.)\bprint\s*\(', '_js13k_call_print(', str(code_txt))
+				code_txt = re.sub(r'(?<!\.)\b_js13k_print\s*\(', '_js13k_call_print(', str(code_txt))
+				code_txt = _protect_runtime_binding_assignments(
+					str(code_txt),
+					{
+						'print',
+						'_js13k_print',
+						'get_object_position',
+						'get_object_rotation',
+						'gbc_get_object_position',
+						'gbc_get_object_rotation',
+						'_js13k_internal_get_object_position',
+						'_js13k_internal_get_object_rotation',
+						'_js13k_call_print',
+						'_js13k_call_get_object_position',
+						'_js13k_call_get_object_rotation',
+					},
+				)
+			except Exception:
+				pass
 			cache_key = (scope_key, code_txt)
 			code_obj = _compiled_script_cache.get(cache_key)
 			if code_obj is None:
@@ -9137,6 +9794,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 						source_code = source_code_txt,
 						source_line_offset = source_line_offset,
 						is_non_local = bool(script_info.get('is_global')),
+						env_snapshot = None,
 					)
 					try:
 						numbered = []
@@ -9154,6 +9812,19 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					return
 				_compiled_script_cache[cache_key] = code_obj
 			env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key)
+			protected_callable_keys = {
+				'print',
+				'_js13k_print',
+				'_js13k_call_print',
+				'get_object_position',
+				'get_object_rotation',
+				'_js13k_internal_get_object_position',
+				'_js13k_internal_get_object_rotation',
+				'_js13k_call_get_object_position',
+				'_js13k_call_get_object_rotation',
+				'gbc_get_object_position',
+				'gbc_get_object_rotation',
+			}
 			if owner != '__world__':
 				try:
 					this_obj = env.get('this')
@@ -9259,7 +9930,72 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					prefix += f" [f={int(frame or 0)}]"
 				return builtins_mod.print(f"{prefix} {text}", flush = flush)
 			# Route script print() through mirror logger for stable runtime-prefixed output.
+			env['_js13k_print'] = _mirror_runtime_print
 			env['print'] = _mirror_runtime_print
+			def _js13k_call_print (*args, sep = ' ', end = '\n', file = None, flush = False):
+				for _fn in (env.get('_js13k_print', None), env.get('print', None), builtins_mod.print):
+					if callable(_fn):
+						try:
+							return _fn(*args, sep = sep, end = end, file = file, flush = flush)
+						except Exception:
+							continue
+				return None
+			def _js13k_call_get_object_position (_name):
+				def _nonzero_or_none (_p):
+					try:
+						if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+							_x = float(_p[0]); _y = float(_p[1])
+							if (abs(_x) + abs(_y)) > 1e-6:
+								return [_x, -_y]
+					except Exception:
+						pass
+					return None
+				for _fn in (
+					env.get('_js13k_internal_get_object_position', None),
+					env.get('gbc_get_object_position', None),
+					env.get('get_object_position', None),
+				):
+					if callable(_fn):
+						try:
+							_out = _fn(_name)
+							_nz = _nonzero_or_none(_out)
+							if _nz is not None:
+								return _nz
+						except Exception:
+							continue
+				try:
+					_fn = __import__('builtins').globals().get('get_object_position', None)
+					if callable(_fn):
+						_out = _fn(_name)
+						_nz = _nonzero_or_none(_out)
+						if _nz is not None:
+							return _nz
+				except Exception:
+					pass
+				try:
+					_static = _resolve_static_owner_camera_position(str(_name))
+					if isinstance(_static, (list, tuple)) and len(_static) >= 2:
+						_nz = _nonzero_or_none(_static)
+						if _nz is not None:
+							return _nz
+				except Exception:
+					pass
+				return [0.0, 0.0]
+			def _js13k_call_get_object_rotation (_name):
+				for _fn in (
+					env.get('_js13k_internal_get_object_rotation', None),
+					env.get('gbc_get_object_rotation', None),
+					env.get('get_object_rotation', None),
+				):
+					if callable(_fn):
+						try:
+							return _fn(_name)
+						except Exception:
+							continue
+				return 0.0
+			env['_js13k_call_print'] = _js13k_call_print
+			env['_js13k_call_get_object_position'] = _js13k_call_get_object_position
+			env['_js13k_call_get_object_rotation'] = _js13k_call_get_object_rotation
 			def _sync_owner_attr_locals_into_this ():
 				if owner == '__world__':
 					return
@@ -9279,7 +10015,8 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					except Exception:
 						pass
 			try:
-				exec(code_obj, env, env)
+				exec_locals = _ProtectedMirrorLocals(env, protected_callable_keys)
+				exec(code_obj, env, exec_locals)
 			except Exception as err:
 				_sync_owner_attr_locals_into_this()
 				_log_mirror_script_error(
@@ -9292,6 +10029,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					source_code = source_code_txt,
 					source_line_offset = source_line_offset,
 					is_non_local = bool(script_info.get('is_global')),
+					env_snapshot = env,
 				)
 				# Preserve partial mirror state so strict print placeholder
 				# resolution can still read globals initialized before failure.
@@ -9998,7 +10736,7 @@ def _gbc_palette4_from_rgba (rgba):
 		return _GBC_DEFAULT_BG_COLORS[: 4]
 	return _gbc_quantize_palette4(pix, lock_extremes = True)
 
-def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0):
+def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0, camera_follow_mode : bool = False, camera_follow_center_x : int = 0, camera_follow_center_y : int = 0):
 	code = bytearray()
 	def emit(*vals):
 		code.extend(vals)
@@ -10106,6 +10844,15 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	init_vy = int(init_vy)
 	grav_step_x = int(grav_step_x)
 	grav_step_y = int(grav_step_y)
+	camera_follow_mode = bool(camera_follow_mode)
+	camera_follow_center_x = int(camera_follow_center_x)
+	camera_follow_center_y = int(camera_follow_center_y)
+	if camera_follow_mode:
+		# scroll = center - world_pos ; SCX/SCY receive -scroll each frame.
+		init_scroll_x = int(camera_follow_center_x - int(init_x))
+		init_scroll_y = int(camera_follow_center_y - int(init_y))
+		scroll_step_x = 0
+		scroll_step_y = 0
 	script_spec = velocity_script if isinstance(velocity_script, dict) else None
 	script_base_vx = 0
 	script_left_delta = 0
@@ -10253,17 +11000,40 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	emit(0xC9)
 	update_live_addr = len(code)
 	patch_jr(jr_not_dead, update_live_addr)
-	# Runtime display scroll: accumulate scripted per-frame scroll and map to SCY/SCX.
-	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
-	emit(0xC6, int(scroll_step_x) & 0xFF)
-	emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	# Runtime display scroll: either scripted scroll profile or follow-camera mode.
+	if camera_follow_mode:
+		# scroll_x = center_x - x
+		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+		emit(0x2F)  # cpl
+		emit(0x3C)  # inc a
+		emit(0xC6, int(camera_follow_center_x) & 0xFF)
+		emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+		# scroll_y = center_y - y
+		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+		emit(0x2F)  # cpl
+		emit(0x3C)  # inc a
+		emit(0xC6, int(camera_follow_center_y) & 0xFF)
+		emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	else:
+		emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+		emit(0xC6, int(scroll_step_x) & 0xFF)
+		emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+		emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+		emit(0x2F)  # cpl
+		emit(0x3C)  # inc a
+		ldh_imm_a(0x43)  # SCX = -scroll_x
+		emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+		emit(0xC6, int(scroll_step_y) & 0xFF)
+		emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+		emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+		emit(0x2F)  # cpl
+		emit(0x3C)  # inc a
+		ldh_imm_a(0x42)  # SCY = -scroll_y
+	# Program hardware scroll registers from current scroll vars.
 	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
 	emit(0x2F)  # cpl
 	emit(0x3C)  # inc a
 	ldh_imm_a(0x43)  # SCX = -scroll_x
-	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
-	emit(0xC6, int(scroll_step_y) & 0xFF)
-	emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
 	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
 	emit(0x2F)  # cpl
 	emit(0x3C)  # inc a
@@ -10573,7 +11343,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	patch_call(call_copy_bg_attr_patch, copy_addr)
 	return bytes(code)
 
-def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette_bank, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0):
+def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette_bank, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0, camera_follow_mode : bool = False, camera_follow_center_x : int = 0, camera_follow_center_y : int = 0):
 	tile_data_len = 384 * 16
 	tilemap_len = 32 * 32
 	attrmap_len = 32 * 32
@@ -10602,13 +11372,13 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	rom_size = 0x8000
 	sprite_tile_count = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_TILES, int((len(sprite_tile_bytes) if sprite_tile_bytes else 0) // 16)))
 	collider_count = len(collider_payload) // 4
-	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs, collision_w_px = collision_w_px, collision_h_px = collision_h_px, collision_off_x_px = collision_off_x_px, collision_off_y_px = collision_off_y_px)
+	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs, collision_w_px = collision_w_px, collision_h_px = collision_h_px, collision_off_x_px = collision_off_x_px, collision_off_y_px = collision_off_y_px, camera_follow_mode = camera_follow_mode, camera_follow_center_x = camera_follow_center_x, camera_follow_center_y = camera_follow_center_y)
 	bg_data_addr = code_start + len(probe)
 	if bg_data_addr & 0xF:
 		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
 	sprite_data_addr = bg_data_addr + len(bg_payload)
 	collider_data_addr = sprite_data_addr + sprite_tile_count * 16
-	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs, collision_w_px = collision_w_px, collision_h_px = collision_h_px, collision_off_x_px = collision_off_x_px, collision_off_y_px = collision_off_y_px)
+	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs, collision_w_px = collision_w_px, collision_h_px = collision_h_px, collision_off_x_px = collision_off_x_px, collision_off_y_px = collision_off_y_px, camera_follow_mode = camera_follow_mode, camera_follow_center_x = camera_follow_center_x, camera_follow_center_y = camera_follow_center_y)
 	total_need = collider_data_addr + len(collider_payload)
 	if total_need > rom_size:
 		raise RuntimeError('GBC dynamic physics export exceeds 32KB ROM size.')
@@ -15387,6 +16157,18 @@ def BuildGbc (world):
 		if has_physics:
 			scroll_profile = _gba_get_runtime_display_scroll_profile(script_runtime, frame = 1)
 			camera_ops_present = _gba_has_set_camera_ops(script_runtime)
+			camera_follow_mode = False
+			try:
+				for _op in list((script_runtime or {}).get('update_display_ops') or []):
+					if not isinstance(_op, dict):
+						continue
+					if str(_op.get('op') or '') != 'set_display_camera_pos':
+						continue
+					if str(_op.get('camera_follow_owner') or '') != '':
+						camera_follow_mode = True
+						break
+			except Exception:
+				camera_follow_mode = False
 			camera_offset_x = 0
 			camera_offset_y = 0
 			if camera_ops_present:
@@ -15403,7 +16185,7 @@ def BuildGbc (world):
 					'step_dy' : 0,
 				}
 			phase1_transform_overrides = composite_transform_overrides
-			if camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
+			if (not camera_follow_mode) and camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
 				phase1_transform_overrides = {}
 				for _name, _ov in list((composite_transform_overrides or {}).items()):
 					if not isinstance(_ov, dict):
@@ -15424,6 +16206,7 @@ def BuildGbc (world):
 				+ ',step_dx=' + str(int(scroll_profile.get('step_dx', 0)))
 				+ ',step_dy=' + str(int(scroll_profile.get('step_dy', 0))),
 				'[gbc-trace] BuildGbc:camera_offset_bake:x=' + str(int(camera_offset_x)) + ',y=' + str(int(camera_offset_y)) + ',camera_ops=' + ('1' if camera_ops_present else '0'),
+				'[gbc-trace] BuildGbc:camera_follow_mode=' + ('1' if camera_follow_mode else '0'),
 			])
 			bake_runtime = _gba_runtime_without_display_scroll(script_runtime)
 			rigid_sprite_obs = [
@@ -15623,7 +16406,7 @@ def BuildGbc (world):
 					preconverted_names = fallback_proxy_names,
 					debug_rows = collider_debug_rows,
 				)
-				if camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
+				if (not camera_follow_mode) and camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
 					collider_rects = _gbc_shift_collider_rects_by_camera(collider_rects, camera_offset_x, camera_offset_y)
 				_append_gbc_trace_lines([
 					'[gbc-trace] BuildGbc:multi_body_collider_debug=' + (', '.join(collider_debug_rows) if collider_debug_rows else '<none>'),
@@ -15742,7 +16525,7 @@ def BuildGbc (world):
 					debug_include_ignored = True,
 					rect_meta = collider_rect_meta,
 				)
-				if camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
+				if (not camera_follow_mode) and camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
 					collider_rects = _gbc_shift_collider_rects_by_camera(collider_rects, camera_offset_x, camera_offset_y)
 				_append_gbc_trace_lines([
 					'[gbc-trace] BuildGbc:single_body_collider_debug=' + (', '.join(collider_debug_rows) if collider_debug_rows else '<none>'),
@@ -15809,6 +16592,9 @@ def BuildGbc (world):
 					collision_h_px = collision_h_px,
 					collision_off_x_px = collision_off_x_px,
 					collision_off_y_px = collision_off_y_px,
+					camera_follow_mode = camera_follow_mode,
+					camera_follow_center_x = 0,
+					camera_follow_center_y = 0,
 				)
 		else:
 			_gba_apply_script_surface_ops(
