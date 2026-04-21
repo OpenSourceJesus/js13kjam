@@ -12784,7 +12784,7 @@ def _gbc_collect_runtime_colliders (scene_obs, ignored_name : str = None, ignore
 	return rects
 
 class _GbcPhase1MirrorSim:
-	def __init__ (self, x : int, y : int, vx : int, vy : int, grav_step_x : int, grav_step_y : int, sprite_w_px : int, sprite_h_px : int, collider_rects, offscreen_bottom_y : int, velocity_script = None, collider_positions = None, owner_collider_positions = None, collider_rect_meta = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0):
+	def __init__ (self, x : int, y : int, vx : int, vy : int, grav_step_x : int, grav_step_y : int, sprite_w_px : int, sprite_h_px : int, collider_rects, offscreen_bottom_y : int, velocity_script = None, collider_positions = None, owner_collider_positions = None, collider_rect_meta = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0, script_world_offset = None):
 		self.x = max(0, min(65535, int(x)))
 		self.y = max(0, min(65535, int(y)))
 		self.vx = int(vx)
@@ -12805,6 +12805,15 @@ class _GbcPhase1MirrorSim:
 		self.collision_h_px = max(1, int(collision_h_px if collision_h_px is not None else self.sprite_h_px))
 		self.collision_off_x_px = int(collision_off_x_px)
 		self.collision_off_y_px = int(collision_off_y_px)
+		self.script_world_offset_x = 0.0
+		self.script_world_offset_y = 0.0
+		try:
+			if isinstance(script_world_offset, (list, tuple)) and len(script_world_offset) >= 2:
+				self.script_world_offset_x = float(script_world_offset[0])
+				self.script_world_offset_y = float(script_world_offset[1])
+		except Exception:
+			self.script_world_offset_x = 0.0
+			self.script_world_offset_y = 0.0
 		self.x_subacc = int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2)
 		self.y_subacc = int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2)
 		self._collision_trace_seen = set()
@@ -12982,12 +12991,17 @@ class _GbcPhase1MirrorSim:
 		return [-float(self.vx), -float(self.vy)]
 	def set_rigid_body_position (self, _rigidBody, pos, wakeUp = True):
 		try:
-			self.x = (int(round(float(pos[0]))) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
-			self.y = (int(round(-float(pos[1]))) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
+			local_x = float(pos[0]) - float(self.script_world_offset_x)
+			local_y = float(pos[1]) - float(self.script_world_offset_y)
+			self.x = (int(round(local_x)) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
+			self.y = (int(round(-local_y)) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
 		except Exception:
 			pass
 	def get_rigid_body_position (self, _rigidBody):
-		return [float(self.x - _GBC_POSITION_BIAS), -float(self.y - _GBC_POSITION_BIAS)]
+		return [
+			float(self.x - _GBC_POSITION_BIAS) + float(self.script_world_offset_x),
+			-float(self.y - _GBC_POSITION_BIAS) + float(self.script_world_offset_y),
+		]
 	def set_collider_position (self, _collider, pos, wakeUp = True):
 		try:
 			key = str(_collider)
@@ -13393,7 +13407,7 @@ class _GbcPhase1MirrorSim:
 			return (lambda *args, **kwargs: None)
 		return (lambda *args, **kwargs: 0)
 
-def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects, velocity_script = None, physics_scene_obs = None, runtime_handle_env = None, collider_rect_meta = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0):
+def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, init_vx : int, init_vy : int, grav_step_x : int, grav_step_y : int, collider_rects, velocity_script = None, physics_scene_obs = None, runtime_handle_env = None, collider_rect_meta = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0, script_world_offset = None):
 	if sprite_ob is None:
 		return {}
 	sprite_w_px = max(8, min(_GBC_RUNTIME_MAX_METASPRITE_SPAN_TILES * 8, int(sprite_tiles_w) * 8))
@@ -13413,7 +13427,7 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 		except Exception:
 			off_x = 0.0
 			off_y = 0.0
-		return [float(pos[0]) + off_x, float(pos[1]) - off_y]
+		return [float(pos[0]) + off_x, -(float(pos[1]) - off_y)]
 	sim = _GbcPhase1MirrorSim(
 		x = init_x,
 		y = init_y,
@@ -13433,6 +13447,7 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 		collision_h_px = collision_h_px,
 		collision_off_x_px = collision_off_x_px,
 		collision_off_y_px = collision_off_y_px,
+		script_world_offset = script_world_offset,
 	)
 	handle = str(GetVarNameForObject(sprite_ob))
 	rigid_bodies_named = {}
@@ -13502,6 +13517,24 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 		if not getattr(_ob, 'exportOb', False) or _ob.hide_get():
 			continue
 		_set_collider_aliases(_ob)
+	def _wrap_flip_y_getter (_fn):
+		def _wrapped (*args, **kwargs):
+			try:
+				_pos = _fn(*args, **kwargs)
+				return [float(_pos[0]), -float(_pos[1])]
+			except Exception:
+				return [0.0, 0.0]
+		return _wrapped
+	if hasattr(sim, 'get_rigid_body_position'):
+		try:
+			sim.get_rigid_body_position = _wrap_flip_y_getter(sim.get_rigid_body_position)
+		except Exception:
+			pass
+	if hasattr(sim, 'get_collider_position'):
+		try:
+			sim.get_collider_position = _wrap_flip_y_getter(sim.get_collider_position)
+		except Exception:
+			pass
 	sim.named_colliders = colliders_named
 	sim.named_rigid_bodies = rigid_bodies_named
 	return {
@@ -14681,7 +14714,7 @@ def _gba_try_import_pyrapier2d ():
 	print('GBA export: PyRapier2d import resolved to', mod_file or '<namespace package>', 'without Simulation; skipping Rapier bake.')
 	return None
 
-def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions : bool = False):
+def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions : bool = False, gbc_script_world_offset = None):
 	if not bool(getattr(world, 'usePhysics', True)):
 		return {}
 	py_rapier = _gba_try_import_pyrapier2d()
@@ -14760,13 +14793,22 @@ def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions
 				colliders_named.setdefault(key, collider_handle)
 				colliders_named.setdefault('_' + key, collider_handle)
 	if use_gbc_signed_positions:
+		offset_x = 0.0
+		offset_y = 0.0
+		try:
+			if isinstance(gbc_script_world_offset, (list, tuple)) and len(gbc_script_world_offset) >= 2:
+				offset_x = float(gbc_script_world_offset[0])
+				offset_y = float(gbc_script_world_offset[1])
+		except Exception:
+			offset_x = 0.0
+			offset_y = 0.0
 		def _wrap_get_pos (_fn):
 			def _wrapped (*args, **kwargs):
 				try:
 					pos = _fn(*args, **kwargs)
 					return [
-						float(pos[0]) - float(_GBC_POSITION_BIAS),
-						-(float(pos[1]) - float(_GBC_POSITION_BIAS)),
+						(float(pos[0]) - float(_GBC_POSITION_BIAS)) + float(offset_x),
+						(float(pos[1]) - float(_GBC_POSITION_BIAS)) - float(offset_y),
 					]
 				except Exception:
 					return [0.0, 0.0]
@@ -14777,9 +14819,11 @@ def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions
 				if len(args_list) >= 2:
 					try:
 						pos = args_list[1]
+						local_x = float(pos[0]) - float(offset_x)
+						local_y = float(pos[1]) - float(offset_y)
 						args_list[1] = [
-							(float(pos[0]) + float(_GBC_POSITION_BIAS)) % 65536.0,
-							((-float(pos[1])) + float(_GBC_POSITION_BIAS)) % 65536.0,
+							(local_x + float(_GBC_POSITION_BIAS)) % 65536.0,
+							((-local_y) + float(_GBC_POSITION_BIAS)) % 65536.0,
 						]
 					except Exception:
 						pass
@@ -16633,9 +16677,47 @@ def BuildGbc (world):
 			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
 			if has_physics:
 				if use_multi_body_runtime:
-					runtime_print_env = _build_runtime_print_physics_env(world, runtime_print_scene_obs, use_gbc_signed_positions = True)
+					runtime_print_env = _build_runtime_print_physics_env(
+						world,
+						runtime_print_scene_obs,
+						use_gbc_signed_positions = True,
+						gbc_script_world_offset = [float(camera_offset_x), float(-camera_offset_y)],
+					)
 				else:
-					phase1_runtime_handles = _build_runtime_print_physics_env(world, runtime_print_scene_obs, use_gbc_signed_positions = True)
+					phase1_runtime_handles = _build_runtime_print_physics_env(
+						world,
+						runtime_print_scene_obs,
+						use_gbc_signed_positions = True,
+						gbc_script_world_offset = [float(camera_offset_x), float(-camera_offset_y)],
+					)
+					phase1_script_world_offset = [float(camera_offset_x), float(-camera_offset_y)]
+					try:
+						owner_keys = []
+						try:
+							owner_keys.append(str(GetVarNameForObject(sprite_ob)))
+						except Exception:
+							pass
+						try:
+							owner_keys.append(str(getattr(sprite_ob, 'name', '')))
+						except Exception:
+							pass
+						sprite_world = None
+						for _owner_key in owner_keys:
+							if not (isinstance(_owner_key, str) and _owner_key != ''):
+								continue
+							_p = _resolve_static_owner_camera_position(_owner_key)
+							if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+								sprite_world = [float(_p[0]), float(_p[1])]
+								break
+						if sprite_world is not None:
+							local_x = float(int(init_x) - _GBC_POSITION_BIAS)
+							local_y = -float(int(init_y) - _GBC_POSITION_BIAS)
+							phase1_script_world_offset = [
+								float(sprite_world[0]) - float(local_x),
+								float(sprite_world[1]) - float(local_y),
+							]
+					except Exception:
+						pass
 					runtime_print_env = _build_gbc_phase1_print_env(
 						sprite_ob,
 						sprite_tiles_w,
@@ -16655,6 +16737,7 @@ def BuildGbc (world):
 						collision_h_px = collision_h_px,
 						collision_off_x_px = collision_off_x_px,
 						collision_off_y_px = collision_off_y_px,
+						script_world_offset = phase1_script_world_offset,
 					)
 			else:
 				runtime_print_env = _build_runtime_print_physics_env(world, runtime_print_scene_obs)
