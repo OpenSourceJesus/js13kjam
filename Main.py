@@ -5039,7 +5039,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 					and node.value.id == 'this'
 					and isinstance(node.attr, str)
 					and node.attr in _attr_names
-				and isinstance(node.ctx, ast.Load)
+					and isinstance(node.ctx, (ast.Load, ast.Store))
 				):
 					return ast.copy_location(ast.Name(id = node.attr, ctx = node.ctx), node)
 				return node
