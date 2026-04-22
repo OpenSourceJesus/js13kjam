@@ -9798,7 +9798,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					if owner != '__world__' and isinstance(_name, str) and _name in list(_script_lookup_candidate_names(owner) or []):
 						_sim = env.get('sim', None)
 						_is_primary = getattr(_sim, '_is_primary_rigidbody', None) if _sim is not None else None
-						_owner_is_primary = True
+						owner_is_primary = True
 						if callable(_is_primary):
 							owner_is_primary = bool(_is_primary(str(owner)))
 						if _sim is not None and callable(getattr(_sim, 'get_linear_velocity', None)) and bool(owner_is_primary):
@@ -10225,7 +10225,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					if this_obj.rb is None:
 						_sim = env.get('sim', None)
 						_is_primary = getattr(_sim, '_is_primary_rigidbody', None) if _sim is not None else None
-						_owner_is_primary = True
+						owner_is_primary = True
 						if callable(_is_primary):
 							owner_is_primary = bool(_is_primary(str(owner)))
 						if _sim is not None and callable(getattr(_sim, 'get_linear_velocity', None)) and bool(owner_is_primary):
@@ -10427,7 +10427,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					try:
 						_sim = env.get('sim', None)
 						_is_primary = getattr(_sim, '_is_primary_rigidbody', None) if _sim is not None else None
-						_owner_is_primary = True
+						owner_is_primary = True
 						if callable(_is_primary):
 							owner_is_primary = bool(_is_primary(str(owner)))
 						if _sim is not None and callable(getattr(_sim, 'get_linear_velocity', None)) and bool(owner_is_primary):
@@ -10681,17 +10681,121 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				if update_calls:
 					_step_probe_owner = update_calls[0].get('owner_name') or '__world__'
 					_step_probe_scope = update_calls[0].get('scope_key')
+				elif mirror_update_scripts:
+					# In realtime-mirror mode, update_calls can be empty because
+					# print replay is suppressed. Prefer probing the player's script.
+					_candidates = []
+					for _ms in mirror_update_scripts:
+						if not isinstance(_ms, dict):
+							continue
+						_owner = str(_ms.get('owner_name') or '__world__')
+						if _owner == '__world__':
+							continue
+						_candidates.append((_owner, _ms.get('scope_key')))
+					if _candidates:
+						# Priority:
+						# 1) explicit Player owner
+						# 2) non-spawn owner (not __gbc_spawn*)
+						# 3) first remaining candidate
+						_pick = None
+						for _owner, _scope in _candidates:
+							if _owner == 'Player':
+								_pick = (_owner, _scope)
+								break
+						if _pick is None:
+							for _owner, _scope in _candidates:
+								if not str(_owner).startswith('__gbc_spawn'):
+									_pick = (_owner, _scope)
+									break
+						if _pick is None:
+							_pick = _candidates[0]
+						_step_probe_owner, _step_probe_scope = _pick
+					# Fallback: at least use the first mirror update entry.
+					if _step_probe_owner == '__world__':
+						try:
+							_step_probe_owner = str(mirror_update_scripts[0].get('owner_name') or '__world__')
+							_step_probe_scope = mirror_update_scripts[0].get('scope_key')
+						except Exception:
+							pass
 				_step_probe_sim = None
+				_step_gravity_map = {}
+				_step_probe_rb = None
+				_step_body_key = None
+				_step_body_rb = None
 				_pre_vs = None
+				_pre_lv = None
+				_pre_body_lv = None
 				_pre_vy = None
 				_pre_y = None
 				try:
 					_step_probe_env = _eval_env_for_owner(_step_probe_owner, frame = frame, scope_key = _step_probe_scope)
 					_step_probe_sim = _step_probe_env.get('sim', _step_probe_env.get('physics'))
+					_step_gravity_map = _step_probe_env.get('_gbc_gravity_step_by_handle', runtime_env.get('_gbc_gravity_step_by_handle', {}))
+					if isinstance(_step_probe_env, dict):
+						_step_probe_rb = _step_probe_env.get('rb', None)
+						_this_probe = _step_probe_env.get('this', None)
+						if _step_probe_rb is None and _this_probe is not None:
+							_step_probe_rb = getattr(_this_probe, 'rb', None)
+						try:
+							_rb_ids_probe = _step_probe_env.get('rigidBodiesIds', _step_probe_env.get('rigidBodies', {}))
+						except Exception:
+							_rb_ids_probe = {}
+						if isinstance(_rb_ids_probe, dict):
+							if _step_body_rb is None:
+								try:
+									_step_body_rb = _resolve_script_lookup_exact(_rb_ids_probe, 'Player')
+									if _step_body_rb is not None:
+										_step_body_key = 'Player'
+								except Exception:
+									_step_body_rb = None
+							if _step_body_rb is None:
+								for _k, _v in list(_rb_ids_probe.items()):
+									if _v is None:
+										continue
+									try:
+										_k_txt = str(_k)
+									except Exception:
+										_k_txt = ''
+									if _k_txt.startswith('__gbc_spawn'):
+										continue
+									_step_body_key = _k_txt
+									_step_body_rb = _v
+									break
 					if _step_probe_sim is not None:
 						_pre_vs = getattr(_step_probe_sim, 'velocity_script', None)
+						if callable(getattr(_step_probe_sim, 'get_linear_velocity', None)) and _step_probe_rb is not None:
+							try:
+								_pre_lv = _step_probe_sim.get_linear_velocity(_step_probe_rb)
+							except Exception:
+								_pre_lv = None
+						if callable(getattr(_step_probe_sim, 'get_linear_velocity', None)) and _step_body_rb is not None:
+							try:
+								_pre_body_lv = _step_probe_sim.get_linear_velocity(_step_body_rb)
+							except Exception:
+								_pre_body_lv = None
 						_pre_vy = getattr(_step_probe_sim, 'vy', None)
 						_pre_y = getattr(_step_probe_sim, 'y', None)
+				except Exception:
+					pass
+				try:
+					# GBC mirror runs at fixed 60 Hz and expects gravity to affect
+					# script-visible linear velocity each frame.
+					if (
+						_step_probe_sim is not None
+						and callable(getattr(_step_probe_sim, 'get_linear_velocity', None))
+						and callable(getattr(_step_probe_sim, 'set_linear_velocity', None))
+						and isinstance(_step_gravity_map, dict)
+					):
+						for _h, _gstep in list(_step_gravity_map.items()):
+							try:
+								_v = _step_probe_sim.get_linear_velocity(_h)
+								vx = float(_v[0]) if isinstance(_v, (list, tuple)) and len(_v) >= 1 else 0.0
+								vy = float(_v[1]) if isinstance(_v, (list, tuple)) and len(_v) >= 2 else 0.0
+								_gx = float(_gstep[0]) if isinstance(_gstep, (list, tuple)) and len(_gstep) >= 1 else 0.0
+								_gy = float(_gstep[1]) if isinstance(_gstep, (list, tuple)) and len(_gstep) >= 2 else 0.0
+								_step_probe_sim.set_linear_velocity(_h, [vx + _gx, vy + _gy])
+							except Exception:
+								pass
 				except Exception:
 					pass
 				try:
@@ -10700,8 +10804,49 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					pass
 				try:
 					_post_vs = getattr(_step_probe_sim, 'velocity_script', None) if _step_probe_sim is not None else None
+					_post_lv = None
+					if (
+						_step_probe_sim is not None
+						and callable(getattr(_step_probe_sim, 'get_linear_velocity', None))
+						and _step_probe_rb is not None
+					):
+						try:
+							_post_lv = _step_probe_sim.get_linear_velocity(_step_probe_rb)
+						except Exception:
+							_post_lv = None
+					_post_body_lv = None
+					if (
+						_step_probe_sim is not None
+						and callable(getattr(_step_probe_sim, 'get_linear_velocity', None))
+						and _step_body_rb is not None
+					):
+						try:
+							_post_body_lv = _step_probe_sim.get_linear_velocity(_step_body_rb)
+						except Exception:
+							_post_body_lv = None
 					_post_vy = getattr(_step_probe_sim, 'vy', None) if _step_probe_sim is not None else None
 					_post_y = getattr(_step_probe_sim, 'y', None) if _step_probe_sim is not None else None
+					try:
+						_append_gbc_trace_lines([
+							'[gbc-trace] MirrorStepProbe'
+							+ f':frame={int(frame)}'
+							+ f',owner={_step_probe_owner}'
+							+ f',rb={repr(_step_probe_rb)}'
+							+ f',pre_lv={repr(_pre_lv)}'
+							+ f',post_lv={repr(_post_lv)}'
+							+ f',body_key={repr(_step_body_key)}'
+							+ f',body_rb={repr(_step_body_rb)}'
+							+ f',pre_body_lv={repr(_pre_body_lv)}'
+							+ f',post_body_lv={repr(_post_body_lv)}'
+							+ f',pre_vy={repr(_pre_vy)}'
+							+ f',post_vy={repr(_post_vy)}'
+							+ f',pre_y={repr(_pre_y)}'
+							+ f',post_y={repr(_post_y)}'
+							+ f',pre_vs={repr(_pre_vs)}'
+							+ f',post_vs={repr(_post_vs)}',
+						])
+					except Exception:
+						pass
 				except Exception:
 					pass
 			if not init_printed:
@@ -12145,6 +12290,11 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 	aot_update_call_patches = []
 	scroll_x_addr = 0xC0F0
 	scroll_y_addr = 0xC0F1
+	# Shared general-AOT velocity pointer context (same ABI as single-body path).
+	aot_ctx_vx_lo_addr = 0xC0F2
+	aot_ctx_vx_hi_addr = 0xC0F3
+	aot_ctx_vy_lo_addr = 0xC0F4
+	aot_ctx_vy_hi_addr = 0xC0F5
 	def emit(*vals):
 		code.extend(vals)
 	def jr(op):
@@ -12247,6 +12397,42 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		axis_done_addr = len(code)
 		patch_jr(jr_axis_done, axis_done_addr)
 		patch_jr(jr_vel_zero, axis_done_addr)
+	def emit_gravity_axis_step(acc_addr, vel_addr, step):
+		step = int(step)
+		if step == 0:
+			return
+		denom = int(_GBC_PHASE1_GRAVITY_ACCUM_DENOM)
+		mag = abs(int(step))
+		base_steps = int(mag // max(1, denom))
+		frac = int(mag % max(1, denom))
+		def _emit_velocity_unit_step():
+			emit(0xFA, vel_addr & 0xFF, (vel_addr >> 8) & 0xFF)  # ld a,(vel)
+			if step > 0:
+				emit(0xFE, 0x7F)  # cp +127
+				jr_vel_sat = jr(0x28)  # jr z, vel_sat
+				emit(0x3C)  # inc a
+			else:
+				emit(0xFE, 0x80)  # cp -128
+				jr_vel_sat = jr(0x28)  # jr z, vel_sat
+				emit(0x3D)  # dec a
+			vel_sat_addr = len(code)
+			patch_jr(jr_vel_sat, vel_sat_addr)
+			emit(0xEA, vel_addr & 0xFF, (vel_addr >> 8) & 0xFF)  # (vel)=a
+		# Apply the integer part directly each frame.
+		for _ in range(max(0, base_steps)):
+			_emit_velocity_unit_step()
+		# Fractional carry part keeps the 1/denom accumulator semantics.
+		if frac > 0:
+			emit(0xFA, acc_addr & 0xFF, (acc_addr >> 8) & 0xFF)  # ld a,(acc)
+			emit(0xC6, int(frac) & 0xFF)  # add a, frac
+			emit(0xEA, acc_addr & 0xFF, (acc_addr >> 8) & 0xFF)  # (acc)=a
+			emit(0xFE, int(denom) & 0xFF)  # cp denom
+			jr_frac_done = jr(0x38)  # jr c, frac_done
+			emit(0xD6, int(denom) & 0xFF)  # sub denom
+			emit(0xEA, acc_addr & 0xFF, (acc_addr >> 8) & 0xFF)  # (acc)=a
+			_emit_velocity_unit_step()
+			frac_done_addr = len(code)
+			patch_jr(jr_frac_done, frac_done_addr)
 	collider_count = max(0, min(31, int(collider_count)))
 	emit(0xF3)  # di
 	emit(0x31, 0xFE, 0xFF)  # ld sp, $FFFE
@@ -13618,6 +13804,40 @@ class _GbcPhase1MirrorSim:
 					return True
 		except Exception:
 			pass
+		# Runtime handles may be tuple-like (for example "(0, 0)") while
+		# primary keys are owner names. Accept a handle when it reverse-maps
+		# to any primary owner key in runtime rigid-body tables.
+		try:
+			_g = __import__('builtins').globals()
+			_rb_sources = [
+				_g.get('rigidBodiesIds', {}),
+				_g.get('rigidBodies', {}),
+			]
+		except Exception:
+			_rb_sources = []
+		for _rb_src in list(_rb_sources or []):
+			if not isinstance(_rb_src, dict):
+				continue
+			for _owner_key, _owner_handle in list(_rb_src.items()):
+				try:
+					if str(_owner_handle) != key:
+						continue
+				except Exception:
+					continue
+				try:
+					owner_txt = str(_owner_key)
+				except Exception:
+					owner_txt = ''
+				if owner_txt == '':
+					continue
+				if owner_txt in self.primary_rigidbody_keys:
+					return True
+				try:
+					for _cand in list(_script_lookup_candidate_names(owner_txt) or []):
+						if _cand in self.primary_rigidbody_keys:
+							return True
+				except Exception:
+					pass
 		return False
 	def _to_local (self, v):
 		return int(v) - _GBC_POSITION_BIAS
@@ -15979,6 +16199,7 @@ def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions
 	rigid_bodies_by_name = {}
 	rigid_bodies_named = {}
 	colliders_named = {}
+	gbc_gravity_step_by_handle = {}
 	for ob in physics_obs:
 		if not getattr(ob, 'rigidBodyExists', False):
 			continue
@@ -16001,6 +16222,23 @@ def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions
 		except Exception:
 			continue
 		rigid_bodies_by_name[ob.name] = handle
+		try:
+			is_dynamic = (str(getattr(ob, 'rigidBodyType', '')) == 'dynamic')
+		except Exception:
+			is_dynamic = False
+		if bool(use_gbc_signed_positions) and bool(is_dynamic):
+			try:
+				gs = float(getattr(ob, 'gravityScale', 1.0))
+			except Exception:
+				gs = 1.0
+			try:
+				# Phase1 script mirror runs at a fixed 60 Hz.
+				gbc_gravity_step_by_handle[handle] = [
+					float(gravity[0]) * gs / 60.0,
+					float(gravity[1]) * gs / 60.0,
+				]
+			except Exception:
+				pass
 		for key in [ob.name, '_' + ob.name]:
 			rigid_bodies_named.setdefault(key, handle)
 		try:
@@ -16102,6 +16340,7 @@ def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions
 		'colliders' : colliders_named,
 		'cols' : colliders_named,
 		'collidersIds' : colliders_named,
+		'_gbc_gravity_step_by_handle' : dict(gbc_gravity_step_by_handle),
 	}
 
 def _gba_get_collision_groups (ob):
@@ -17446,7 +17685,6 @@ def BuildGbc (world):
 				pass
 			return x, y
 		has_physics = bool(getattr(world, 'usePhysics', True)) and _gb_scene_has_physics(physics_scene_obs)
-		use_multi_body_runtime = False
 		if has_physics:
 			scroll_profile = _gba_get_runtime_display_scroll_profile(script_runtime, frame = 1)
 			camera_ops_present = _gba_has_set_camera_ops(script_runtime)
@@ -17533,8 +17771,8 @@ def BuildGbc (world):
 				g = list(bpy.context.scene.gravity)
 				gravity_x = float(g[0])
 				gravity_y = float(g[1])
-			if len(rigid_sprite_obs) > 1:
-				use_multi_body_runtime = True
+			# Always compile/export as multi-body, even with one dynamic sprite.
+			if len(rigid_sprite_obs) >= 1:
 				rigid_names = set()
 				for s in rigid_sprite_obs:
 					rigid_names.add(s.name)
@@ -17581,13 +17819,12 @@ def BuildGbc (world):
 					init_x_local, init_y_local = _gba_to_gbc_cover_point(float(init_x_src), float(init_y_src))
 					init_x = (int(init_x_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
 					init_y = (int(init_y_local) + _GBC_POSITION_BIAS) & _GBC_POSITION_MASK
-					aot_script = _extract_gbc_phase1_general_aot(world, sprite_ob)
-					if bool(_GBC_ENABLE_PHASE1_VELOCITY_SCRIPT):
-						init_vx, init_vy = _extract_gbc_phase1_init_velocity(world, sprite_ob)
-						velocity_script = _extract_gbc_phase1_velocity_script(world, sprite_ob)
-					else:
-						init_vx, init_vy = (0, 0)
-						velocity_script = None
+					# Multi-body runtime currently executes the proven phase1
+					# velocity-profile path. General AOT calls rely on helper ABI
+					# vectors that are only guaranteed in the single-body program.
+					aot_script = None
+					init_vx, init_vy = _extract_gbc_phase1_init_velocity(world, sprite_ob)
+					velocity_script = _extract_gbc_phase1_velocity_script(world, sprite_ob)
 					# Preserve detail for the controlled/scripted actor, but keep
 					# fallback/spawned rigid bodies lean so we can fit more bodies
 					# within the hard 40-entry OAM runtime budget.
@@ -17939,69 +18176,12 @@ def BuildGbc (world):
 			)
 			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
 			if has_physics:
-				if use_multi_body_runtime:
-					runtime_print_env = _build_runtime_print_physics_env(
-						world,
-						runtime_print_scene_obs,
-						use_gbc_signed_positions = True,
-						gbc_script_world_offset = [float(camera_offset_x), float(-camera_offset_y)],
-					)
-				else:
-					phase1_runtime_handles = _build_runtime_print_physics_env(
-						world,
-						runtime_print_scene_obs,
-						use_gbc_signed_positions = True,
-						gbc_script_world_offset = [float(camera_offset_x), float(-camera_offset_y)],
-					)
-					phase1_script_world_offset = [float(camera_offset_x), float(-camera_offset_y)]
-					try:
-						owner_keys = []
-						try:
-							owner_keys.append(str(GetVarNameForObject(sprite_ob)))
-						except Exception:
-							pass
-						try:
-							owner_keys.append(str(getattr(sprite_ob, 'name', '')))
-						except Exception:
-							pass
-						sprite_world = None
-						for _owner_key in owner_keys:
-							if not (isinstance(_owner_key, str) and _owner_key != ''):
-								continue
-							_p = _resolve_static_owner_camera_position(_owner_key)
-							if isinstance(_p, (list, tuple)) and len(_p) >= 2:
-								sprite_world = [float(_p[0]), float(_p[1])]
-								break
-						if sprite_world is not None:
-							local_x = float(int(init_x) - _GBC_POSITION_BIAS)
-							local_y = -float(int(init_y) - _GBC_POSITION_BIAS)
-							phase1_script_world_offset = [
-								float(sprite_world[0]) - float(local_x),
-								float(sprite_world[1]) - float(local_y),
-							]
-					except Exception:
-						pass
-					runtime_print_env = _build_gbc_phase1_print_env(
-						sprite_ob,
-						sprite_tiles_w,
-						sprite_tiles_h,
-						init_x,
-						init_y,
-						init_vx,
-						init_vy,
-						grav_step_x,
-						grav_step_y,
-						collider_rects,
-						velocity_script = velocity_script if has_physics else None,
-						physics_scene_obs = runtime_print_scene_obs,
-						runtime_handle_env = phase1_runtime_handles,
-						collider_rect_meta = collider_rect_meta,
-						collision_w_px = collision_w_px,
-						collision_h_px = collision_h_px,
-						collision_off_x_px = collision_off_x_px,
-						collision_off_y_px = collision_off_y_px,
-						script_world_offset = phase1_script_world_offset,
-					)
+				runtime_print_env = _build_runtime_print_physics_env(
+					world,
+					runtime_print_scene_obs,
+					use_gbc_signed_positions = True,
+					gbc_script_world_offset = [float(camera_offset_x), float(-camera_offset_y)],
+				)
 			else:
 				runtime_print_env = _build_runtime_print_physics_env(world, runtime_print_scene_obs)
 			mirror_step = None
