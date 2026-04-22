@@ -46,6 +46,7 @@ except Exception:
 	_gbc_transpiler_compile_general_script = None
 	_GBC_AOT_ABI_SPEC = None
 	_GbcTranspileError = Exception
+# Phase1 runtime movement depends on transpiled motion extraction.
 _GBC_ENABLE_PHASE1_TRANSPILE = True
 _GBC_STRICT_COMPILER_MODE = True
 _GBC_ENABLE_GENERAL_AOT = str(
@@ -2895,6 +2896,20 @@ def _extract_dynamic_set_camera_ops_from_script (code : str, is_init : bool):
 		return []
 	return _extract_dynamic_set_camera_ops_from_stmts(getattr(tree, 'body', []), is_init, parent_condition = None)
 
+def _script_has_explicit_set_camera_position_call (code : str):
+	"""Return True only for real call sites, never function definitions."""
+	try:
+		tree = ast.parse(code or '')
+	except Exception:
+		return False
+	for node in ast.walk(tree):
+		if not isinstance(node, ast.Call):
+			continue
+		func = getattr(node, 'func', None)
+		if isinstance(func, ast.Name) and str(func.id) == 'set_camera_position':
+			return True
+	return False
+
 def _extract_dynamic_set_camera_ops_from_stmts (stmts, is_init : bool, parent_condition = None):
 	camera_ops = []
 	for stmt in list(stmts or []):
@@ -3624,16 +3639,16 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	for op in list(script_runtime.get('init_display_ops') or []):
 		if not isinstance(op, dict):
 			continue
-		# Rebuild display scrolling from source scripts to keep dead branches
-		# deterministic. Keep pre-parsed camera ops as a fallback path.
-		if str(op.get('op') or '') in ('scroll_display_surface',):
+		# Rebuild display scrolling/camera ops from source scripts to keep
+		# dead branches deterministic and avoid stale helper-generated camera ops.
+		if str(op.get('op') or '') in ('scroll_display_surface', 'set_display_camera_pos'):
 			continue
 		init_display_ops.append(op)
 	update_display_ops = []
 	for op in list(script_runtime.get('update_display_ops') or []):
 		if not isinstance(op, dict):
 			continue
-		if str(op.get('op') or '') in ('scroll_display_surface',):
+		if str(op.get('op') or '') in ('scroll_display_surface', 'set_display_camera_pos'):
 			continue
 		update_display_ops.append(op)
 	surface_ops = []
@@ -3754,7 +3769,7 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		# Safety net: if parser extraction missed set_camera_position calls
 		# (for example due transformed wrappers), still emit a deterministic
 		# owner camera op so GBC fallback does not drop camera control entirely.
-		if not extracted_camera_ops and re.search(r'\bset_camera_position\s*\(', str(analysis_code or '')):
+		if not extracted_camera_ops and _script_has_explicit_set_camera_position_call(str(raw_code or '')):
 			owner_pos = _resolve_static_owner_camera_position(owner_name)
 			if isinstance(owner_pos, (list, tuple)) and len(owner_pos) >= 2:
 				extracted_camera_ops = [{
@@ -10778,10 +10793,12 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				except Exception:
 					pass
 				try:
-					# GBC mirror runs at fixed 60 Hz and expects gravity to affect
-					# script-visible linear velocity each frame.
+					# Legacy fallback: only pre-apply gravity when we cannot step a
+					# real physics simulation. If step() is available, it owns gravity
+					# integration and pre-adding here can skew printed velocities.
 					if (
-						_step_probe_sim is not None
+						(not callable(mirror_step))
+						and _step_probe_sim is not None
 						and callable(getattr(_step_probe_sim, 'get_linear_velocity', None))
 						and callable(getattr(_step_probe_sim, 'set_linear_velocity', None))
 						and isinstance(_step_gravity_map, dict)
@@ -14556,7 +14573,9 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 			pass
 	for key in primary_rigidbody_keys:
 		if key:
-			rigid_bodies_named.setdefault(key, handle)
+			# Primary owner aliases must resolve to the phase1 mirror handle.
+			# Do not keep stale runtime-physics handles for these keys.
+			rigid_bodies_named[key] = handle
 	colliders_named = {}
 	if isinstance(runtime_handle_env, dict):
 		try:
@@ -18182,6 +18201,71 @@ def BuildGbc (world):
 					use_gbc_signed_positions = True,
 					gbc_script_world_offset = [float(camera_offset_x), float(-camera_offset_y)],
 				)
+				try:
+					# Keep gbc-py print mirroring aligned with phase1 body semantics.
+					# Rapier mirror env is useful for generic bindings, but for
+					# velocity reads (`sim.get_linear_velocity(this.rb)`) prefer the
+					# phase1 mirror sim used by exported runtime conventions.
+					_body_specs = list(body_specs_runtime) if isinstance(body_specs_runtime, list) else []
+					_player_spec = None
+					for _spec in _body_specs:
+						if not isinstance(_spec, dict):
+							continue
+						if str(_spec.get('name', '')) == 'Player':
+							_player_spec = _spec
+							break
+					if _player_spec is None:
+						for _spec in _body_specs:
+							if isinstance(_spec, dict) and isinstance(_spec.get('velocity_script', None), dict):
+								_player_spec = _spec
+								break
+					if _player_spec is None and _body_specs:
+						_player_spec = _body_specs[0]
+					if isinstance(_player_spec, dict):
+						_player_name = str(_player_spec.get('name', '') or '')
+						_player_ob = None
+						for _ob in list(rigid_sprite_obs or []):
+							try:
+								if str(getattr(_ob, 'name', '')) == _player_name:
+									_player_ob = _ob
+									break
+							except Exception:
+								pass
+						if _player_ob is not None:
+							_active_names = set()
+							for _spec in _body_specs:
+								if isinstance(_spec, dict):
+									_active_names.add(str(_spec.get('name', '') or ''))
+							_rt_rect_meta = []
+							_rt_colliders = _gbc_collect_runtime_colliders(
+								physics_scene_obs,
+								ignored_names = _active_names,
+								preconverted_names = fallback_proxy_names,
+								rect_meta = _rt_rect_meta,
+							)
+							if (not camera_follow_mode) and camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
+								_rt_colliders = _gbc_shift_collider_rects_by_camera(_rt_colliders, camera_offset_x, camera_offset_y)
+							_phase1_print_env = _build_gbc_phase1_print_env(
+								_player_ob,
+								int(_player_spec.get('sprite_tiles_w', 1)),
+								int(_player_spec.get('sprite_tiles_h', 1)),
+								int(_player_spec.get('init_x', 0)),
+								int(_player_spec.get('init_y', 0)),
+								int(_player_spec.get('init_vx', 0)),
+								int(_player_spec.get('init_vy', 0)),
+								int(_player_spec.get('grav_step_x', 0)),
+								int(_player_spec.get('grav_step_y', 0)),
+								_rt_colliders,
+								velocity_script = _player_spec.get('velocity_script', None),
+								physics_scene_obs = physics_scene_obs,
+								runtime_handle_env = runtime_print_env,
+								collider_rect_meta = _rt_rect_meta,
+								script_world_offset = [float(camera_offset_x), float(-camera_offset_y)],
+							)
+							if isinstance(_phase1_print_env, dict) and _phase1_print_env.get('sim', None) is not None:
+								runtime_print_env = _phase1_print_env
+				except Exception:
+					pass
 			else:
 				runtime_print_env = _build_runtime_print_physics_env(world, runtime_print_scene_obs)
 			mirror_step = None
