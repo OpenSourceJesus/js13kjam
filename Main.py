@@ -1,4 +1,4 @@
-import os, re, io, ast, sys, json, math, time, string, atexit, struct, shutil, ctypes, inspect, keyword, contextlib, threading, subprocess, webbrowser, ctypes.util, traceback
+import os, re, io, ast, sys, json, math, time, string, atexit, struct, shutil, ctypes, inspect, keyword, threading, traceback, subprocess, contextlib, webbrowser, ctypes.util
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
@@ -303,10 +303,13 @@ def _build_gbc_global_assign_prefix (code : str, lines : list, node):
 		return None
 	return (
 		'global ' + target_name + '\n'
-		+ 'try:\n'
-		+ '\t' + target_name + '\n'
-		+ 'except:\n'
-		+ '\t' + target_name + ' = ' + value_segment.strip()
+		+ '_js13k_gbc_global_init_done = globals().get("_js13k_gbc_global_init_done", None)\n'
+		+ 'if not isinstance(_js13k_gbc_global_init_done, set):\n'
+		+ '\t_js13k_gbc_global_init_done = set()\n'
+		+ '\tglobals()["_js13k_gbc_global_init_done"] = _js13k_gbc_global_init_done\n'
+		+ 'if "' + target_name + '" not in _js13k_gbc_global_init_done:\n'
+		+ '\t' + target_name + ' = ' + value_segment.strip() + '\n'
+		+ '\t_js13k_gbc_global_init_done.add("' + target_name + '")'
 	)
 
 def _extract_top_level_member_defs (code : str):
@@ -2451,6 +2454,31 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 			if name in protected_names:
 				continue
 			eval_locals[name] = v
+	if frame is not None:
+		try:
+			_dt = 1.0 / 60.0
+			eval_locals.setdefault('dt', _dt)
+			eval_locals.setdefault('deltaTime', _dt)
+			eval_locals.setdefault('frame', int(frame))
+		except Exception:
+			pass
+	# Camera-op eval fallback for scripts using `time += dt`.
+	if frame is not None and ('_js13k_time_accumulator_hz' in eval_locals):
+		try:
+			_hz = float(eval_locals.get('_js13k_time_accumulator_hz', 60.0) or 60.0)
+		except Exception:
+			_hz = 60.0
+		if _hz <= 0.0:
+			_hz = 60.0
+		try:
+			_base = float(eval_locals.get('_js13k_time_accumulator_base', 0.0) or 0.0)
+		except Exception:
+			_base = 0.0
+		try:
+			_t = float(_base) + max(0.0, (float(frame) - 1.0) / float(_hz))
+		except Exception:
+			_t = float(_base)
+		eval_locals['time'] = _t
 	try:
 		val = eval(
 			expr,
@@ -3710,6 +3738,8 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	print_expr_env_by_scope = {}
 	print_const_env_by_owner = {}
 	print_expr_env_by_owner = {}
+	global_eval_fallback_env = {}
+	has_time_dt_accumulator = False
 	mirror_scripts = []
 	for entry_idx, entry in enumerate(entries):
 		code = entry.get('code', '')
@@ -3717,6 +3747,8 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		analysis_code = str(raw_code if str(raw_code).strip() != '' else code)
 		exec_code = str(code if str(code).strip() != '' else analysis_code)
 		is_init = bool(entry.get('is_init'))
+		if (not is_init) and re.search(r'\btime\s*\+=\s*dt\b', analysis_code):
+			has_time_dt_accumulator = True
 		owner_name = entry.get('owner_name') or '__world__'
 		scope_key = str((owner_name, bool(is_init), entry.get('symbol_hint') or '', int(entry_idx)))
 		env = {
@@ -3808,6 +3840,17 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		# Backward-compat fallback map (owner scoped) for pre-existing entries.
 		print_const_env_by_owner[owner_name] = dict(env.get('const_env', {}))
 		print_expr_env_by_owner[owner_name] = dict(env.get('expr_env', {}))
+		# Keep a simple global fallback env for display-op expression eval so
+		# local camera expressions (for example int(time)) can resolve symbols
+		# authored in global/non-local scripts.
+		if bool(entry.get('is_global')):
+			for _k, _v in list((env.get('const_env') or {}).items()):
+				if not (isinstance(_k, str) and re.fullmatch(r'[A-Za-z_]\w*', _k)):
+					continue
+				if _k.startswith('__'):
+					continue
+				if isinstance(_v, (int, float, bool, str)) or _v is None:
+					global_eval_fallback_env[_k] = _v
 		extracted_camera_ops = _extract_dynamic_set_camera_ops_from_script(analysis_code, is_init)
 		# Safety net: if parser extraction missed set_camera_position calls
 		# (for example due transformed wrappers), still emit a deterministic
@@ -3825,6 +3868,7 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 			camera_op = dict(camera_op or {})
 			camera_op['owner_name'] = owner_name
 			camera_op['scope_key'] = scope_key
+			camera_op['global_eval_fallback_env'] = dict(global_eval_fallback_env)
 			camera_op['x'] = _inline_runtime_expr_with_env(
 				camera_op.get('x', 0.0),
 				const_env = env.get('const_env', {}),
@@ -3858,6 +3902,13 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 				y_expr_txt = str(camera_op.get('y', ''))
 			except Exception:
 				y_expr_txt = ''
+			if has_time_dt_accumulator and (re.search(r'\btime\b', x_expr_txt) or re.search(r'\btime\b', y_expr_txt)):
+				try:
+					_time_base = float(global_eval_fallback_env.get('time', 0.0) or 0.0)
+				except Exception:
+					_time_base = 0.0
+				camera_op['time_accumulator_base'] = float(_time_base)
+				camera_op['time_accumulator_hz'] = 60.0
 			if ('pos[' in x_expr_txt) or ('pos[' in y_expr_txt):
 				camera_op['camera_follow_owner'] = owner_name
 				owner_pos = _resolve_static_owner_camera_position(owner_name)
@@ -4070,6 +4121,14 @@ def _runtime_expr_extra_env_for_display_op (op):
 		scope = all_script_locals.get(candidate)
 		if isinstance(scope, dict):
 			owner_scopes.append(scope)
+	# Local owner scripts may reference globals authored in world/non-local scripts
+	# (example: `time` accumulator initialized globally, consumed in local update).
+	# Merge world scopes so display-op expression eval can resolve those names.
+	if owner_name != '__world__':
+		for world_key in ('__world__', 'world'):
+			world_scope = all_script_locals.get(world_key)
+			if isinstance(world_scope, dict):
+				owner_scopes.append(world_scope)
 	# Fallback: include fuzzy owner-key matches if direct lookup misses.
 	if owner_scopes == [] and owner_name != '':
 		try:
@@ -4136,6 +4195,49 @@ def _runtime_expr_extra_env_for_display_op (op):
 			merged.update(dict(scope))
 	if merged:
 		base_env.update(merged)
+	# Per-op fallback values captured from global/non-local scripts.
+	fallback_env = op.get('global_eval_fallback_env', {})
+	if isinstance(fallback_env, dict):
+		for _k, _v in list(fallback_env.items()):
+			if not (isinstance(_k, str) and re.fullmatch(r'[A-Za-z_]\w*', _k)):
+				continue
+			if _k.startswith('__'):
+				continue
+			if _k in base_env:
+				continue
+			if isinstance(_v, (int, float, bool, str)) or _v is None:
+				base_env[_k] = _v
+	# Optional marker for scripts that evolve `time` via `time += dt`.
+	if ('time_accumulator_base' in op) or ('time_accumulator_hz' in op):
+		try:
+			base_env['_js13k_time_accumulator_base'] = float(op.get('time_accumulator_base', 0.0) or 0.0)
+		except Exception:
+			base_env['_js13k_time_accumulator_base'] = 0.0
+		try:
+			_hz = float(op.get('time_accumulator_hz', 60.0) or 60.0)
+		except Exception:
+			_hz = 60.0
+		if _hz <= 0.0:
+			_hz = 60.0
+		base_env['_js13k_time_accumulator_hz'] = float(_hz)
+	# Also expose simple runtime globals so expressions depending on global vars
+	# (for example `int(time)`) resolve even when they are not mirrored in
+	# scriptLocals for the current owner scope.
+	try:
+		for _name, _value in list(runtime_globals.items()):
+			if not (isinstance(_name, str) and re.fullmatch(r'[A-Za-z_]\w*', _name)):
+				continue
+			if _name.startswith('__'):
+				continue
+			if _name in base_env:
+				continue
+			if callable(_value):
+				continue
+			# Keep env deterministic/safe for eval; only plain literal-like values.
+			if isinstance(_value, (int, float, bool, str)) or _value is None:
+				base_env[_name] = _value
+	except Exception:
+		pass
 	if scope_key != '':
 		for owner_scope in all_script_locals.values():
 			if not isinstance(owner_scope, dict):
@@ -12180,7 +12282,7 @@ def _gbc_palette4_from_rgba (rgba):
 		return _GBC_DEFAULT_BG_COLORS[: 4]
 	return _gbc_quantize_palette4(pix, lock_extremes = True)
 
-def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, aot_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0, camera_follow_mode : bool = False, camera_follow_center_x : int = 0, camera_follow_center_y : int = 0):
+def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, aot_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, scroll_step_den_x : int = 1, scroll_step_den_y : int = 1, sprite_tile_palette_idxs = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0, camera_follow_mode : bool = False, camera_follow_center_x : int = 0, camera_follow_center_y : int = 0):
 	code = bytearray()
 	def emit(*vals):
 		code.extend(vals)
@@ -12422,6 +12524,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	x_subacc_addr = 0xC11B
 	y_subacc_addr = 0xC11C
 	jump_prev_a_addr = 0xC11D
+	scroll_acc_x_addr = 0xC11E
+	scroll_acc_y_addr = 0xC11F
 	aot_ctx_vx_lo_addr = 0xC0F2
 	aot_ctx_vx_hi_addr = 0xC0F3
 	aot_ctx_vy_lo_addr = 0xC0F4
@@ -12542,6 +12646,10 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	emit(0xEA, y_subacc_addr & 0xFF, (y_subacc_addr >> 8) & 0xFF)
 	ld_a_imm(0)
 	emit(0xEA, jump_prev_a_addr & 0xFF, (jump_prev_a_addr >> 8) & 0xFF)
+	ld_a_imm(0)
+	emit(0xEA, scroll_acc_x_addr & 0xFF, (scroll_acc_x_addr >> 8) & 0xFF)
+	ld_a_imm(0)
+	emit(0xEA, scroll_acc_y_addr & 0xFF, (scroll_acc_y_addr >> 8) & 0xFF)
 	# Seed AOT runtime context pointers for velocity helper hooks.
 	ld_a_imm(vx_addr & 0xFF); emit(0xEA, aot_ctx_vx_lo_addr & 0xFF, (aot_ctx_vx_lo_addr >> 8) & 0xFF)
 	ld_a_imm((vx_addr >> 8) & 0xFF); emit(0xEA, aot_ctx_vx_hi_addr & 0xFF, (aot_ctx_vx_hi_addr >> 8) & 0xFF)
@@ -12603,6 +12711,51 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	if _GBC_ENABLE_GENERAL_AOT and callable(_gbc_transpiler_compile_general_script) and aot_source_code.strip() != '':
 		emit(0xCD, 0x00, 0x00)  # call aot_update
 		aot_call_update_patch = len(code) - 2
+	def _emit_scroll_axis_step (_scroll_addr, _acc_addr, _step_num, _step_den):
+		try:
+			num = int(_step_num)
+		except Exception:
+			num = 0
+		try:
+			den = int(_step_den)
+		except Exception:
+			den = 1
+		if den <= 0:
+			den = 1
+		if den > 255:
+			den = 255
+		if den == 1:
+			if num != 0:
+				emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+				emit(0xC6, int(num) & 0xFF)
+				emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+			return
+		base = int(math.trunc(float(num) / float(den)))
+		rem = int(num - base * den)
+		if base != 0:
+			emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+			emit(0xC6, int(base) & 0xFF)
+			emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		if rem == 0:
+			return
+		rem_mag = abs(int(rem))
+		if rem_mag > 255:
+			rem_mag = 255
+		emit(0xFA, _acc_addr & 0xFF, (_acc_addr >> 8) & 0xFF)
+		emit(0xC6, int(rem_mag) & 0xFF)
+		emit(0xEA, _acc_addr & 0xFF, (_acc_addr >> 8) & 0xFF)
+		emit(0xFE, int(den) & 0xFF)
+		jr_frac_done = jr(0x38)  # jr c, frac_done
+		emit(0xD6, int(den) & 0xFF)
+		emit(0xEA, _acc_addr & 0xFF, (_acc_addr >> 8) & 0xFF)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		if rem > 0:
+			emit(0x3C)  # inc a
+		else:
+			emit(0x3D)  # dec a
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		frac_done_addr = len(code)
+		patch_jr(jr_frac_done, frac_done_addr)
 	# Runtime display scroll: either scripted scroll profile or follow-camera mode.
 	if camera_follow_mode:
 		# scroll_x = center_x - x
@@ -12618,16 +12771,12 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0xC6, int(camera_follow_center_y) & 0xFF)
 		emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
 	else:
-		emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
-		emit(0xC6, int(scroll_step_x) & 0xFF)
-		emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+		_emit_scroll_axis_step(scroll_x_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
 		emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
 		emit(0x2F)  # cpl
 		emit(0x3C)  # inc a
 		ldh_imm_a(0x43)  # SCX = -scroll_x
-		emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
-		emit(0xC6, int(scroll_step_y) & 0xFF)
-		emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+		_emit_scroll_axis_step(scroll_y_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
 		emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
 		emit(0x2F)  # cpl
 		emit(0x3C)  # inc a
@@ -12954,7 +13103,7 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		patch_call(aot_call_update_patch, aot_update_target)
 	return bytes(code)
 
-def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette_bank, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, aot_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, sprite_tile_palette_idxs = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0, camera_follow_mode : bool = False, camera_follow_center_x : int = 0, camera_follow_center_y : int = 0):
+def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, sprite_tiles_w : int, sprite_tiles_h : int, init_x : int, init_y : int, bg_palette_bank, obj_palette_bank, collider_rects = None, grav_step_x : int = 0, grav_step_y : int = 1, init_vx : int = 0, init_vy : int = 0, velocity_script = None, aot_script = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, scroll_step_den_x : int = 1, scroll_step_den_y : int = 1, sprite_tile_palette_idxs = None, collision_w_px : int = None, collision_h_px : int = None, collision_off_x_px : int = 0, collision_off_y_px : int = 0, camera_follow_mode : bool = False, camera_follow_center_x : int = 0, camera_follow_center_y : int = 0):
 	tile_data_len = 384 * 16
 	tilemap_len = 32 * 32
 	attrmap_len = 32 * 32
@@ -12983,13 +13132,13 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	rom_size = 0x8000
 	sprite_tile_count = max(1, min(_GBC_RUNTIME_MAX_METASPRITE_TILES, int((len(sprite_tile_bytes) if sprite_tile_bytes else 0) // 16)))
 	collider_count = len(collider_payload) // 4
-	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, aot_script = aot_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs, collision_w_px = collision_w_px, collision_h_px = collision_h_px, collision_off_x_px = collision_off_x_px, collision_off_y_px = collision_off_y_px, camera_follow_mode = camera_follow_mode, camera_follow_center_x = camera_follow_center_x, camera_follow_center_y = camera_follow_center_y)
+	probe = _gbc_build_dynamic_physics_program(0, tile_data_len, tilemap_len, attrmap_len, 0, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, aot_script = aot_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, scroll_step_den_x = scroll_step_den_x, scroll_step_den_y = scroll_step_den_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs, collision_w_px = collision_w_px, collision_h_px = collision_h_px, collision_off_x_px = collision_off_x_px, collision_off_y_px = collision_off_y_px, camera_follow_mode = camera_follow_mode, camera_follow_center_x = camera_follow_center_x, camera_follow_center_y = camera_follow_center_y)
 	bg_data_addr = code_start + len(probe)
 	if bg_data_addr & 0xF:
 		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
 	sprite_data_addr = bg_data_addr + len(bg_payload)
 	collider_data_addr = sprite_data_addr + sprite_tile_count * 16
-	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, aot_script = aot_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs, collision_w_px = collision_w_px, collision_h_px = collision_h_px, collision_off_x_px = collision_off_x_px, collision_off_y_px = collision_off_y_px, camera_follow_mode = camera_follow_mode, camera_follow_center_x = camera_follow_center_x, camera_follow_center_y = camera_follow_center_y)
+	code = _gbc_build_dynamic_physics_program(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, sprite_tile_count, sprite_tiles_w, sprite_tiles_h, init_x, init_y, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, grav_step_x = grav_step_x, grav_step_y = grav_step_y, init_vx = init_vx, init_vy = init_vy, velocity_script = velocity_script, aot_script = aot_script, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, scroll_step_den_x = scroll_step_den_x, scroll_step_den_y = scroll_step_den_y, sprite_tile_palette_idxs = sprite_tile_palette_idxs, collision_w_px = collision_w_px, collision_h_px = collision_h_px, collision_off_x_px = collision_off_x_px, collision_off_y_px = collision_off_y_px, camera_follow_mode = camera_follow_mode, camera_follow_center_x = camera_follow_center_x, camera_follow_center_y = camera_follow_center_y)
 	total_need = collider_data_addr + len(collider_payload)
 	if total_need > rom_size:
 		raise RuntimeError('GBC dynamic physics export exceeds 32KB ROM size.')
@@ -13019,7 +13168,7 @@ def _gbc_build_dynamic_physics_rom (canvas_160x144, sprite_tile_bytes : bytes, s
 	print('GBC export: runtime mode = dynamic physics phase1, runtime colliders =', collider_count)
 	return bytes(rom)
 
-def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, bodies, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0):
+def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_len : int, bg_tilemap_len : int, bg_attrmap_len : int, sprite_data_addr : int, sprite_tile_count : int, bodies, bg_palette_bytes : bytes, obj_palette_bytes : bytes, collider_data_addr : int = 0, collider_count : int = 0, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, scroll_step_den_x : int = 1, scroll_step_den_y : int = 1):
 	code = bytearray()
 	if bodies is None:
 		bodies = []
@@ -13039,6 +13188,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 	aot_update_call_patches = []
 	scroll_x_addr = 0xC0F0
 	scroll_y_addr = 0xC0F1
+	scroll_acc_x_addr = 0xC0F6
+	scroll_acc_y_addr = 0xC0F7
 	# Shared general-AOT velocity pointer context (same ABI as single-body path).
 	aot_ctx_vx_lo_addr = 0xC0F2
 	aot_ctx_vx_hi_addr = 0xC0F3
@@ -13216,6 +13367,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 	ldh_imm_a(0x4F)  # VBK = 0
 	ld_a_imm(init_scroll_x); emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
 	ld_a_imm(init_scroll_y); emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	ld_a_imm(0); emit(0xEA, scroll_acc_x_addr & 0xFF, (scroll_acc_x_addr >> 8) & 0xFF)
+	ld_a_imm(0); emit(0xEA, scroll_acc_y_addr & 0xFF, (scroll_acc_y_addr >> 8) & 0xFF)
 	# Seed body state and OAM metasprites.
 	for body_idx, body in enumerate(bodies):
 		base = 0xC100 + body_idx * 8
@@ -13297,17 +13450,58 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 	emit(0xC3, 0x00, 0x00)  # jp main_loop
 	jp_loop_patch = len(code) - 2
 	update_addr = len(code)
+	def _emit_scroll_axis_step (_scroll_addr, _acc_addr, _step_num, _step_den):
+		try:
+			num = int(_step_num)
+		except Exception:
+			num = 0
+		try:
+			den = int(_step_den)
+		except Exception:
+			den = 1
+		if den <= 0:
+			den = 1
+		if den > 255:
+			den = 255
+		if den == 1:
+			if num != 0:
+				emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+				emit(0xC6, int(num) & 0xFF)
+				emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+			return
+		base = int(math.trunc(float(num) / float(den)))
+		rem = int(num - base * den)
+		if base != 0:
+			emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+			emit(0xC6, int(base) & 0xFF)
+			emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		if rem == 0:
+			return
+		rem_mag = abs(int(rem))
+		if rem_mag > 255:
+			rem_mag = 255
+		emit(0xFA, _acc_addr & 0xFF, (_acc_addr >> 8) & 0xFF)
+		emit(0xC6, int(rem_mag) & 0xFF)
+		emit(0xEA, _acc_addr & 0xFF, (_acc_addr >> 8) & 0xFF)
+		emit(0xFE, int(den) & 0xFF)
+		jr_frac_done = jr(0x38)  # jr c, frac_done
+		emit(0xD6, int(den) & 0xFF)
+		emit(0xEA, _acc_addr & 0xFF, (_acc_addr >> 8) & 0xFF)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		if rem > 0:
+			emit(0x3C)  # inc a
+		else:
+			emit(0x3D)  # dec a
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		frac_done_addr = len(code)
+		patch_jr(jr_frac_done, frac_done_addr)
 	# Runtime display scroll shared across all bodies.
-	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
-	emit(0xC6, int(scroll_step_x) & 0xFF)
-	emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	_emit_scroll_axis_step(scroll_x_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
 	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
 	emit(0x2F)  # cpl
 	emit(0x3C)  # inc a
 	ldh_imm_a(0x43)  # SCX = -scroll_x
-	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
-	emit(0xC6, int(scroll_step_y) & 0xFF)
-	emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	_emit_scroll_axis_step(scroll_y_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
 	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
 	emit(0x2F)  # cpl
 	emit(0x3C)  # inc a
@@ -13901,7 +14095,7 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			patch_call(int(patch_pos), int(target))
 	return bytes(code)
 
-def _gbc_build_dynamic_physics_rom_multi (canvas_160x144, body_specs, bg_palette_bank, collider_rects = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0):
+def _gbc_build_dynamic_physics_rom_multi (canvas_160x144, body_specs, bg_palette_bank, collider_rects = None, init_scroll_x : int = 0, init_scroll_y : int = 0, scroll_step_x : int = 0, scroll_step_y : int = 0, scroll_step_den_x : int = 1, scroll_step_den_y : int = 1):
 	tile_data_len = 384 * 16
 	tilemap_len = 32 * 32
 	attrmap_len = 32 * 32
@@ -14040,13 +14234,13 @@ def _gbc_build_dynamic_physics_rom_multi (canvas_160x144, body_specs, bg_palette
 	code_start = 0x150
 	rom_size = 0x8000
 	collider_count = len(collider_payload) // 4
-	probe = _gbc_build_dynamic_physics_program_multi(0, tile_data_len, tilemap_len, attrmap_len, 0, total_tile_count, bodies, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y)
+	probe = _gbc_build_dynamic_physics_program_multi(0, tile_data_len, tilemap_len, attrmap_len, 0, total_tile_count, bodies, bg_palette_bytes, obj_palette_bytes, collider_data_addr = 0, collider_count = collider_count, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, scroll_step_den_x = scroll_step_den_x, scroll_step_den_y = scroll_step_den_y)
 	bg_data_addr = code_start + len(probe)
 	if bg_data_addr & 0xF:
 		bg_data_addr += 0x10 - (bg_data_addr & 0xF)
 	sprite_data_addr = bg_data_addr + len(bg_payload)
 	collider_data_addr = sprite_data_addr + len(sprite_payload)
-	code = _gbc_build_dynamic_physics_program_multi(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, total_tile_count, bodies, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y)
+	code = _gbc_build_dynamic_physics_program_multi(bg_data_addr, tile_data_len, tilemap_len, attrmap_len, sprite_data_addr, total_tile_count, bodies, bg_palette_bytes, obj_palette_bytes, collider_data_addr = collider_data_addr, collider_count = collider_count, init_scroll_x = init_scroll_x, init_scroll_y = init_scroll_y, scroll_step_x = scroll_step_x, scroll_step_y = scroll_step_y, scroll_step_den_x = scroll_step_den_x, scroll_step_den_y = scroll_step_den_y)
 	total_need = collider_data_addr + len(collider_payload)
 	if total_need > rom_size:
 		raise RuntimeError('GBC dynamic multi-body export exceeds 32KB ROM size.')
@@ -17519,20 +17713,35 @@ def _gba_get_runtime_display_scroll_profile (script_runtime, frame : int = 1, st
 				has_camera_ops = True
 				break
 	if has_camera_ops:
-		# set_camera_position is an absolute camera command. We cannot replay full
-		# per-frame script evaluation in the fixed-step phase1 runtime, so bake
-		# the resolved frame-1 camera offset into init scroll and disable drift.
-		total_dx, total_dy = _gba_eval_display_scroll_offset(
+		frame0 = int(max(1, int(frame or 1)))
+		# Sample a wider window so low-frequency camera expressions such as
+		# `int(time)` become a non-zero per-step average instead of collapsing
+		# to 0 when only frame1 is considered.
+		window = 60
+		frame1 = int(frame0 + window)
+		base_dx, base_dy = _gba_eval_display_scroll_offset(
 			script_runtime,
-			frame = frame,
+			frame = frame0,
 			start_time = start_time,
 			include_update = True,
 		)
+		next_dx, next_dy = _gba_eval_display_scroll_offset(
+			script_runtime,
+			frame = frame1,
+			start_time = start_time,
+			include_update = True,
+		)
+		step_num_x = int(next_dx - base_dx)
+		step_num_y = int(next_dy - base_dy)
+		step_den = int(max(1, window))
 		return {
-			'init_dx' : int(total_dx),
-			'init_dy' : int(total_dy),
-			'step_dx' : 0,
-			'step_dy' : 0,
+			'init_dx' : int(base_dx),
+			'init_dy' : int(base_dy),
+			'step_dx' : int(round(float(step_num_x) / float(step_den))),
+			'step_dy' : int(round(float(step_num_y) / float(step_den))),
+			'step_dx_num' : int(step_num_x),
+			'step_dy_num' : int(step_num_y),
+			'step_den' : int(step_den),
 		}
 	init_dx, init_dy = _gba_eval_display_scroll_offset(
 		script_runtime,
@@ -17551,6 +17760,9 @@ def _gba_get_runtime_display_scroll_profile (script_runtime, frame : int = 1, st
 		'init_dy' : int(init_dy),
 		'step_dx' : int(total_dx - init_dx),
 		'step_dy' : int(total_dy - init_dy),
+		'step_dx_num' : int(total_dx - init_dx),
+		'step_dy_num' : int(total_dy - init_dy),
+		'step_den' : 1,
 	}
 
 def _gba_runtime_without_display_scroll (script_runtime):
@@ -19196,42 +19408,19 @@ def BuildGbc (world):
 						break
 			except Exception:
 				camera_follow_mode = False
+			# Do not bake absolute camera offsets into world transforms/colliders.
+			# Runtime uses scroll_profile (init/step) directly.
 			camera_offset_x = 0
 			camera_offset_y = 0
-			if camera_ops_present:
-				try:
-					camera_offset_x, camera_offset_y = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
-				except Exception:
-					camera_offset_x, camera_offset_y = (0, 0)
-				# Phase1 hardware scroll registers are 8-bit; keep camera in
-				# world-space offsets instead of register scrolling to avoid wrap.
-				scroll_profile = {
-					'init_dx' : 0,
-					'init_dy' : 0,
-					'step_dx' : 0,
-					'step_dy' : 0,
-				}
 			phase1_transform_overrides = composite_transform_overrides
-			if (not camera_follow_mode) and camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
-				phase1_transform_overrides = {}
-				for _name, _ov in list((composite_transform_overrides or {}).items()):
-					if not isinstance(_ov, dict):
-						continue
-					ov2 = dict(_ov)
-					try:
-						ov2['x'] = float(_ov.get('x', 0.0)) - float(camera_offset_x)
-					except Exception:
-						ov2['x'] = float(_ov.get('x', 0.0))
-					try:
-						ov2['y'] = float(_ov.get('y', 0.0)) - float(camera_offset_y)
-					except Exception:
-						ov2['y'] = float(_ov.get('y', 0.0))
-					phase1_transform_overrides[_name] = ov2
 			_append_gbc_trace_lines([
 				'[gbc-trace] BuildGbc:scroll_profile:init_dx=' + str(int(scroll_profile.get('init_dx', 0)))
 				+ ',init_dy=' + str(int(scroll_profile.get('init_dy', 0)))
 				+ ',step_dx=' + str(int(scroll_profile.get('step_dx', 0)))
-				+ ',step_dy=' + str(int(scroll_profile.get('step_dy', 0))),
+				+ ',step_dy=' + str(int(scroll_profile.get('step_dy', 0)))
+				+ ',step_dx_num=' + str(int(scroll_profile.get('step_dx_num', scroll_profile.get('step_dx', 0))))
+				+ ',step_dy_num=' + str(int(scroll_profile.get('step_dy_num', scroll_profile.get('step_dy', 0))))
+				+ ',step_den=' + str(int(scroll_profile.get('step_den', 1))),
 				'[gbc-trace] BuildGbc:camera_offset_bake:x=' + str(int(camera_offset_x)) + ',y=' + str(int(camera_offset_y)) + ',camera_ops=' + ('1' if camera_ops_present else '0'),
 				'[gbc-trace] BuildGbc:camera_follow_mode=' + ('1' if camera_follow_mode else '0'),
 			])
@@ -19466,8 +19655,10 @@ def BuildGbc (world):
 					collider_rects = collider_rects,
 					init_scroll_x = scroll_profile.get('init_dx', 0),
 					init_scroll_y = scroll_profile.get('init_dy', 0),
-					scroll_step_x = scroll_profile.get('step_dx', 0),
-					scroll_step_y = scroll_profile.get('step_dy', 0),
+					scroll_step_x = scroll_profile.get('step_dx_num', scroll_profile.get('step_dx', 0)),
+					scroll_step_y = scroll_profile.get('step_dy_num', scroll_profile.get('step_dy', 0)),
+					scroll_step_den_x = scroll_profile.get('step_den', 1),
+					scroll_step_den_y = scroll_profile.get('step_den', 1),
 				)
 			else:
 				sprite_ob = None
@@ -19647,8 +19838,10 @@ def BuildGbc (world):
 					aot_script = aot_script,
 					init_scroll_x = scroll_profile.get('init_dx', 0),
 					init_scroll_y = scroll_profile.get('init_dy', 0),
-					scroll_step_x = scroll_profile.get('step_dx', 0),
-					scroll_step_y = scroll_profile.get('step_dy', 0),
+					scroll_step_x = scroll_profile.get('step_dx_num', scroll_profile.get('step_dx', 0)),
+					scroll_step_y = scroll_profile.get('step_dy_num', scroll_profile.get('step_dy', 0)),
+					scroll_step_den_x = scroll_profile.get('step_den', 1),
+					scroll_step_den_y = scroll_profile.get('step_den', 1),
 					sprite_tile_palette_idxs = sprite_tile_pal_idx,
 					collision_w_px = collision_w_px,
 					collision_h_px = collision_h_px,
