@@ -15434,7 +15434,7 @@ def _build_gbc_phase1_print_env (sprite_ob, sprite_tiles_w : int, sprite_tiles_h
 		def _wrapped (*args, **kwargs):
 			try:
 				_pos = _fn(*args, **kwargs)
-				return [float(_pos[0]), -float(_pos[1])]
+				return [float(_pos[0]), float(_pos[1])]
 			except Exception:
 				return [0.0, 0.0]
 		return _wrapped
@@ -17120,7 +17120,7 @@ def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions
 					pos = _fn(*args, **kwargs)
 					return [
 						(float(pos[0]) - float(_GBC_POSITION_BIAS)) + float(offset_x),
-						(float(pos[1]) - float(_GBC_POSITION_BIAS)) - float(offset_y),
+						-(float(pos[1]) - float(_GBC_POSITION_BIAS)) + float(offset_y),
 					]
 				except Exception:
 					return [0.0, 0.0]
@@ -18035,7 +18035,177 @@ def BuildGbc (world):
 			if ob.type != 'EMPTY' or ob.empty_display_type != 'IMAGE' or not ob.data or not ob.data.filepath:
 				continue
 			gbc_imgs.append(ob)
-		scene_gbc_imgs = list(gbc_imgs)
+		gbc_curve_proxy_obs = []
+		gbc_curve_surfaces = {}
+		def _load_rgba_from_image_path (_img_path):
+			try:
+				import numpy as np
+			except ImportError:
+				raise RuntimeError('Export GBA requires NumPy (included with Blender).')
+			if not os.path.isfile(_img_path):
+				return None
+			img_name = '__gba_curve_' + GetFileName(_img_path).replace('.', '_')
+			prev = bpy.data.images.get(img_name)
+			if prev:
+				bpy.data.images.remove(prev)
+			img = bpy.data.images.load(_img_path)
+			img.name = img_name
+			w, h = img.size
+			if w < 1 or h < 1:
+				bpy.data.images.remove(img)
+				return None
+			pix = np.array(img.pixels[:], dtype = np.float32).reshape(h, w, 4)
+			pix = pix[::-1, :, :]
+			bpy.data.images.remove(img)
+			return pix
+		def _render_curve_surface_for_gbc (_curve_ob):
+			_curve_name = re.sub(r'[^A-Za-z0-9_]+', '_', str(getattr(_curve_ob, 'name', 'curve') or 'curve'))
+			render_path = os.path.join(TMP_DIR, '__gbc_curve_' + _curve_name + '.png')
+			try:
+				scene = bpy.context.scene
+				render_settings = scene.render
+				image_settings = render_settings.image_settings
+				_min, _max = GetRectMinMax(_curve_ob)
+				scale = float(getattr(world, 'exportScale', 1.0) or 1.0)
+				width_px = max(1, int(round(abs(float((_max.x - _min.x) * scale)))))
+				height_px = max(1, int(round(abs(float((_max.y - _min.y) * scale)))))
+				if width_px < 1 or height_px < 1:
+					return None
+				center_x = float((_min.x + _max.x) * 0.5)
+				center_y = float((_min.y + _max.y) * 0.5)
+				view_width = max(1e-6, float(_max.x - _min.x))
+				view_height = max(1e-6, float(_max.y - _min.y))
+				aspect = float(width_px) / float(height_px)
+				ortho_scale = max(view_width, view_height * aspect)
+				prev_cam = scene.camera
+				prev_render_path = render_settings.filepath
+				prev_file_format = image_settings.file_format
+				prev_color_mode = image_settings.color_mode
+				prev_film_transparent = render_settings.film_transparent
+				prev_res_x = int(render_settings.resolution_x)
+				prev_res_y = int(render_settings.resolution_y)
+				prev_res_pct = int(render_settings.resolution_percentage)
+				prev_hide_obs_in_render = {}
+				cam_data = bpy.data.cameras.new('TempGbcCurveCam')
+				cam = bpy.data.objects.new('TempGbcCurveCam', object_data = cam_data)
+				scene.collection.objects.link(cam)
+				try:
+					# Avoid RenderObject(): it multiplies by ob.resPercent, and for
+					# curve defaults this can request absurd render sizes/hang.
+					render_settings.filepath = render_path
+					image_settings.file_format = 'PNG'
+					image_settings.color_mode = 'RGBA'
+					render_settings.film_transparent = True
+					render_settings.resolution_x = int(width_px)
+					render_settings.resolution_y = int(height_px)
+					render_settings.resolution_percentage = 100
+					cam_data.type = 'ORTHO'
+					cam_data.ortho_scale = float(ortho_scale)
+					cam.location = Vector((float(center_x), float(center_y), 10.0))
+					cam.rotation_mode = 'XYZ'
+					cam.rotation_euler = Vector((0.0, 0.0, 0.0))
+					for ob2 in bpy.data.objects:
+						prev_hide_obs_in_render[ob2] = ob2.hide_render
+						ob2.hide_render = (ob2 != _curve_ob)
+					scene.camera = cam
+					bpy.ops.object.select_all(action = 'DESELECT')
+					bpy.context.view_layer.objects.active = _curve_ob
+					_curve_ob.select_set(True)
+					bpy.ops.render.render(write_still = True)
+				finally:
+					scene.camera = prev_cam
+					for ob2, prev_hidden in prev_hide_obs_in_render.items():
+						ob2.hide_render = prev_hidden
+					render_settings.filepath = prev_render_path
+					image_settings.file_format = prev_file_format
+					image_settings.color_mode = prev_color_mode
+					render_settings.film_transparent = prev_film_transparent
+					render_settings.resolution_x = prev_res_x
+					render_settings.resolution_y = prev_res_y
+					render_settings.resolution_percentage = prev_res_pct
+					try:
+						scene.collection.objects.unlink(cam)
+					except Exception:
+						pass
+					try:
+						bpy.data.objects.remove(cam)
+					except Exception:
+						pass
+					try:
+						bpy.data.cameras.remove(cam_data)
+					except Exception:
+						pass
+				return _load_rgba_from_image_path(render_path)
+			except Exception:
+				return None
+		def _build_curve_proxy_image (_curve_ob, _pix):
+			if _pix is None:
+				return (None, None)
+			h = int(_pix.shape[0]) if len(_pix.shape) > 0 else 0
+			w = int(_pix.shape[1]) if len(_pix.shape) > 1 else 0
+			if w < 1 or h < 1:
+				return (None, None)
+			crop_x0 = 0
+			crop_y0 = 0
+			crop_w = int(w)
+			crop_h = int(h)
+			cropped_pix = _pix
+			try:
+				import numpy as np
+				alpha = _pix[:, :, 3]
+				nonzero = np.argwhere(alpha > 1e-4)
+				if nonzero.size > 0:
+					y0 = int(np.min(nonzero[:, 0]))
+					y1 = int(np.max(nonzero[:, 0]))
+					x0 = int(np.min(nonzero[:, 1]))
+					x1 = int(np.max(nonzero[:, 1]))
+					if x1 >= x0 and y1 >= y0:
+						crop_x0 = int(x0)
+						crop_y0 = int(y0)
+						crop_w = int(x1 - x0 + 1)
+						crop_h = int(y1 - y0 + 1)
+						cropped_pix = _pix[y0 : y1 + 1, x0 : x1 + 1, :]
+			except Exception:
+				cropped_pix = _pix
+			scale = float(getattr(world, 'exportScale', 1.0) or 1.0)
+			off = Vector(getattr(world, 'exportOff', [0.0, 0.0]))
+			_min, _max = GetRectMinMax(_curve_ob)
+			x = float(_min.x * scale + off.x + float(crop_x0))
+			y = float(-_max.y * scale + off.y + float(crop_y0))
+			w_world = max(1.0, float(crop_w))
+			h_world = max(1.0, float(crop_h))
+			proxy = type('GbcCurveProxy', (), {})()
+			proxy.name = '__gbc_curve_' + str(getattr(_curve_ob, 'name', 'curve'))
+			proxy.type = 'EMPTY'
+			proxy.empty_display_type = 'IMAGE'
+			proxy.data = type('CurveProxyImageData', (), {
+				'size' : [float(crop_w), float(crop_h)],
+				'filepath' : '',
+			})()
+			proxy.scale = Vector((w_world, h_world, 1.0))
+			proxy.empty_display_size = 1.0
+			proxy.empty_image_offset = [0.0, -1.0]
+			proxy.location = Vector((x, -y, float(getattr(_curve_ob.location, 'z', 0.0))))
+			proxy.rotation_mode = 'XYZ'
+			proxy.rotation_euler = Vector((0.0, 0.0, 0.0))
+			proxy.tint = list(getattr(_curve_ob, 'tint', [1.0, 1.0, 1.0]))
+			proxy.color = list(getattr(_curve_ob, 'color', [1.0, 1.0, 1.0, 1.0]))
+			proxy.exportOb = True
+			proxy.hide_get = (lambda : False)
+			proxy.rigidBodyExists = False
+			proxy.colliderExists = False
+			return (proxy, cropped_pix)
+		for ob in scene_obs:
+			if not ob.exportOb or ob.hide_get() or ob.type != 'CURVE':
+				continue
+			curve_pix = _render_curve_surface_for_gbc(ob)
+			curve_proxy, curve_pix_cropped = _build_curve_proxy_image(ob, curve_pix)
+			if curve_proxy is None or curve_pix_cropped is None:
+				continue
+			gbc_curve_proxy_obs.append(curve_proxy)
+			gbc_curve_surfaces[curve_proxy.name] = curve_pix_cropped
+		scene_gbc_imgs = list(gbc_imgs) + list(gbc_curve_proxy_obs)
+		scene_gbc_imgs.sort(key = lambda o: float(getattr(getattr(o, 'location', None), 'z', 0.0)))
 		fallback_spawn_entries = []
 		fallback_spawn_source_names = {}
 		fallback_spawn_physics_source_names = {}
@@ -18365,8 +18535,8 @@ def BuildGbc (world):
 					]) if fallback_spawn_calls else '<none>'
 				),
 			])
-		if not gbc_imgs:
-			print('GBC export: no image empties with Export object enabled; wrote blank screen.')
+		if not scene_gbc_imgs:
+			print('GBC export: no image empties or curves with Export object enabled; wrote blank screen.')
 		gbc_imgs.sort(key = lambda o: o.location.z)
 		image_source_obs = list(gbc_imgs)
 		for ob in fallback_surface_source_obs:
@@ -18423,6 +18593,9 @@ def BuildGbc (world):
 			pix = _gba_load_saved_image_rgba(ob)
 			if pix is not None:
 				image_surfaces[ob.name] = pix
+		for curve_name, curve_pix in list((gbc_curve_surfaces or {}).items()):
+			if curve_pix is not None:
+				image_surfaces[str(curve_name)] = curve_pix
 		composite_imgs = list(scene_gbc_imgs)
 		for ob in fallback_draw_template_obs:
 			if ob not in composite_imgs:
@@ -19590,10 +19763,22 @@ def OnUpdateProperty (self, ctx, propName):
 	global canUpdateProps
 	if not canUpdateProps:
 		return
+	selectedObs = getattr(ctx, 'selected_objects', None)
+	if not selectedObs or self not in selectedObs:
+		return
+	propVal = getattr(self, propName)
 	canUpdateProps = False
-	for ob in ctx.selected_objects:
-		if ob != self:
-			setattr(ob, propName, getattr(self, propName))
+	try:
+		for ob in selectedObs:
+			if ob == self:
+				continue
+			try:
+				setattr(ob, propName, propVal)
+			except (AttributeError, TypeError):
+				# Skip objects that don't support this property.
+				continue
+	finally:
+		canUpdateProps = True
 
 def OnUpdateTint (self, ctx):
 	for ob in ctx.selected_objects:
@@ -19657,7 +19842,7 @@ bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if ou
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Unit length', min = 0, default = 1)
 bpy.types.World.debugMode = bpy.props.BoolProperty(name = 'Debug mode', default = True)
-bpy.types.Object.exportOb = bpy.props.BoolProperty(name = 'Export object', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'export'))
+bpy.types.Object.exportOb = bpy.props.BoolProperty(name = 'Export object', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'exportOb'))
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundPosAndSize'))
 bpy.types.Object.roundAndCompressPathData = bpy.props.BoolProperty(name = 'Round and compress path data', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundAndCompressPathData'))
 bpy.types.Object.pivot = bpy.props.FloatVectorProperty(name = 'Pivot point', size = 2, default = [50, 50], update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'pivot'))
