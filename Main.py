@@ -18337,6 +18337,64 @@ def BuildGbc (world):
 				out[:, :, 2] = 1.0
 				out[:, :, 3] = np.clip(alpha_soft, 0.0, 1.0).astype(np.float32)
 				return out
+			def _curve_force_neutral_rgb (_pix):
+				try:
+					import numpy as np
+				except Exception:
+					return _pix
+				if _pix is None:
+					return None
+				if len(_pix.shape) != 3 or int(_pix.shape[2]) < 4:
+					return _pix
+				out = np.array(_pix, copy = True)
+				out[:, :, 0] = 1.0
+				out[:, :, 1] = 1.0
+				out[:, :, 2] = 1.0
+				return out
+			def _tighten_curve_surface_to_alpha (_pix, _meta):
+				try:
+					import numpy as np
+				except Exception:
+					return (_pix, _meta)
+				if _pix is None or not isinstance(_meta, dict):
+					return (_pix, _meta)
+				if len(_pix.shape) != 3 or int(_pix.shape[2]) < 4:
+					return (_pix, _meta)
+				h0 = int(_pix.shape[0])
+				w0 = int(_pix.shape[1])
+				if w0 < 1 or h0 < 1:
+					return (_pix, _meta)
+				alpha = _pix[:, :, 3]
+				ys, xs = np.where(alpha > (1.0 / 255.0))
+				if len(xs) == 0 or len(ys) == 0:
+					return (_pix, _meta)
+				pad = 1
+				min_x_px = max(0, int(np.min(xs)) - pad)
+				max_x_px = min(w0 - 1, int(np.max(xs)) + pad)
+				min_y_px = max(0, int(np.min(ys)) - pad)
+				max_y_px = min(h0 - 1, int(np.max(ys)) + pad)
+				if min_x_px <= 0 and min_y_px <= 0 and max_x_px >= (w0 - 1) and max_y_px >= (h0 - 1):
+					return (_pix, _meta)
+				cropped = np.array(_pix[min_y_px : max_y_px + 1, min_x_px : max_x_px + 1, :], copy = True)
+				try:
+					min_x = float(_meta.get('min_x', 0.0))
+					max_y = float(_meta.get('max_y', 0.0))
+					w_world = float(_meta.get('w_world', 0.0))
+					h_world = float(_meta.get('h_world', 0.0))
+				except Exception:
+					return (cropped, _meta)
+				if w_world <= 1e-9 or h_world <= 1e-9:
+					return (cropped, _meta)
+				fx = float(min_x_px) / float(w0)
+				fy = float(min_y_px) / float(h0)
+				fw = float(max_x_px - min_x_px + 1) / float(w0)
+				fh = float(max_y_px - min_y_px + 1) / float(h0)
+				new_meta = dict(_meta)
+				new_meta['min_x'] = float(min_x + w_world * fx)
+				new_meta['max_y'] = float(max_y - h_world * fy)
+				new_meta['w_world'] = float(max(1e-9, w_world * fw))
+				new_meta['h_world'] = float(max(1e-9, h_world * fh))
+				return (cropped, new_meta)
 			def _recover_curve_alpha_from_geometry (_meta, _target_pix):
 				try:
 					import numpy as np
@@ -18443,19 +18501,21 @@ def BuildGbc (world):
 				# positive "valid" alpha (rectangle-ish mask). Prefer geometry mask.
 				primary_suspicious_full = bool(primary_coverage_ratio >= 0.90)
 				if (not _curve_alpha_is_degenerate(primary_pix)) and (not primary_suspicious_full):
-					return (primary_pix, {
+					primary_pix_out, primary_meta_out = _tighten_curve_surface_to_alpha(_curve_force_neutral_rgb(primary_pix), primary_meta)
+					return (primary_pix_out, {
 						'stage' : 'primary',
 						'primary' : primary_stats,
 						'recovered' : {'ok' : False},
-					}, primary_meta)
+					}, primary_meta_out)
 				geometry_mask = _recover_curve_alpha_from_geometry(primary_meta, primary_pix)
 				geometry_stats = _curve_alpha_stats(geometry_mask)
 				if geometry_mask is not None and not _curve_alpha_is_degenerate(geometry_mask):
-					return (geometry_mask, {
+					geometry_pix_out, geometry_meta_out = _tighten_curve_surface_to_alpha(_curve_force_neutral_rgb(geometry_mask), primary_meta)
+					return (geometry_pix_out, {
 						'stage' : 'geometry_mask',
 						'primary' : primary_stats,
 						'recovered' : geometry_stats,
-					}, primary_meta)
+					}, geometry_meta_out)
 				# Fallback for opaque/flattened alpha: render over black and white
 				# backgrounds and solve alpha analytically.
 				black_pix, _black_meta = _render_curve_variant(
@@ -18471,24 +18531,27 @@ def BuildGbc (world):
 				recovered = _recover_curve_alpha_from_bg_pair(black_pix, white_pix)
 				recovered_stats = _curve_alpha_stats(recovered)
 				if recovered is not None and not _curve_alpha_is_degenerate(recovered):
-					return (recovered, {
+					recovered_pix_out, recovered_meta_out = _tighten_curve_surface_to_alpha(_curve_force_neutral_rgb(recovered), primary_meta)
+					return (recovered_pix_out, {
 						'stage' : 'bg_pair',
 						'primary' : primary_stats,
 						'recovered' : recovered_stats,
-					}, primary_meta)
+					}, recovered_meta_out)
 				forced_mask = _recover_curve_alpha_from_forced_mask_render()
 				forced_stats = _curve_alpha_stats(forced_mask)
 				if forced_mask is not None and not _curve_alpha_is_degenerate(forced_mask):
-					return (forced_mask, {
+					forced_pix_out, forced_meta_out = _tighten_curve_surface_to_alpha(_curve_force_neutral_rgb(forced_mask), primary_meta)
+					return (forced_pix_out, {
 						'stage' : 'forced_mask',
 						'primary' : primary_stats,
 						'recovered' : forced_stats,
-					}, primary_meta)
-				return (primary_pix, {
+					}, forced_meta_out)
+				fallback_pix_out, fallback_meta_out = _tighten_curve_surface_to_alpha(_curve_force_neutral_rgb(primary_pix), primary_meta)
+				return (fallback_pix_out, {
 					'stage' : 'fallback_primary',
 					'primary' : primary_stats,
 					'recovered' : recovered_stats if bool(recovered_stats.get('ok', False)) else forced_stats,
-				}, primary_meta)
+				}, fallback_meta_out)
 			except Exception:
 				return (None, {
 					'stage' : 'exception',
