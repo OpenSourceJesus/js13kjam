@@ -17478,6 +17478,17 @@ def _gbc_shift_collider_rects_by_camera (rects, cam_x : int = 0, cam_y : int = 0
 		cy = int(round(float(cam_y)))
 	except Exception:
 		cy = 0
+	# Camera offsets are evaluated in script/GBA space and later projected into
+	# the 160x144 GBC cover frame. Apply the same projected delta here so collider
+	# shifts stay in lockstep with sprite init/camera transforms.
+	try:
+		x0, y0 = _gba_to_gbc_cover_point(0.0, 0.0)
+		cx_gbc, _ = _gba_to_gbc_cover_point(float(cx), 0.0)
+		_, cy_gbc = _gba_to_gbc_cover_point(0.0, float(cy))
+		cx = int(cx_gbc - x0)
+		cy = int(cy_gbc - y0)
+	except Exception:
+		pass
 	out = []
 	for rect in list(rects or []):
 		try:
@@ -18893,6 +18904,12 @@ def BuildGbc (world):
 						collision_w_px = max(1, int(col_w))
 						collision_h_px = max(1, int(col_h))
 						init_x_src_tmp, init_y_src_tmp = _get_runtime_sprite_pos_gba(sprite_ob)
+						# Keep collision offset camera-invariant: self collider rects are
+						# authored/world aligned, while runtime sprite init position is
+						# camera-shifted for set_camera_position().
+						if (not camera_follow_mode) and camera_ops_present:
+							init_x_src_tmp = float(init_x_src_tmp) + float(camera_offset_x)
+							init_y_src_tmp = float(init_y_src_tmp) + float(camera_offset_y)
 						sprite_x_gbc, sprite_y_gbc = _gba_to_gbc_cover_point(float(init_x_src_tmp), float(init_y_src_tmp))
 						collision_off_x_px = int(col_left - int(sprite_x_gbc))
 						collision_off_y_px = int(col_top - int(sprite_y_gbc))
