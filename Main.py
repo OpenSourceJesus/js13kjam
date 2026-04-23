@@ -844,7 +844,7 @@ def _collect_gbc_spawn_prefab_requests ():
 				'rot' : float(rot),
 			})
 	for ob in bpy.data.objects:
-		if not ob.exportOb or ob.hide_get():
+		if not ob.exportOb or ob.hide_get() or not IsExportHierarchyEnabled(ob):
 			continue
 		for scriptInfo in GetScripts(ob):
 			scriptTxt = scriptInfo[0]
@@ -887,9 +887,17 @@ def GetInstancedCollectionTemplateObjects (scene):
 			templateObs.add(ob)
 	return templateObs
 
+def IsExportHierarchyEnabled (ob):
+	parent = getattr(ob, 'parent', None)
+	while parent is not None:
+		if not getattr(parent, 'exportOb', False):
+			return False
+		parent = getattr(parent, 'parent', None)
+	return True
+
 def ExportObject (ob):
 	global svgsDatas
-	if not ob.exportOb or ob in exportedObs:
+	if not ob.exportOb or ob in exportedObs or not IsExportHierarchyEnabled(ob):
 		return
 	obVarName = GetVarNameForObject(ob)
 	_attributes = GetAttributes(ob)
@@ -4928,7 +4936,7 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 					'symbol_hint' : 'world_' + getattr(script, 'name', 'script'),
 				})
 	for ob in bpy.data.objects:
-		if not ob.exportOb or ob.hide_get():
+		if not ob.exportOb or ob.hide_get() or not IsExportHierarchyEnabled(ob):
 			continue
 		for scriptInfo in GetScripts(ob):
 			scriptTxt = scriptInfo[0]
@@ -4991,7 +4999,7 @@ def _build_fallback_gbc_script_runtime (world):
 					{},
 				)
 	for ob in bpy.data.objects:
-		if not ob.exportOb or ob.hide_get():
+		if not ob.exportOb or ob.hide_get() or not IsExportHierarchyEnabled(ob):
 			continue
 		try:
 			owner_attrs = dict(GetAttributes(ob) or {})
@@ -5853,7 +5861,7 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 			entry[str(_attr_name)] = _attr_value
 		gbc_obs_data[str(_owner_name)] = entry
 	for ob in bpy.data.objects:
-		if not ob.exportOb or ob.hide_get():
+		if not ob.exportOb or ob.hide_get() or not IsExportHierarchyEnabled(ob):
 			continue
 		if ob in template_only_obs and ob not in spawn_template_obs:
 			continue
@@ -18011,7 +18019,7 @@ def BuildGbc (world):
 		template_only_obs = set(in_prefab_coll - in_non_prefab_coll)
 		scene_obs = [
 			ob for ob in scene_obs_all
-			if ob not in instanced_template_obs and ob not in template_only_obs
+			if ob not in instanced_template_obs and ob not in template_only_obs and IsExportHierarchyEnabled(ob)
 		]
 		scene_instance_obs = [
 			ob for ob in scene_obs
@@ -20227,6 +20235,224 @@ def OnUpdateTint (self, ctx):
 		ob.color = list(ob.tint) + [ob.color[3]]
 	OnUpdateProperty (ob, ctx, 'tint')
 
+_world_preview_state = {
+	'active' : False,
+	'preview_type' : 'gbc',
+	'objects' : {},
+	'materials' : {},
+	'created_images' : set(),
+}
+
+def _preview_quantize_rgb8 (_rgb_u8, preview_type : str):
+	if preview_type == 'gba':
+		return ((_rgb_u8.astype('uint16') >> 3) << 3).astype('uint8')
+	# Simple fallback quantization for GBC-like color depth.
+	return ((_rgb_u8.astype('uint16') >> 6) * 85).astype('uint8')
+
+def _preview_quantize_rgb01 (_rgb, preview_type : str):
+	clr = [max(0.0, min(1.0, float(c))) for c in list(_rgb)[: 3]]
+	out = []
+	for c in clr:
+		u8 = int(round(c * 255.0))
+		if preview_type == 'gba':
+			u8 = (u8 >> 3) << 3
+		else:
+			u8 = (u8 >> 6) * 85
+		out.append(float(u8) / 255.0)
+	return out
+
+def _preview_quantize_image (_image, preview_type : str):
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Preview needs NumPy.')
+	if _image is None:
+		return None
+	w, h = list(getattr(_image, 'size', [0, 0]))[: 2]
+	if int(w) < 1 or int(h) < 1:
+		return None
+	try:
+		pix = np.array(_image.pixels[:], dtype = np.float32).reshape(int(h), int(w), 4)
+	except Exception:
+		return None
+	rgb_u8 = np.clip(np.round(pix[:, :, :3] * 255.0), 0, 255).astype(np.uint8)
+	alpha = pix[:, :, 3]
+	if preview_type == 'gbc':
+		mask = alpha > (1.0 / 255.0)
+		try:
+			if int(np.count_nonzero(mask)) > 0:
+				colors = rgb_u8[mask]
+				palette = _gbc_quantize_palette4(colors, lock_extremes = True)
+				indices = _gbc_quantize_indices_for_palette(colors, palette)
+				q_colors = palette[indices]
+				rgb_u8 = np.array(rgb_u8, copy = True)
+				rgb_u8[mask] = q_colors
+		except Exception:
+			rgb_u8 = _preview_quantize_rgb8(rgb_u8, preview_type)
+	else:
+		rgb_u8 = _preview_quantize_rgb8(rgb_u8, preview_type)
+	out = np.array(pix, copy = True)
+	out[:, :, :3] = rgb_u8.astype(np.float32) / 255.0
+	return out
+
+def _preview_get_material_color (_mat):
+	if _mat is None:
+		return (None, None)
+	if hasattr(_mat, 'color'):
+		try:
+			return ('color', list(_mat.color))
+		except Exception:
+			pass
+	gp = getattr(_mat, 'grease_pencil', None)
+	if gp is not None and hasattr(gp, 'color'):
+		try:
+			return ('grease_pencil.color', list(gp.color))
+		except Exception:
+			pass
+	return (None, None)
+
+def _preview_set_material_color (_mat, _channel, _rgba):
+	if _mat is None or _channel is None or _rgba is None:
+		return False
+	try:
+		rgba = list(_rgba)
+		if _channel == 'color' and hasattr(_mat, 'color'):
+			_mat.color = rgba
+			return True
+		if _channel == 'grease_pencil.color':
+			gp = getattr(_mat, 'grease_pencil', None)
+			if gp is not None and hasattr(gp, 'color'):
+				gp.color = rgba
+				return True
+	except Exception:
+		return False
+	return False
+
+def _stop_world_preview (world = None):
+	global _world_preview_state
+	state = _world_preview_state
+	if not bool(state.get('active', False)):
+		if world is not None and hasattr(world, 'previewRunning'):
+			world.previewRunning = False
+		return
+	for ob_name, data in dict(state.get('objects', {})).items():
+		ob = bpy.data.objects.get(ob_name)
+		if ob is None:
+			continue
+		orig_img = data.get('image')
+		if orig_img is not None and ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE':
+			ob.data = orig_img
+		if data.get('tint') is not None and hasattr(ob, 'tint'):
+			ob.tint = list(data.get('tint'))
+		if data.get('color') is not None and hasattr(ob, 'color'):
+			ob.color = list(data.get('color'))
+		if data.get('strokeClr') is not None and hasattr(ob, 'strokeClr'):
+			ob.strokeClr = list(data.get('strokeClr'))
+	for mat_name, mat_state in dict(state.get('materials', {})).items():
+		mat = bpy.data.materials.get(mat_name)
+		if mat is None:
+			continue
+		if isinstance(mat_state, dict):
+			_preview_set_material_color(mat, mat_state.get('channel'), mat_state.get('color'))
+		else:
+			# Backward compatibility for early preview state shape.
+			_preview_set_material_color(mat, 'color', mat_state)
+	for image_name in list(state.get('created_images', set())):
+		img = bpy.data.images.get(image_name)
+		if img is not None:
+			try:
+				bpy.data.images.remove(img)
+			except Exception:
+				pass
+	state['active'] = False
+	state['objects'] = {}
+	state['materials'] = {}
+	state['created_images'] = set()
+	state['preview_type'] = 'gbc'
+	if world is not None and hasattr(world, 'previewRunning'):
+		world.previewRunning = False
+
+def _start_world_preview (world, preview_type : str):
+	global _world_preview_state
+	try:
+		import numpy as np
+	except ImportError:
+		raise RuntimeError('Preview needs NumPy.')
+	if world is None:
+		raise RuntimeError('No world found for preview.')
+	preview_type = str(preview_type or 'gbc').lower()
+	if preview_type not in ('gbc', 'gba'):
+		preview_type = 'gbc'
+	_stop_world_preview(world)
+	state = _world_preview_state
+	for ob in bpy.context.scene.collection.all_objects:
+		if not getattr(ob, 'exportOb', False) or ob.hide_get():
+			continue
+		# Preview exported image empties by swapping in a quantized copy.
+		if ob.type == 'EMPTY' and ob.empty_display_type == 'IMAGE' and getattr(ob, 'data', None):
+			orig_img = ob.data
+			state['objects'][ob.name] = {
+				'image' : orig_img,
+				'tint' : list(getattr(ob, 'tint', [1.0, 1.0, 1.0])) if hasattr(ob, 'tint') else None,
+				'color' : list(getattr(ob, 'color', [1.0, 1.0, 1.0, 1.0])) if hasattr(ob, 'color') else None,
+				'strokeClr' : None,
+			}
+			preview_rgba = _preview_quantize_image(orig_img, preview_type)
+			if preview_rgba is not None:
+				img_name = '__preview_' + str(ob.name) + '_' + str(preview_type)
+				prev = bpy.data.images.get(img_name)
+				if prev is not None:
+					bpy.data.images.remove(prev)
+				w, h = list(orig_img.size)[: 2]
+				preview_img = bpy.data.images.new(img_name, width = int(w), height = int(h), alpha = True)
+				preview_img.pixels = preview_rgba.reshape(-1).tolist()
+				ob.data = preview_img
+				state['created_images'].add(preview_img.name)
+			if hasattr(ob, 'tint'):
+				q_tint = _preview_quantize_rgb01(list(ob.tint), preview_type)
+				ob.tint = q_tint
+		elif ob.type == 'CURVE':
+			state['objects'][ob.name] = {
+				'image' : None,
+				'tint' : None,
+				'color' : list(getattr(ob, 'color', [1.0, 1.0, 1.0, 1.0])) if hasattr(ob, 'color') else None,
+				'strokeClr' : list(getattr(ob, 'strokeClr', [0.0, 0.0, 0.0, 1.0])) if hasattr(ob, 'strokeClr') else None,
+			}
+			if hasattr(ob, 'color'):
+				q_clr = _preview_quantize_rgb01(list(ob.color[: 3]), preview_type)
+				ob.color = [q_clr[0], q_clr[1], q_clr[2], float(ob.color[3])]
+			if hasattr(ob, 'strokeClr'):
+				q_stroke = _preview_quantize_rgb01(list(ob.strokeClr[: 3]), preview_type)
+				ob.strokeClr = [q_stroke[0], q_stroke[1], q_stroke[2], float(ob.strokeClr[3])]
+			for mat_slot in getattr(ob, 'material_slots', []):
+				mat = getattr(mat_slot, 'material', None)
+				if mat is None:
+					continue
+				if mat.name not in state['materials']:
+					channel, clr = _preview_get_material_color(mat)
+					if channel is not None and clr is not None:
+						state['materials'][mat.name] = {
+							'channel' : channel,
+							'color' : list(clr),
+						}
+				channel, curr_clr = _preview_get_material_color(mat)
+				if channel is None or curr_clr is None or len(curr_clr) < 4:
+					continue
+				q_mat = _preview_quantize_rgb01(list(curr_clr[: 3]), preview_type)
+				_preview_set_material_color(mat, channel, [q_mat[0], q_mat[1], q_mat[2], float(curr_clr[3])])
+	state['active'] = True
+	state['preview_type'] = preview_type
+	world.previewRunning = True
+
+def OnUpdatePreviewType (world, ctx):
+	if not world:
+		return
+	if getattr(world, 'previewRunning', False):
+		try:
+			_start_world_preview(world, getattr(world, 'previewType', 'gbc'))
+		except Exception:
+			pass
+
 def Update ():
 	canUpdateProps = True
 	if hasattr(bpy.context, 'world'):
@@ -20260,6 +20486,7 @@ CAP_TYPE_ITEMS = [('butt', 'butt', ''), ('round', 'round', ''), ('square', 'squa
 JOIN_TYPES = ['arcs', 'bevl', 'miter', 'miter-clip', 'round']
 JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')]
 MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
+PREVIEW_TYPE_ITEMS = [('gbc', 'gbc', ''), ('gba', 'gba', '')]
 SHAPE_TYPE_ITEMS = [('ball', 'circle', ''), ('halfspace', 'half-space', ''), ('cuboid', 'rectangle', ''), ('roundCuboid', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('roundTriangle', 'rounded-triangle', ''), ('polyline', 'segment-series', ''), ('trimesh', 'triangle-mesh', ''), ('convexHull', 'convex-polygon', ''), ('roundConvexHull', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
 SHAPE_TYPES = ['ball', 'halfspace', 'cuboid', 'roundCuboid', 'capsule', 'segment', 'triangle', 'roundTriangle', 'polyline', 'trimesh', 'convexHull', 'roundConvexHull', 'heightfield']
 RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinematicPositionBased', 'kinematic-position-based', ''), ('kinematicVelocityBased', 'kinematic-velocity-based', '')]
@@ -20284,6 +20511,8 @@ bpy.types.World.js13kbjam = bpy.props.BoolProperty(name = 'Error on export if ou
 bpy.types.World.invalidHtml = bpy.props.BoolProperty(name = 'Save space with invalid html wrapper')
 bpy.types.World.unitLen = bpy.props.FloatProperty(name = 'Unit length', min = 0, default = 1)
 bpy.types.World.debugMode = bpy.props.BoolProperty(name = 'Debug mode', default = True)
+bpy.types.World.previewType = bpy.props.EnumProperty(name = 'Preview type', items = PREVIEW_TYPE_ITEMS, default = 'gbc', update = OnUpdatePreviewType)
+bpy.types.World.previewRunning = bpy.props.BoolProperty(name = 'Preview running', default = False)
 bpy.types.Object.exportOb = bpy.props.BoolProperty(name = 'Export object', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'exportOb'))
 bpy.types.Object.roundPosAndSize = bpy.props.BoolProperty(name = 'Round position and size', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundPosAndSize'))
 bpy.types.Object.roundAndCompressPathData = bpy.props.BoolProperty(name = 'Round and compress path data', default = True, update = lambda ob, ctx : OnUpdateProperty (ob, ctx, 'roundAndCompressPathData'))
@@ -20815,6 +21044,31 @@ class GbcExport (bpy.types.Operator):
 		return {'FINISHED'}
 
 @bpy.utils.register_class
+class ToggleWorldPreview (bpy.types.Operator):
+	bl_idname = 'world.toggle_preview'
+	bl_label = 'Toggle Preview'
+	bl_description = 'Start or stop game-target preview for exported images and curves'
+
+	@classmethod
+	def poll (cls, ctx):
+		return getattr(ctx, 'world', None) is not None
+
+	def execute (self, ctx):
+		world = ctx.world
+		try:
+			if getattr(world, 'previewRunning', False):
+				_stop_world_preview(world)
+			else:
+				_start_world_preview(world, getattr(world, 'previewType', 'gbc'))
+			if getattr(ctx, 'screen', None):
+				for area in ctx.screen.areas:
+					area.tag_redraw()
+		except Exception as e:
+			self.report({'ERROR'}, str(e))
+			return {'CANCELLED'}
+		return {'FINISHED'}
+
+@bpy.utils.register_class
 class WorldPanel (bpy.types.Panel):
 	bl_idname = 'WORLD_PT_World_Panel'
 	bl_label = 'Export'
@@ -20833,6 +21087,11 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.prop(ctx.world, 'usePhysics')
 		self.layout.prop(ctx.world, 'zipPath')
 		self.layout.prop(ctx.world, 'unityProjPath')
+		self.layout.prop(ctx.world, 'previewType')
+		if getattr(ctx.world, 'previewRunning', False):
+			self.layout.operator('world.toggle_preview', text = 'Stop preview', depress = True)
+		else:
+			self.layout.operator('world.toggle_preview', text = 'Start preview', depress = False)
 		if usePhysics:
 			self.layout.prop(ctx.world, 'unitLen')
 		self.layout.prop(ctx.world, 'debugMode')
@@ -21595,6 +21854,10 @@ def register ():
 		cls.isRunning = False
 
 def unregister ():
+	try:
+		_stop_world_preview(getattr(bpy.context, 'world', None))
+	except Exception:
+		pass
 	if DrawColliders.handle:
 		bpy.types.SpaceView3D.draw_handler_remove(DrawColliders.handle, 'WINDOW')
 		bpy.types.SpaceView3D.draw_handler_remove(DrawPivots.handle, 'WINDOW')
