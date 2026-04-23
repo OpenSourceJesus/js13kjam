@@ -18058,25 +18058,150 @@ def BuildGbc (world):
 			pix = pix[::-1, :, :]
 			bpy.data.images.remove(img)
 			return pix
+		def _normalize_curve_rgba_mask (_pix):
+			try:
+				import numpy as np
+			except ImportError:
+				return _pix
+			if _pix is None:
+				return None
+			pix = np.array(_pix, copy = True)
+			if len(pix.shape) != 3 or int(pix.shape[2]) < 4:
+				return _pix
+			alpha = pix[:, :, 3]
+			a_min = float(np.min(alpha))
+			a_max = float(np.max(alpha))
+			# Some Blender render paths output opaque black/solid backgrounds even
+			# with transparent film; recover a silhouette mask from corner color.
+			if (a_max - a_min) < 1e-4 or a_max <= 0.05:
+				rgb = pix[:, :, :3]
+				edge_rgb = np.concatenate([
+					rgb[0, :, :],
+					rgb[-1, :, :],
+					rgb[:, 0, :],
+					rgb[:, -1, :],
+				], axis = 0)
+				bg = np.mean(edge_rgb, axis = 0)
+				dist = np.sum(np.abs(rgb - bg[None, None, :]), axis = 2)
+				# Prefer soft alpha recovery to avoid shaving contour edges.
+				alpha_soft = np.clip((dist - (1.0 / 255.0)) / (10.0 / 255.0), 0.0, 1.0)
+				mask = alpha_soft > (1.0 / 255.0)
+				if int(np.count_nonzero(mask)) == 0 or int(np.count_nonzero(~mask)) == 0:
+					luma = (rgb[:, :, 0] * 0.2126) + (rgb[:, :, 1] * 0.7152) + (rgb[:, :, 2] * 0.0722)
+					edge_luma = np.concatenate([luma[0, :], luma[-1, :], luma[:, 0], luma[:, -1]], axis = 0)
+					bg_luma = float(np.mean(edge_luma))
+					alpha_soft = np.clip((np.abs(luma - bg_luma) - (1.0 / 255.0)) / (8.0 / 255.0), 0.0, 1.0)
+					mask = alpha_soft > (1.0 / 255.0)
+				if int(np.count_nonzero(mask)) == 0 or int(np.count_nonzero(~mask)) == 0:
+					alpha_soft = np.clip((np.sum(rgb, axis = 2) - (3.0 / 255.0)) / (12.0 / 255.0), 0.0, 1.0)
+					mask = alpha_soft > (1.0 / 255.0)
+				# Never erase the curve completely: if recovery is degenerate,
+				# preserve original pixels (better a coarse silhouette than invisible).
+				if int(np.count_nonzero(mask)) > 0 and int(np.count_nonzero(mask)) < int(mask.size):
+					pix[:, :, 3] = np.clip(alpha_soft, 0.0, 1.0).astype(np.float32)
+					# Keep a neutral white source; tint/opacity are applied downstream.
+					pix[:, :, 0] = 1.0
+					pix[:, :, 1] = 1.0
+					pix[:, :, 2] = 1.0
+			return pix
+		def _curve_alpha_is_degenerate (_pix):
+			try:
+				import numpy as np
+			except ImportError:
+				return False
+			if _pix is None:
+				return True
+			if len(_pix.shape) != 3 or int(_pix.shape[2]) < 4:
+				return True
+			alpha = _pix[:, :, 3]
+			try:
+				a_min = float(np.min(alpha))
+				a_max = float(np.max(alpha))
+			except Exception:
+				return True
+			return bool((a_max - a_min) < 1e-4 or a_max <= 0.05)
+		def _curve_alpha_stats (_pix):
+			try:
+				import numpy as np
+			except ImportError:
+				return {'ok' : False}
+			if _pix is None or len(_pix.shape) != 3 or int(_pix.shape[2]) < 4:
+				return {'ok' : False}
+			alpha = _pix[:, :, 3]
+			total = int(alpha.size) if hasattr(alpha, 'size') else 0
+			if total <= 0:
+				return {'ok' : False}
+			filled = int(np.count_nonzero(alpha > (1.0 / 255.0)))
+			return {
+				'ok' : True,
+				'filled' : int(filled),
+				'total' : int(total),
+				'ratio' : float(filled) / float(total),
+				'amin' : float(np.min(alpha)),
+				'amax' : float(np.max(alpha)),
+			}
+		def _recover_curve_alpha_from_bg_pair (_black_pix, _white_pix):
+			try:
+				import numpy as np
+			except ImportError:
+				return None
+			if _black_pix is None or _white_pix is None:
+				return None
+			if _black_pix.shape != _white_pix.shape:
+				return None
+			if len(_black_pix.shape) != 3 or int(_black_pix.shape[2]) < 4:
+				return None
+			cb = np.clip(_black_pix[:, :, :3], 0.0, 1.0)
+			cw = np.clip(_white_pix[:, :, :3], 0.0, 1.0)
+			# For black/white backgrounds:
+			# Cb = a*F, Cw = a*F + (1-a) => a = 1 - (Cw - Cb).
+			delta = np.clip(cw - cb, 0.0, 1.0)
+			alpha = np.clip(1.0 - np.mean(delta, axis = 2), 0.0, 1.0)
+			if int(np.count_nonzero(alpha > (1.0 / 255.0))) == 0:
+				return None
+			out = np.array(_black_pix, copy = True)
+			out[:, :, 0] = 1.0
+			out[:, :, 1] = 1.0
+			out[:, :, 2] = 1.0
+			out[:, :, 3] = alpha
+			return out
 		def _render_curve_surface_for_gbc (_curve_ob):
 			_curve_name = re.sub(r'[^A-Za-z0-9_]+', '_', str(getattr(_curve_ob, 'name', 'curve') or 'curve'))
 			render_path = os.path.join(TMP_DIR, '__gbc_curve_' + _curve_name + '.png')
-			try:
+			render_path_black = os.path.join(TMP_DIR, '__gbc_curve_' + _curve_name + '_bg_black.png')
+			render_path_white = os.path.join(TMP_DIR, '__gbc_curve_' + _curve_name + '_bg_white.png')
+			render_path_mask = os.path.join(TMP_DIR, '__gbc_curve_' + _curve_name + '_mask.png')
+			def _render_curve_variant (_out_path, _transparent = True, _bg_rgb = None):
 				scene = bpy.context.scene
 				render_settings = scene.render
 				image_settings = render_settings.image_settings
 				_min, _max = GetRectMinMax(_curve_ob)
 				scale = float(getattr(world, 'exportScale', 1.0) or 1.0)
-				width_px = max(1, int(round(abs(float((_max.x - _min.x) * scale)))))
-				height_px = max(1, int(round(abs(float((_max.y - _min.y) * scale)))))
+				bbox_w_world = max(1e-6, abs(float(_max.x - _min.x)))
+				bbox_h_world = max(1e-6, abs(float(_max.y - _min.y)))
+				bbox_w_px = max(1, int(round(bbox_w_world * scale)))
+				bbox_h_px = max(1, int(round(bbox_h_world * scale)))
+				# Keep guaranteed background around curves so alpha extraction can
+				# separate silhouette from framebuffer in all render paths.
+				pad_px = 8
+				width_px = max(1, int(bbox_w_px + pad_px * 2))
+				height_px = max(1, int(bbox_h_px + pad_px * 2))
 				if width_px < 1 or height_px < 1:
-					return None
+					return (None, None)
+				pad_world_x = float(pad_px) / float(max(scale, 1e-6))
+				pad_world_y = float(pad_px) / float(max(scale, 1e-6))
 				center_x = float((_min.x + _max.x) * 0.5)
 				center_y = float((_min.y + _max.y) * 0.5)
-				view_width = max(1e-6, float(_max.x - _min.x))
-				view_height = max(1e-6, float(_max.y - _min.y))
+				view_width = float(bbox_w_world + pad_world_x * 2.0)
+				view_height = float(bbox_h_world + pad_world_y * 2.0)
 				aspect = float(width_px) / float(height_px)
 				ortho_scale = max(view_width, view_height * aspect)
+				meta = {
+					'min_x' : float(_min.x - pad_world_x),
+					'max_y' : float(_max.y + pad_world_y),
+					'w_world' : float(view_width),
+					'h_world' : float(view_height),
+				}
 				prev_cam = scene.camera
 				prev_render_path = render_settings.filepath
 				prev_file_format = image_settings.file_format
@@ -18086,19 +18211,29 @@ def BuildGbc (world):
 				prev_res_y = int(render_settings.resolution_y)
 				prev_res_pct = int(render_settings.resolution_percentage)
 				prev_hide_obs_in_render = {}
+				scene_world = getattr(scene, 'world', None)
+				prev_world_color = None
+				if scene_world is not None:
+					try:
+						prev_world_color = list(scene_world.color)
+					except Exception:
+						prev_world_color = None
 				cam_data = bpy.data.cameras.new('TempGbcCurveCam')
 				cam = bpy.data.objects.new('TempGbcCurveCam', object_data = cam_data)
 				scene.collection.objects.link(cam)
 				try:
-					# Avoid RenderObject(): it multiplies by ob.resPercent, and for
-					# curve defaults this can request absurd render sizes/hang.
-					render_settings.filepath = render_path
+					render_settings.filepath = _out_path
 					image_settings.file_format = 'PNG'
 					image_settings.color_mode = 'RGBA'
-					render_settings.film_transparent = True
+					render_settings.film_transparent = bool(_transparent)
 					render_settings.resolution_x = int(width_px)
 					render_settings.resolution_y = int(height_px)
 					render_settings.resolution_percentage = 100
+					if scene_world is not None and isinstance(_bg_rgb, (list, tuple)) and len(_bg_rgb) >= 3:
+						try:
+							scene_world.color = [float(_bg_rgb[0]), float(_bg_rgb[1]), float(_bg_rgb[2])]
+						except Exception:
+							pass
 					cam_data.type = 'ORTHO'
 					cam_data.ortho_scale = float(ortho_scale)
 					cam.location = Vector((float(center_x), float(center_y), 10.0))
@@ -18123,6 +18258,11 @@ def BuildGbc (world):
 					render_settings.resolution_x = prev_res_x
 					render_settings.resolution_y = prev_res_y
 					render_settings.resolution_percentage = prev_res_pct
+					if scene_world is not None and prev_world_color is not None:
+						try:
+							scene_world.color = prev_world_color
+						except Exception:
+							pass
 					try:
 						scene.collection.objects.unlink(cam)
 					except Exception:
@@ -18135,51 +18275,254 @@ def BuildGbc (world):
 						bpy.data.cameras.remove(cam_data)
 					except Exception:
 						pass
-				return _load_rgba_from_image_path(render_path)
+				return (_load_rgba_from_image_path(_out_path), meta)
+			def _recover_curve_alpha_from_forced_mask_render ():
+				try:
+					import numpy as np
+				except ImportError:
+					return None
+				curve_data = getattr(_curve_ob, 'data', None)
+				if curve_data is None or not hasattr(curve_data, 'materials'):
+					return None
+				prev_materials = [mat for mat in list(curve_data.materials)]
+				mask_mat = None
+				try:
+					mask_mat = bpy.data.materials.new(name = 'TempGbcCurveMask')
+					mask_mat.use_nodes = True
+					nodes = mask_mat.node_tree.nodes
+					links = mask_mat.node_tree.links
+					nodes.clear()
+					n_out = nodes.new(type = 'ShaderNodeOutputMaterial')
+					n_em = nodes.new(type = 'ShaderNodeEmission')
+					n_em.inputs['Color'].default_value = (1.0, 1.0, 1.0, 1.0)
+					n_em.inputs['Strength'].default_value = 1.0
+					links.new(n_em.outputs['Emission'], n_out.inputs['Surface'])
+					curve_data.materials.clear()
+					curve_data.materials.append(mask_mat)
+					mask_pix, _mask_meta = _render_curve_variant(
+						render_path_mask,
+						_transparent = False,
+						_bg_rgb = [0.0, 0.0, 0.0],
+					)
+				except Exception:
+					mask_pix = None
+				finally:
+					try:
+						curve_data.materials.clear()
+						for mat in prev_materials:
+							curve_data.materials.append(mat)
+					except Exception:
+						pass
+					if mask_mat is not None:
+						try:
+							bpy.data.materials.remove(mask_mat)
+						except Exception:
+							pass
+				if mask_pix is None or len(mask_pix.shape) != 3 or int(mask_pix.shape[2]) < 4:
+					return None
+				rgb = np.clip(mask_pix[:, :, :3], 0.0, 1.0)
+				luma = (rgb[:, :, 0] * 0.2126) + (rgb[:, :, 1] * 0.7152) + (rgb[:, :, 2] * 0.0722)
+				edge_luma = np.concatenate([luma[0, :], luma[-1, :], luma[:, 0], luma[:, -1]], axis = 0)
+				bg_luma = float(np.median(edge_luma))
+				alpha_soft = np.clip((luma - (bg_luma + (1.0 / 255.0))) / (16.0 / 255.0), 0.0, 1.0)
+				mask = alpha_soft > (1.0 / 255.0)
+				if int(np.count_nonzero(mask)) == 0 or int(np.count_nonzero(mask)) == int(mask.size):
+					alpha_soft = np.clip((luma - (bg_luma + (0.25 / 255.0))) / (8.0 / 255.0), 0.0, 1.0)
+					mask = alpha_soft > (1.0 / 255.0)
+				if int(np.count_nonzero(mask)) == 0 or int(np.count_nonzero(mask)) == int(mask.size):
+					return None
+				out = np.array(mask_pix, copy = True)
+				out[:, :, 0] = 1.0
+				out[:, :, 1] = 1.0
+				out[:, :, 2] = 1.0
+				out[:, :, 3] = np.clip(alpha_soft, 0.0, 1.0).astype(np.float32)
+				return out
+			def _recover_curve_alpha_from_geometry (_meta, _target_pix):
+				try:
+					import numpy as np
+					import bmesh
+				except Exception:
+					return None
+				if not isinstance(_meta, dict) or _target_pix is None:
+					return None
+				if len(_target_pix.shape) != 3 or int(_target_pix.shape[2]) < 4:
+					return None
+				h = int(_target_pix.shape[0])
+				w = int(_target_pix.shape[1])
+				if w < 1 or h < 1:
+					return None
+				min_x = float(_meta.get('min_x', 0.0))
+				max_y = float(_meta.get('max_y', 0.0))
+				w_world = max(1e-9, float(_meta.get('w_world', 0.0)))
+				h_world = max(1e-9, float(_meta.get('h_world', 0.0)))
+				depsgraph = bpy.context.evaluated_depsgraph_get()
+				evaluated_ob = _curve_ob.evaluated_get(depsgraph)
+				mesh_data = None
+				bm = None
+				try:
+					mesh_data = evaluated_ob.to_mesh(preserve_all_data_layers = False, depsgraph = depsgraph)
+					if mesh_data is None or len(getattr(mesh_data, 'polygons', [])) == 0:
+						return None
+					bm = bmesh.new()
+					bm.from_mesh(mesh_data)
+					bmesh.ops.triangulate(bm, faces = bm.faces[:])
+					alpha = np.zeros((h, w), dtype = np.float32)
+					def _to_px (_world_xy):
+						wx = float(_world_xy[0])
+						wy = float(_world_xy[1])
+						px = ((wx - min_x) / w_world) * float(max(1, w - 1))
+						py = ((max_y - wy) / h_world) * float(max(1, h - 1))
+						return (px, py)
+					def _edge (_ax, _ay, _bx, _by, _px, _py):
+						return (_px - _ax) * (_by - _ay) - (_py - _ay) * (_bx - _ax)
+					for face in bm.faces:
+						if len(face.verts) != 3:
+							continue
+						wverts = []
+						for v in face.verts:
+							p = evaluated_ob.matrix_world @ v.co
+							wverts.append((float(p.x), float(p.y)))
+						(ax, ay) = _to_px(wverts[0])
+						(bx, by) = _to_px(wverts[1])
+						(cx, cy) = _to_px(wverts[2])
+						min_px = max(0, int(math.floor(min(ax, bx, cx) - 1.0)))
+						max_px = min(w - 1, int(math.ceil(max(ax, bx, cx) + 1.0)))
+						min_py = max(0, int(math.floor(min(ay, by, cy) - 1.0)))
+						max_py = min(h - 1, int(math.ceil(max(ay, by, cy) + 1.0)))
+						area = _edge(ax, ay, bx, by, cx, cy)
+						if abs(area) <= 1e-9:
+							continue
+						for py in range(min_py, max_py + 1):
+							cy_s = float(py) + 0.5
+							for px in range(min_px, max_px + 1):
+								cx_s = float(px) + 0.5
+								w0 = _edge(bx, by, cx, cy, cx_s, cy_s)
+								w1 = _edge(cx, cy, ax, ay, cx_s, cy_s)
+								w2 = _edge(ax, ay, bx, by, cx_s, cy_s)
+								if area > 0:
+									inside = (w0 >= 0.0 and w1 >= 0.0 and w2 >= 0.0)
+								else:
+									inside = (w0 <= 0.0 and w1 <= 0.0 and w2 <= 0.0)
+								if inside:
+									alpha[py, px] = 1.0
+					if int(np.count_nonzero(alpha > 0.0)) == 0:
+						return None
+					out = np.array(_target_pix, copy = True)
+					out[:, :, 0] = 1.0
+					out[:, :, 1] = 1.0
+					out[:, :, 2] = 1.0
+					out[:, :, 3] = alpha
+					return out
+				finally:
+					if bm is not None:
+						try:
+							bm.free()
+						except Exception:
+							pass
+					if mesh_data is not None:
+						try:
+							evaluated_ob.to_mesh_clear()
+						except Exception:
+							pass
+			try:
+				# Primary render path: transparent PNG.
+				primary_raw_pix, primary_meta = _render_curve_variant(
+					render_path,
+					_transparent = True,
+				)
+				primary_pix = _normalize_curve_rgba_mask(primary_raw_pix)
+				if primary_pix is None:
+					return (None, {
+						'stage' : 'primary_none',
+						'primary' : {'ok' : False},
+						'recovered' : {'ok' : False},
+					}, None)
+				primary_stats = _curve_alpha_stats(primary_pix)
+				primary_coverage_ratio = float(primary_stats.get('ratio', 0.0)) if isinstance(primary_stats, dict) else 0.0
+				# If almost the whole baked frame is opaque, this is usually a false
+				# positive "valid" alpha (rectangle-ish mask). Prefer geometry mask.
+				primary_suspicious_full = bool(primary_coverage_ratio >= 0.90)
+				if (not _curve_alpha_is_degenerate(primary_pix)) and (not primary_suspicious_full):
+					return (primary_pix, {
+						'stage' : 'primary',
+						'primary' : primary_stats,
+						'recovered' : {'ok' : False},
+					}, primary_meta)
+				geometry_mask = _recover_curve_alpha_from_geometry(primary_meta, primary_pix)
+				geometry_stats = _curve_alpha_stats(geometry_mask)
+				if geometry_mask is not None and not _curve_alpha_is_degenerate(geometry_mask):
+					return (geometry_mask, {
+						'stage' : 'geometry_mask',
+						'primary' : primary_stats,
+						'recovered' : geometry_stats,
+					}, primary_meta)
+				# Fallback for opaque/flattened alpha: render over black and white
+				# backgrounds and solve alpha analytically.
+				black_pix, _black_meta = _render_curve_variant(
+					render_path_black,
+					_transparent = False,
+					_bg_rgb = [0.0, 0.0, 0.0],
+				)
+				white_pix, _white_meta = _render_curve_variant(
+					render_path_white,
+					_transparent = False,
+					_bg_rgb = [1.0, 1.0, 1.0],
+				)
+				recovered = _recover_curve_alpha_from_bg_pair(black_pix, white_pix)
+				recovered_stats = _curve_alpha_stats(recovered)
+				if recovered is not None and not _curve_alpha_is_degenerate(recovered):
+					return (recovered, {
+						'stage' : 'bg_pair',
+						'primary' : primary_stats,
+						'recovered' : recovered_stats,
+					}, primary_meta)
+				forced_mask = _recover_curve_alpha_from_forced_mask_render()
+				forced_stats = _curve_alpha_stats(forced_mask)
+				if forced_mask is not None and not _curve_alpha_is_degenerate(forced_mask):
+					return (forced_mask, {
+						'stage' : 'forced_mask',
+						'primary' : primary_stats,
+						'recovered' : forced_stats,
+					}, primary_meta)
+				return (primary_pix, {
+					'stage' : 'fallback_primary',
+					'primary' : primary_stats,
+					'recovered' : recovered_stats if bool(recovered_stats.get('ok', False)) else forced_stats,
+				}, primary_meta)
 			except Exception:
-				return None
-		def _build_curve_proxy_image (_curve_ob, _pix):
+				return (None, {
+					'stage' : 'exception',
+					'primary' : {'ok' : False},
+					'recovered' : {'ok' : False},
+				}, None)
+		def _build_curve_proxy_image (_curve_ob, _pix, _meta = None):
 			if _pix is None:
-				return (None, None)
+				return None
 			h = int(_pix.shape[0]) if len(_pix.shape) > 0 else 0
 			w = int(_pix.shape[1]) if len(_pix.shape) > 1 else 0
 			if w < 1 or h < 1:
-				return (None, None)
-			crop_x0 = 0
-			crop_y0 = 0
-			crop_w = int(w)
-			crop_h = int(h)
-			cropped_pix = _pix
-			try:
-				import numpy as np
-				alpha = _pix[:, :, 3]
-				nonzero = np.argwhere(alpha > 1e-4)
-				if nonzero.size > 0:
-					y0 = int(np.min(nonzero[:, 0]))
-					y1 = int(np.max(nonzero[:, 0]))
-					x0 = int(np.min(nonzero[:, 1]))
-					x1 = int(np.max(nonzero[:, 1]))
-					if x1 >= x0 and y1 >= y0:
-						crop_x0 = int(x0)
-						crop_y0 = int(y0)
-						crop_w = int(x1 - x0 + 1)
-						crop_h = int(y1 - y0 + 1)
-						cropped_pix = _pix[y0 : y1 + 1, x0 : x1 + 1, :]
-			except Exception:
-				cropped_pix = _pix
+				return None
 			scale = float(getattr(world, 'exportScale', 1.0) or 1.0)
 			off = Vector(getattr(world, 'exportOff', [0.0, 0.0]))
-			_min, _max = GetRectMinMax(_curve_ob)
-			x = float(_min.x * scale + off.x + float(crop_x0))
-			y = float(-_max.y * scale + off.y + float(crop_y0))
-			w_world = max(1.0, float(crop_w))
-			h_world = max(1.0, float(crop_h))
+			if isinstance(_meta, dict):
+				x = float(float(_meta.get('min_x', 0.0)) * scale + off.x)
+				y = float(-float(_meta.get('max_y', 0.0)) * scale + off.y)
+				w_world = max(1.0, abs(float(float(_meta.get('w_world', 0.0)) * scale)))
+				h_world = max(1.0, abs(float(float(_meta.get('h_world', 0.0)) * scale)))
+			else:
+				_min, _max = GetRectMinMax(_curve_ob)
+				x = float(_min.x * scale + off.x)
+				y = float(-_max.y * scale + off.y)
+				w_world = max(1.0, abs(float((_max.x - _min.x) * scale)))
+				h_world = max(1.0, abs(float((_max.y - _min.y) * scale)))
 			proxy = type('GbcCurveProxy', (), {})()
 			proxy.name = '__gbc_curve_' + str(getattr(_curve_ob, 'name', 'curve'))
 			proxy.type = 'EMPTY'
 			proxy.empty_display_type = 'IMAGE'
 			proxy.data = type('CurveProxyImageData', (), {
-				'size' : [float(crop_w), float(crop_h)],
+				# Keep proxy image aspect neutral; curve bounds are already baked
+				# into proxy.scale and should not be multiplied by ratio again.
+				'size' : [1.0, 1.0],
 				'filepath' : '',
 			})()
 			proxy.scale = Vector((w_world, h_world, 1.0))
@@ -18188,22 +18531,58 @@ def BuildGbc (world):
 			proxy.location = Vector((x, -y, float(getattr(_curve_ob.location, 'z', 0.0))))
 			proxy.rotation_mode = 'XYZ'
 			proxy.rotation_euler = Vector((0.0, 0.0, 0.0))
-			proxy.tint = list(getattr(_curve_ob, 'tint', [1.0, 1.0, 1.0]))
-			proxy.color = list(getattr(_curve_ob, 'color', [1.0, 1.0, 1.0, 1.0]))
+			curve_color = list(getattr(_curve_ob, 'color', [1.0, 1.0, 1.0, 1.0]))
+			if len(curve_color) < 4:
+				curve_color = [1.0, 1.0, 1.0, 1.0]
+			# Geometry-mask surfaces are neutral white; apply authored curve fill
+			# color through tint so GBC output matches curve color.
+			proxy.tint = [
+				float(curve_color[0]),
+				float(curve_color[1]),
+				float(curve_color[2]),
+			]
+			proxy.color = [
+				1.0,
+				1.0,
+				1.0,
+				float(curve_color[3]),
+			]
 			proxy.exportOb = True
 			proxy.hide_get = (lambda : False)
 			proxy.rigidBodyExists = False
 			proxy.colliderExists = False
-			return (proxy, cropped_pix)
+			return proxy
 		for ob in scene_obs:
 			if not ob.exportOb or ob.hide_get() or ob.type != 'CURVE':
 				continue
-			curve_pix = _render_curve_surface_for_gbc(ob)
-			curve_proxy, curve_pix_cropped = _build_curve_proxy_image(ob, curve_pix)
-			if curve_proxy is None or curve_pix_cropped is None:
+			curve_pix, curve_dbg, curve_meta = _render_curve_surface_for_gbc(ob)
+			try:
+				_dbg_stage = str((curve_dbg or {}).get('stage', 'unknown'))
+				_dbg_primary = (curve_dbg or {}).get('primary', {}) if isinstance(curve_dbg, dict) else {}
+				_dbg_recovered = (curve_dbg or {}).get('recovered', {}) if isinstance(curve_dbg, dict) else {}
+				def _fmt_alpha_stats (_s):
+					if not isinstance(_s, dict) or not bool(_s.get('ok', False)):
+						return 'na'
+					return (
+						str(int(_s.get('filled', 0))) + '/' + str(int(_s.get('total', 0)))
+						+ '(' + str(round(float(_s.get('ratio', 0.0)) * 100.0, 1)) + '%)'
+						+ ',min=' + str(round(float(_s.get('amin', 0.0)), 4))
+						+ ',max=' + str(round(float(_s.get('amax', 0.0)), 4))
+					)
+				_append_gbc_trace_lines([
+					'[gbc-trace] BuildGbc:curve_alpha'
+					+ ':name=' + str(getattr(ob, 'name', ''))
+					+ ',stage=' + _dbg_stage
+					+ ',primary=' + _fmt_alpha_stats(_dbg_primary)
+					+ ',recovered=' + _fmt_alpha_stats(_dbg_recovered),
+				])
+			except Exception:
+				pass
+			curve_proxy = _build_curve_proxy_image(ob, curve_pix, curve_meta)
+			if curve_proxy is None or curve_pix is None:
 				continue
 			gbc_curve_proxy_obs.append(curve_proxy)
-			gbc_curve_surfaces[curve_proxy.name] = curve_pix_cropped
+			gbc_curve_surfaces[curve_proxy.name] = curve_pix
 		scene_gbc_imgs = list(gbc_imgs) + list(gbc_curve_proxy_obs)
 		scene_gbc_imgs.sort(key = lambda o: float(getattr(getattr(o, 'location', None), 'z', 0.0)))
 		fallback_spawn_entries = []
