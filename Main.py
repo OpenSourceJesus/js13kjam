@@ -3690,7 +3690,14 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 	extracted_print_keys = set()
 	entries = list(script_entries or [])
 	# Match runtime semantics: init scripts run before update scripts.
-	entries.sort(key = lambda e: (0 if bool((e or {}).get('is_init')) else 1))
+	# Within init, run non-local/global scripts before local scripts.
+	entries.sort(
+		key = lambda e: (
+			0 if bool((e or {}).get('is_init')) and bool((e or {}).get('is_global')) else (
+				1 if bool((e or {}).get('is_init')) else 2
+			)
+		)
+	)
 	print_const_env_by_scope = {}
 	print_expr_env_by_scope = {}
 	print_const_env_by_owner = {}
@@ -4402,7 +4409,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        _off = globals().get("off", None)\n'
 		'        if _off is not None:\n'
 		'            _off.x = float(_js13k_gbc_cam_x)\n'
-		'            _off.y = float(_js13k_gbc_cam_y)\n'
+		'            _off.y = float(-_js13k_gbc_cam_y)\n'
 		'    except:\n'
 		'        pass\n'
 		'    return [float(_js13k_gbc_cam_x), float(_js13k_gbc_cam_y)]\n'
@@ -5872,6 +5879,15 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 		entry for entry in script_entries
 		if (not bool(entry.get('is_global'))) or _entry_has_spawn_prefab_call(entry)
 	]
+	# Deterministic runtime order: non-local/global init scripts first, then
+	# local init scripts, then update scripts.
+	runtime_script_entries.sort(
+		key = lambda entry: (
+			0 if bool((entry or {}).get('is_init')) and bool((entry or {}).get('is_global')) else (
+				1 if bool((entry or {}).get('is_init')) else 2
+			)
+		)
+	)
 	_append_gbc_trace_lines([
 		'[gbc-trace] ExportGbcPyAssembly:runtime_script_entries=' + str(len(runtime_script_entries)),
 		'[gbc-trace] ExportGbcPyAssembly:py2gb_backend=' + ('available' if bool(_py2gb_export_gba_py_assembly) else 'missing'),
@@ -6169,7 +6185,7 @@ def set_camera_position (x, y):
 	_cameraPos.x = float(_x)
 	_cameraPos.y = float(_y)
 	off.x = float(_cameraPos.x)
-	off.y = float(_cameraPos.y)
+	off.y = float(-_cameraPos.y)
 	return [_cameraPos.x, _cameraPos.y]
 
 def add (v, v2):
@@ -16702,7 +16718,8 @@ def _gba_apply_display_op (canvas, op, owner_members = None, frame : int = None,
 					y_val = float(_fallback_pos[1])
 		try:
 			new_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
-			new_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
+			# Camera API contract: positive Y means "move camera up".
+			new_y = _gbc_wrap_u16(int(round(-float(0.0 if y_val is None else y_val))))
 		except Exception:
 			return
 		_trace_display_camera_eval(
@@ -17382,7 +17399,8 @@ def _gba_eval_display_scroll_offset (script_runtime, frame : int = 1, start_time
 						y_val = float(_fallback_pos[1])
 			try:
 				new_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
-				new_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
+				# Camera API contract: positive Y means "move camera up".
+				new_y = _gbc_wrap_u16(int(round(-float(0.0 if y_val is None else y_val))))
 			except Exception:
 				continue
 			dx = -_gbc_delta_u16(camera_x, new_x)
@@ -17423,7 +17441,8 @@ def _gba_eval_display_camera_pos (script_runtime, frame : int = 1, start_time : 
 					y_val = float(_fallback_pos[1])
 		try:
 			camera_x = _gbc_wrap_u16(int(round(float(0.0 if x_val is None else x_val))))
-			camera_y = _gbc_wrap_u16(int(round(float(0.0 if y_val is None else y_val))))
+			# Camera API contract: positive Y means "move camera up".
+			camera_y = _gbc_wrap_u16(int(round(-float(0.0 if y_val is None else y_val))))
 		except Exception:
 			continue
 		_trace_display_camera_eval(
