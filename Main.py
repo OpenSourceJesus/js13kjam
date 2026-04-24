@@ -303,6 +303,10 @@ def _build_gbc_global_assign_prefix (code : str, lines : list, node):
 		return None
 	return (
 		'global ' + target_name + '\n'
+		+ '_js13k_gbc_global_values = globals().get("_js13k_gbc_global_values", None)\n'
+		+ 'if not isinstance(_js13k_gbc_global_values, dict):\n'
+		+ '\t_js13k_gbc_global_values = {}\n'
+		+ '\tglobals()["_js13k_gbc_global_values"] = _js13k_gbc_global_values\n'
 		+ '_js13k_gbc_global_init_done = globals().get("_js13k_gbc_global_init_done", None)\n'
 		+ 'if not isinstance(_js13k_gbc_global_init_done, set):\n'
 		+ '\t_js13k_gbc_global_init_done = set()\n'
@@ -310,6 +314,10 @@ def _build_gbc_global_assign_prefix (code : str, lines : list, node):
 		+ 'if "' + target_name + '" not in _js13k_gbc_global_init_done:\n'
 		+ '\t' + target_name + ' = ' + value_segment.strip() + '\n'
 		+ '\t_js13k_gbc_global_init_done.add("' + target_name + '")'
+		+ '\nelse:\n'
+		+ '\tif "' + target_name + '" not in globals():\n'
+		+ '\t\t' + target_name + ' = _js13k_gbc_global_values.get("' + target_name + '", ' + value_segment.strip() + ')\n'
+		+ '_js13k_gbc_global_values["' + target_name + '"] = ' + target_name
 	)
 
 def _extract_top_level_member_defs (code : str):
@@ -345,6 +353,101 @@ def _build_gbc_global_members_prefix (script_entries : list):
 	if not parts:
 		return ''
 	return '\n\n'.join(parts).strip() + '\n'
+
+def _collect_top_level_assigned_names (code : str):
+	'''Collect top-level assigned variable names from gbc-py source.'''
+	names = set()
+	try:
+		tree = ast.parse(code or '')
+	except Exception:
+		return names
+	for node in list(getattr(tree, 'body', []) or []):
+		if isinstance(node, ast.Assign):
+			for target in list(node.targets or []):
+				if isinstance(target, ast.Name) and isinstance(target.id, str):
+					names.add(target.id)
+		elif isinstance(node, ast.AnnAssign):
+			if isinstance(node.target, ast.Name) and isinstance(node.target.id, str):
+				names.add(node.target.id)
+		elif isinstance(node, ast.AugAssign):
+			if isinstance(node.target, ast.Name) and isinstance(node.target.id, str):
+				names.add(node.target.id)
+	return names
+
+def _collect_gbc_global_member_names (script_entries : list):
+	'''Return variable names defined by scripts marked as global.'''
+	names = set()
+	for entry in list(script_entries or []):
+		if not bool(entry.get('is_global')):
+			continue
+		raw_code = str(entry.get('raw_code', entry.get('code', '')) or '')
+		for name in _collect_top_level_assigned_names(raw_code):
+			if isinstance(name, str) and re.fullmatch(r'[A-Za-z_]\w*', name) and not name.startswith('__'):
+				names.add(name)
+	return names
+
+def _inject_global_decls_for_mutated_names (code : str, candidate_names):
+	'''Insert global prelude/sync so mutated globals persist safely.'''
+	try:
+		candidate_set = {str(n) for n in list(candidate_names or []) if isinstance(n, str)}
+	except Exception:
+		candidate_set = set()
+	if not candidate_set:
+		return str(code or ''), 0
+	code_txt = str(code or '')
+	try:
+		tree = ast.parse(code_txt)
+	except Exception:
+		return code_txt, 0
+	existing_global_names = set()
+	for node in ast.walk(tree):
+		if isinstance(node, ast.Global):
+			for n in list(node.names or []):
+				if isinstance(n, str):
+					existing_global_names.add(n)
+	mutated = set()
+	for node in ast.walk(tree):
+		target = None
+		if isinstance(node, ast.Assign):
+			for t in list(node.targets or []):
+				if isinstance(t, ast.Name):
+					mutated.add(t.id)
+		elif isinstance(node, ast.AnnAssign):
+			target = node.target
+		elif isinstance(node, ast.AugAssign):
+			target = node.target
+		if isinstance(target, ast.Name):
+			mutated.add(target.id)
+	to_add = sorted([
+		n for n in list(mutated & candidate_set)
+		if isinstance(n, str) and re.fullmatch(r'[A-Za-z_]\w*', n) and n not in existing_global_names
+	])
+	sync_names = sorted([
+		n for n in list(mutated & candidate_set)
+		if isinstance(n, str) and re.fullmatch(r'[A-Za-z_]\w*', n)
+	])
+	if (not to_add) and (not sync_names):
+		return code_txt, 0
+	prelude_lines = []
+	if to_add:
+		prelude_lines.append('global ' + ', '.join(to_add))
+	if sync_names:
+		prelude_lines.extend([
+			'_js13k_gbc_global_values = globals().get("_js13k_gbc_global_values", None)',
+			'if not isinstance(_js13k_gbc_global_values, dict):',
+			'\t_js13k_gbc_global_values = {}',
+			'\tglobals()["_js13k_gbc_global_values"] = _js13k_gbc_global_values',
+		])
+		for n in sync_names:
+			prelude_lines.extend([
+				'if "' + n + '" not in globals():',
+				'\t' + n + ' = _js13k_gbc_global_values.get("' + n + '", 0)',
+			])
+	suffix_lines = []
+	for n in sync_names:
+		suffix_lines.append('_js13k_gbc_global_values["' + n + '"] = ' + n)
+	new_code = '\n'.join(prelude_lines + [code_txt] + suffix_lines)
+	return new_code, len(prelude_lines)
 
 def TryChangeToInt (f : float):
 	if int(f) == f:
@@ -4497,8 +4600,8 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        sim = None\n'
 		'_js13k_gbc_cam_x = int(globals().get("_js13k_gbc_cam_x", 0) or 0)\n'
 		'_js13k_gbc_cam_y = int(globals().get("_js13k_gbc_cam_y", 0) or 0)\n'
-		'_js13k_gbc_cam_x = int(_js13k_gbc_cam_x) & 0xFFFF\n'
-		'_js13k_gbc_cam_y = int(_js13k_gbc_cam_y) & 0xFFFF\n'
+		'_js13k_gbc_cam_x = int(_js13k_gbc_cam_x) % 65536\n'
+		'_js13k_gbc_cam_y = int(_js13k_gbc_cam_y) % 65536\n'
 		'def set_camera_position(x, y):\n'
 		'    global _js13k_gbc_cam_x, _js13k_gbc_cam_y\n'
 		'    try:\n'
@@ -4509,8 +4612,8 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        new_y = int(round(float(y)))\n'
 		'    except:\n'
 		'        new_y = int(_js13k_gbc_cam_y)\n'
-		'    new_x = int(new_x) & 0xFFFF\n'
-		'    new_y = int(new_y) & 0xFFFF\n'
+		'    new_x = int(new_x) % 65536\n'
+		'    new_y = int(new_y) % 65536\n'
 		'    _js13k_gbc_cam_x = int(new_x)\n'
 		'    _js13k_gbc_cam_y = int(new_y)\n'
 		'    globals()["_js13k_gbc_cam_x"] = int(_js13k_gbc_cam_x)\n'
@@ -5972,6 +6075,7 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 			for tag in list(template_spawn_instance_tags_by_ob.get(ob, [])):
 				_add_gbc_obs_owner('__gbc_spawn_%i_%s' %(int(tag), ob.name), ob)
 	global_members_prefix = _build_gbc_global_members_prefix(script_entries)
+	global_member_names = _collect_gbc_global_member_names(script_entries)
 	obs_prefix = _build_gbc_obs_prefix(gbc_obs_data)
 	shared_prefix_parts = []
 	if obs_prefix.strip() != '':
@@ -6014,6 +6118,17 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 	# this.rb/this.col so downstream gbc-py lowering sees canonical handles.
 	for entry in runtime_script_entries:
 		try:
+			code_txt = str(entry.get('code', '') or '')
+			injected_code, added_lines = _inject_global_decls_for_mutated_names(code_txt, global_member_names)
+			if int(added_lines) > 0:
+				entry['code'] = injected_code
+				entry['source_line_offset'] = int(entry.get('source_line_offset', 0) or 0) + int(added_lines)
+			raw_code_txt = str(entry.get('raw_code', entry.get('code', '')) or '')
+			injected_raw_code, _raw_added_lines = _inject_global_decls_for_mutated_names(raw_code_txt, global_member_names)
+			if int(_raw_added_lines) > 0:
+				# Some backends compile from raw/source script text. Keep it aligned
+				# with runtime `code` globals prelude/sync logic.
+				entry['raw_code'] = injected_raw_code
 			if str(entry.get('owner_name', '__world__')) == '__world__':
 				continue
 			entry['code'] = re.sub(r'\bthis\s*\.\s*rb\b', 'rb', str(entry.get('code', '') or ''))
@@ -6290,8 +6405,8 @@ def set_camera_position (x, y):
 		_y = int(round(float(y)))
 	except Exception:
 		_y = int(round(float(_cameraPos.y)))
-	_x = int(_x) & 0xFFFF
-	_y = int(_y) & 0xFFFF
+	_x = int(_x) % 65536
+	_y = int(_y) % 65536
 	_cameraPos.x = float(_x)
 	_cameraPos.y = float(_y)
 	off.x = float(_cameraPos.x)
@@ -10181,6 +10296,28 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				pass
 		def _eval_env_for_owner(owner, frame = None, scope_key = None):
 			env = {}
+			try:
+				_g_runtime = __import__('builtins').globals()
+			except Exception:
+				_g_runtime = {}
+			shared_global_values = _g_runtime.get('_js13k_gbc_global_values', {})
+			if isinstance(shared_global_values, dict):
+				# Global gbc-py vars (for example `time`) should be visible to every
+				# script scope, including non-global world scripts.
+				env.update(shared_global_values)
+			# Defensive hydration: global init tracking may survive while the
+			# per-scope variable binding is missing in a fresh mirror env.
+			# Seed any initialized global names from the shared values map.
+			init_done = _g_runtime.get('_js13k_gbc_global_init_done', None)
+			if isinstance(init_done, set):
+				for _name in list(init_done):
+					if not isinstance(_name, str):
+						continue
+					if not re.fullmatch(r'[A-Za-z_]\w*', _name):
+						continue
+					if _name in env:
+						continue
+					env[_name] = shared_global_values.get(_name, 0)
 			# Runtime scripts share globals; mirror eval should expose world-scope
 			# bindings (for example global gbc-py vars) to local owner scripts.
 			if owner != '__world__':
@@ -10756,6 +10893,80 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					return _runtime_key_state_snapshot()
 			def __getattr__ (self, _name):
 				return (lambda *args, **kwargs: None)
+		def _sync_gbc_global_runtime_values (_env):
+			if not isinstance(_env, dict):
+				return
+			try:
+				_g_runtime = __import__('builtins').globals()
+			except Exception:
+				return
+			store = _g_runtime.get('_js13k_gbc_global_values', {})
+			if not isinstance(store, dict):
+				store = {}
+			init_done = _env.get('_js13k_gbc_global_init_done', None)
+			if isinstance(init_done, set):
+				names = list(init_done)
+			elif isinstance(init_done, (list, tuple)):
+				names = list(init_done)
+			else:
+				names = []
+			updated = False
+			for name in names:
+				if not isinstance(name, str):
+					continue
+				if name.startswith('__'):
+					continue
+				if not re.fullmatch(r'[A-Za-z_]\w*', name):
+					continue
+				if name in _env:
+					store[name] = _env.get(name)
+					updated = True
+			if updated:
+				_g_runtime['_js13k_gbc_global_values'] = store
+		def _seed_missing_global_name_for_retry (_err, _env):
+			if not isinstance(_env, dict):
+				return False
+			try:
+				if not isinstance(_err, NameError):
+					return False
+			except Exception:
+				return False
+			try:
+				_err_msg = str(_err)
+			except Exception:
+				_err_msg = ''
+			_m = None
+			try:
+				_m = re.search(r"name '([A-Za-z_]\w*)' is not defined", _err_msg)
+			except Exception:
+				_m = None
+			if _m is None:
+				return False
+			_missing = str(_m.group(1))
+			if _missing in _env:
+				return False
+			try:
+				_g_runtime = __import__('builtins').globals()
+			except Exception:
+				_g_runtime = {}
+			shared = _g_runtime.get('_js13k_gbc_global_values', {})
+			if not isinstance(shared, dict):
+				shared = {}
+			init_done = _g_runtime.get('_js13k_gbc_global_init_done', None)
+			seed_allowed = bool(_missing in shared)
+			if not seed_allowed and isinstance(init_done, set):
+				seed_allowed = bool(_missing in init_done)
+			# Keep `time += dt` scripts resilient even when env hydration misses.
+			if not seed_allowed and _missing == 'time':
+				seed_allowed = True
+			if not seed_allowed:
+				return False
+			if _missing == 'time':
+				# Do not seed from Python's imported `time` module.
+				_env[_missing] = shared.get(_missing, 0)
+			else:
+				_env[_missing] = shared.get(_missing, _g_runtime.get(_missing, 0))
+			return True
 		def _run_mirror_script (script_info, frame = None):
 			if not isinstance(script_info, dict):
 				return
@@ -10843,6 +11054,27 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					return
 				_compiled_script_cache[cache_key] = code_obj
 			env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key)
+			# If script uses `time += dt`, ensure `time` is a numeric accumulator
+			# instead of Python's imported `time` module.
+			try:
+				if re.search(r'\btime\s*\+=\s*dt\b', code_txt):
+					_t = env.get('time', None)
+					if isinstance(_t, bool):
+						env['time'] = float(int(_t))
+					elif isinstance(_t, (int, float)):
+						env['time'] = float(_t)
+					else:
+						try:
+							_g_runtime = __import__('builtins').globals()
+						except Exception:
+							_g_runtime = {}
+						shared = _g_runtime.get('_js13k_gbc_global_values', {})
+						if isinstance(shared, dict) and isinstance(shared.get('time', None), (int, float)):
+							env['time'] = float(shared.get('time', 0.0))
+						else:
+							env['time'] = 0.0
+			except Exception:
+				pass
 			protected_callable_keys = {
 				'print',
 				'_js13k_print',
@@ -11402,12 +11634,26 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			except Exception:
 				pass
 			pre_state = _capture_mirror_state()
-			try:
-				exec_locals = _ProtectedMirrorLocals(env, protected_callable_keys)
-				exec(code_obj, env, exec_locals)
-			except Exception as err:
+			exec_locals = _ProtectedMirrorLocals(env, protected_callable_keys)
+			exec_err = None
+			for _attempt in range(2):
+				try:
+					exec(code_obj, env, exec_locals)
+					exec_err = None
+					break
+				except NameError as _name_err:
+					if (_attempt >= 1) or (not _seed_missing_global_name_for_retry(_name_err, env)):
+						exec_err = _name_err
+						break
+					continue
+				except Exception as _err:
+					exec_err = _err
+					break
+			if exec_err is not None:
+				err = exec_err
 				_trace_mirror_state('error', pre_state, err)
 				_sync_owner_attr_locals_into_this()
+				_sync_gbc_global_runtime_values(env)
 				_log_mirror_script_error(
 					'exec',
 					owner,
@@ -11426,6 +11672,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				owner_store[scope_key] = env
 				return
 			_sync_owner_attr_locals_into_this()
+			_sync_gbc_global_runtime_values(env)
 			_trace_mirror_state('post', pre_state, None)
 			owner_store = mirror_script_locals.setdefault(owner, {})
 			owner_store[scope_key] = env
@@ -12521,6 +12768,12 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	x_hi_addr = 0xC118
 	scroll_x_addr = 0xC119
 	scroll_y_addr = 0xC11A
+	scroll_x_hi_addr = 0xC120
+	scroll_y_hi_addr = 0xC121
+	proj_x_addr = 0xC122
+	proj_y_addr = 0xC123
+	proj_x_hi_addr = 0xC124
+	proj_y_hi_addr = 0xC125
 	x_subacc_addr = 0xC11B
 	y_subacc_addr = 0xC11C
 	jump_prev_a_addr = 0xC11D
@@ -12640,6 +12893,10 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
 	ld_a_imm(init_scroll_y)
 	emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	ld_a_imm((int(init_scroll_x) >> 8) & 0xFF)
+	emit(0xEA, scroll_x_hi_addr & 0xFF, (scroll_x_hi_addr >> 8) & 0xFF)
+	ld_a_imm((int(init_scroll_y) >> 8) & 0xFF)
+	emit(0xEA, scroll_y_hi_addr & 0xFF, (scroll_y_hi_addr >> 8) & 0xFF)
 	ld_a_imm(int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2))
 	emit(0xEA, x_subacc_addr & 0xFF, (x_subacc_addr >> 8) & 0xFF)
 	ld_a_imm(int(_GBC_PHASE1_VELOCITY_ACCUM_DENOM // 2))
@@ -12711,7 +12968,23 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	if _GBC_ENABLE_GENERAL_AOT and callable(_gbc_transpiler_compile_general_script) and aot_source_code.strip() != '':
 		emit(0xCD, 0x00, 0x00)  # call aot_update
 		aot_call_update_patch = len(code) - 2
-	def _emit_scroll_axis_step (_scroll_addr, _acc_addr, _step_num, _step_den):
+	def _emit_scroll_add_u16_imm (_scroll_addr, _scroll_hi_addr, _delta):
+		try:
+			dv = int(_delta)
+		except Exception:
+			dv = 0
+		dv_u16 = int(dv) & 0xFFFF
+		if dv_u16 == 0:
+			return
+		lo = int(dv_u16 & 0xFF)
+		hi = int((dv_u16 >> 8) & 0xFF)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		emit(0xC6, lo)  # add a, lo
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		emit(0xCE, hi)  # adc a, hi
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+	def _emit_scroll_axis_step (_scroll_addr, _scroll_hi_addr, _acc_addr, _step_num, _step_den):
 		try:
 			num = int(_step_num)
 		except Exception:
@@ -12726,16 +12999,12 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			den = 255
 		if den == 1:
 			if num != 0:
-				emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
-				emit(0xC6, int(num) & 0xFF)
-				emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+				_emit_scroll_add_u16_imm(_scroll_addr, _scroll_hi_addr, num)
 			return
 		base = int(math.trunc(float(num) / float(den)))
 		rem = int(num - base * den)
 		if base != 0:
-			emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
-			emit(0xC6, int(base) & 0xFF)
-			emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+			_emit_scroll_add_u16_imm(_scroll_addr, _scroll_hi_addr, base)
 		if rem == 0:
 			return
 		rem_mag = abs(int(rem))
@@ -12754,6 +13023,12 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		else:
 			emit(0x3D)  # dec a
 		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		if rem > 0:
+			emit(0xCE, 0x00)  # adc a, 0
+		else:
+			emit(0xCE, 0xFF)  # adc a, -1 + carry
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
 		frac_done_addr = len(code)
 		patch_jr(jr_frac_done, frac_done_addr)
 	# Runtime display scroll: either scripted scroll profile or follow-camera mode.
@@ -12771,12 +13046,12 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0xC6, int(camera_follow_center_y) & 0xFF)
 		emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
 	else:
-		_emit_scroll_axis_step(scroll_x_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
+		_emit_scroll_axis_step(scroll_x_addr, scroll_x_hi_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
 		emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
 		emit(0x2F)  # cpl
 		emit(0x3C)  # inc a
 		ldh_imm_a(0x43)  # SCX = -scroll_x
-		_emit_scroll_axis_step(scroll_y_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
+		_emit_scroll_axis_step(scroll_y_addr, scroll_y_hi_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
 		emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
 		emit(0x2F)  # cpl
 		emit(0x3C)  # inc a
@@ -12964,35 +13239,56 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		patch_jr(jr_skip_collider_offscreen_bottom, collider_skip_addr)
 		patch_jr(jr_skip_collider_pass, collider_skip_addr)
 		patch_jr(jr_skip_collider_neg, collider_skip_addr)
-	# Hide sprite when body is outside the local 0..255 OAM addressable area.
+	# Project world position into camera-local space using full 16-bit scroll.
+	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+	emit(0x47)  # ld b,a (x lo)
+	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+	emit(0x80)  # add a,b
+	emit(0xEA, proj_x_addr & 0xFF, (proj_x_addr >> 8) & 0xFF)
 	emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
+	emit(0x47)  # ld b,a (x hi)
+	emit(0xFA, scroll_x_hi_addr & 0xFF, (scroll_x_hi_addr >> 8) & 0xFF)
+	emit(0x88)  # adc a,b
+	emit(0xEA, proj_x_hi_addr & 0xFF, (proj_x_hi_addr >> 8) & 0xFF)
+	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	emit(0x47)  # ld b,a (y lo)
+	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	emit(0x80)  # add a,b
+	emit(0xEA, proj_y_addr & 0xFF, (proj_y_addr >> 8) & 0xFF)
+	emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+	emit(0x47)  # ld b,a (y hi)
+	emit(0xFA, scroll_y_hi_addr & 0xFF, (scroll_y_hi_addr >> 8) & 0xFF)
+	emit(0x88)  # adc a,b
+	emit(0xEA, proj_y_hi_addr & 0xFF, (proj_y_hi_addr >> 8) & 0xFF)
+	# Hide sprite when projected body position is outside local OAM area.
+	emit(0xFA, proj_x_hi_addr & 0xFF, (proj_x_hi_addr >> 8) & 0xFF)
 	emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 	jr_oam_x_hi_pos = jr(0x28)  # jr z, x_hi_pos
 	emit(0xFE, 0x7F)  # cp $7F (negative local x range)
 	jr_oam_hide_x_hi = jr(0x20)  # jr nz, hide sprite
-	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+	emit(0xFA, proj_x_addr & 0xFF, (proj_x_addr >> 8) & 0xFF)
 	emit(0xFE, oam_left_visible_min)  # cp (x >= -sprite_w in signed-local space)
 	jr_oam_hide_left = jr(0x38)  # jr c, hide sprite
 	jr_oam_x_ok = jr(0x18)  # jr x_done
 	oam_x_hi_pos_addr = len(code)
 	patch_jr(jr_oam_x_hi_pos, oam_x_hi_pos_addr)
-	emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+	emit(0xFA, proj_x_addr & 0xFF, (proj_x_addr >> 8) & 0xFF)
 	emit(0xFE, 160)  # cp 160
 	jr_oam_hide_right = jr(0x30)  # jr nc, hide sprite
 	oam_x_done_addr = len(code)
 	patch_jr(jr_oam_x_ok, oam_x_done_addr)
-	emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+	emit(0xFA, proj_y_hi_addr & 0xFF, (proj_y_hi_addr >> 8) & 0xFF)
 	emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 	jr_oam_y_hi_pos = jr(0x28)  # jr z, y_hi_pos
 	emit(0xFE, 0x7F)  # cp $7F (negative local y range)
 	jr_oam_hide_y_hi = jr(0x20)  # jr nz, hide sprite
-	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	emit(0xFA, proj_y_addr & 0xFF, (proj_y_addr >> 8) & 0xFF)
 	emit(0xFE, oam_top_visible_min)  # cp (y >= -sprite_h in signed-local space)
 	jr_oam_hide_top = jr(0x38)  # jr c, hide sprite
 	jr_oam_y_ok = jr(0x18)  # jr y_done
 	oam_y_hi_pos_addr = len(code)
 	patch_jr(jr_oam_y_hi_pos, oam_y_hi_pos_addr)
-	emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+	emit(0xFA, proj_y_addr & 0xFF, (proj_y_addr >> 8) & 0xFF)
 	emit(0xFE, 144)  # cp 144
 	jr_oam_hide_bottom = jr(0x30)  # jr nc, hide sprite
 	oam_y_done_addr = len(code)
@@ -13022,16 +13318,10 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			if idx >= sprite_tile_count:
 				continue
 			base = 0xFE00 + idx * 4
-			emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
-			emit(0x47)  # ld b,a (base y)
-			emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
-			emit(0x80)  # add a,b
+			emit(0xFA, proj_y_addr & 0xFF, (proj_y_addr >> 8) & 0xFF)
 			emit(0xC6, (16 + row * 8) & 0xFF)
 			emit(0xEA, base & 0xFF, (base >> 8) & 0xFF)
-			emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
-			emit(0x47)  # ld b,a (base x)
-			emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
-			emit(0x80)  # add a,b
+			emit(0xFA, proj_x_addr & 0xFF, (proj_x_addr >> 8) & 0xFF)
 			emit(0xC6, (8 + col * 8) & 0xFF)
 			emit(0xEA, (base + 1) & 0xFF, ((base + 1) >> 8) & 0xFF)
 	emit(0xC9)
@@ -13190,6 +13480,12 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 	scroll_y_addr = 0xC0F1
 	scroll_acc_x_addr = 0xC0F6
 	scroll_acc_y_addr = 0xC0F7
+	scroll_x_hi_addr = 0xC0F8
+	scroll_y_hi_addr = 0xC0F9
+	proj_x_addr = 0xC0FA
+	proj_y_addr = 0xC0FB
+	proj_x_hi_addr = 0xC0FC
+	proj_y_hi_addr = 0xC0FD
 	# Shared general-AOT velocity pointer context (same ABI as single-body path).
 	aot_ctx_vx_lo_addr = 0xC0F2
 	aot_ctx_vx_hi_addr = 0xC0F3
@@ -13367,6 +13663,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 	ldh_imm_a(0x4F)  # VBK = 0
 	ld_a_imm(init_scroll_x); emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
 	ld_a_imm(init_scroll_y); emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+	ld_a_imm((int(init_scroll_x) >> 8) & 0xFF); emit(0xEA, scroll_x_hi_addr & 0xFF, (scroll_x_hi_addr >> 8) & 0xFF)
+	ld_a_imm((int(init_scroll_y) >> 8) & 0xFF); emit(0xEA, scroll_y_hi_addr & 0xFF, (scroll_y_hi_addr >> 8) & 0xFF)
 	ld_a_imm(0); emit(0xEA, scroll_acc_x_addr & 0xFF, (scroll_acc_x_addr >> 8) & 0xFF)
 	ld_a_imm(0); emit(0xEA, scroll_acc_y_addr & 0xFF, (scroll_acc_y_addr >> 8) & 0xFF)
 	# Seed body state and OAM metasprites.
@@ -13450,7 +13748,23 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 	emit(0xC3, 0x00, 0x00)  # jp main_loop
 	jp_loop_patch = len(code) - 2
 	update_addr = len(code)
-	def _emit_scroll_axis_step (_scroll_addr, _acc_addr, _step_num, _step_den):
+	def _emit_scroll_add_u16_imm (_scroll_addr, _scroll_hi_addr, _delta):
+		try:
+			dv = int(_delta)
+		except Exception:
+			dv = 0
+		dv_u16 = int(dv) & 0xFFFF
+		if dv_u16 == 0:
+			return
+		lo = int(dv_u16 & 0xFF)
+		hi = int((dv_u16 >> 8) & 0xFF)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		emit(0xC6, lo)  # add a, lo
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		emit(0xCE, hi)  # adc a, hi
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+	def _emit_scroll_axis_step (_scroll_addr, _scroll_hi_addr, _acc_addr, _step_num, _step_den):
 		try:
 			num = int(_step_num)
 		except Exception:
@@ -13465,16 +13779,12 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			den = 255
 		if den == 1:
 			if num != 0:
-				emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
-				emit(0xC6, int(num) & 0xFF)
-				emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+				_emit_scroll_add_u16_imm(_scroll_addr, _scroll_hi_addr, num)
 			return
 		base = int(math.trunc(float(num) / float(den)))
 		rem = int(num - base * den)
 		if base != 0:
-			emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
-			emit(0xC6, int(base) & 0xFF)
-			emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+			_emit_scroll_add_u16_imm(_scroll_addr, _scroll_hi_addr, base)
 		if rem == 0:
 			return
 		rem_mag = abs(int(rem))
@@ -13493,15 +13803,21 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		else:
 			emit(0x3D)  # dec a
 		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		if rem > 0:
+			emit(0xCE, 0x00)  # adc a, 0
+		else:
+			emit(0xCE, 0xFF)  # adc a, -1 + carry
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
 		frac_done_addr = len(code)
 		patch_jr(jr_frac_done, frac_done_addr)
 	# Runtime display scroll shared across all bodies.
-	_emit_scroll_axis_step(scroll_x_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
+	_emit_scroll_axis_step(scroll_x_addr, scroll_x_hi_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
 	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
 	emit(0x2F)  # cpl
 	emit(0x3C)  # inc a
 	ldh_imm_a(0x43)  # SCX = -scroll_x
-	_emit_scroll_axis_step(scroll_y_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
+	_emit_scroll_axis_step(scroll_y_addr, scroll_y_hi_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
 	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
 	emit(0x2F)  # cpl
 	emit(0x3C)  # inc a
@@ -13936,34 +14252,55 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			patch_abs(jp_body_pair_skip_patch, body_pair_done_addr)
 		# Update metasprite OAM from solved body position.
 		oam_base = max(0, min(_GBC_RUNTIME_MAX_OAM - 1, int(body.get('oam_base', 0))))
+		# Project world position into camera-local space using full 16-bit scroll.
+		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+		emit(0x47)  # ld b,a (x lo)
+		emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
+		emit(0x80)  # add a,b
+		emit(0xEA, proj_x_addr & 0xFF, (proj_x_addr >> 8) & 0xFF)
 		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)
+		emit(0x47)  # ld b,a (x hi)
+		emit(0xFA, scroll_x_hi_addr & 0xFF, (scroll_x_hi_addr >> 8) & 0xFF)
+		emit(0x88)  # adc a,b
+		emit(0xEA, proj_x_hi_addr & 0xFF, (proj_x_hi_addr >> 8) & 0xFF)
+		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+		emit(0x47)  # ld b,a (y lo)
+		emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+		emit(0x80)  # add a,b
+		emit(0xEA, proj_y_addr & 0xFF, (proj_y_addr >> 8) & 0xFF)
+		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+		emit(0x47)  # ld b,a (y hi)
+		emit(0xFA, scroll_y_hi_addr & 0xFF, (scroll_y_hi_addr >> 8) & 0xFF)
+		emit(0x88)  # adc a,b
+		emit(0xEA, proj_y_hi_addr & 0xFF, (proj_y_hi_addr >> 8) & 0xFF)
+		emit(0xFA, proj_x_hi_addr & 0xFF, (proj_x_hi_addr >> 8) & 0xFF)
 		emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 		jr_oam_x_hi_pos = jr(0x28)  # jr z, x_hi_pos
 		emit(0xFE, 0x7F)  # cp $7F (negative local x range)
 		jr_oam_hide_x_hi = jr(0x20)  # jr nz, hide sprite
-		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+		emit(0xFA, proj_x_addr & 0xFF, (proj_x_addr >> 8) & 0xFF)
 		emit(0xFE, oam_left_visible_min)  # cp (x >= -sprite_w in signed-local space)
 		jr_oam_hide_left = jr(0x38)  # jr c, hide sprite
 		jr_oam_x_ok = jr(0x18)  # jr x_done
 		oam_x_hi_pos_addr = len(code)
 		patch_jr(jr_oam_x_hi_pos, oam_x_hi_pos_addr)
-		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
+		emit(0xFA, proj_x_addr & 0xFF, (proj_x_addr >> 8) & 0xFF)
 		emit(0xFE, 160)  # cp 160
 		jr_oam_hide_right = jr(0x30)  # jr nc, hide sprite
 		oam_x_done_addr = len(code)
 		patch_jr(jr_oam_x_ok, oam_x_done_addr)
-		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)
+		emit(0xFA, proj_y_hi_addr & 0xFF, (proj_y_hi_addr >> 8) & 0xFF)
 		emit(0xFE, 0x80)  # cp $80 (screen-origin biased hi byte)
 		jr_oam_y_hi_pos = jr(0x28)  # jr z, y_hi_pos
 		emit(0xFE, 0x7F)  # cp $7F (negative local y range)
 		jr_oam_hide_y_hi = jr(0x20)  # jr nz, hide sprite
-		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+		emit(0xFA, proj_y_addr & 0xFF, (proj_y_addr >> 8) & 0xFF)
 		emit(0xFE, oam_top_visible_min)  # cp (y >= -sprite_h in signed-local space)
 		jr_oam_hide_top = jr(0x38)  # jr c, hide sprite
 		jr_oam_y_ok = jr(0x18)  # jr y_done
 		oam_y_hi_pos_addr = len(code)
 		patch_jr(jr_oam_y_hi_pos, oam_y_hi_pos_addr)
-		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
+		emit(0xFA, proj_y_addr & 0xFF, (proj_y_addr >> 8) & 0xFF)
 		emit(0xFE, 144)  # cp 144
 		jr_oam_hide_bottom = jr(0x30)  # jr nc, hide sprite
 		oam_y_done_addr = len(code)
@@ -14000,16 +14337,10 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				if base_oam >= _GBC_RUNTIME_MAX_OAM:
 					continue
 				oam_addr = 0xFE00 + base_oam * 4
-				emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
-				emit(0x47)  # ld b,a (base y)
-				emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
-				emit(0x80)  # add a,b
+				emit(0xFA, proj_y_addr & 0xFF, (proj_y_addr >> 8) & 0xFF)
 				emit(0xC6, (16 + row * 8) & 0xFF)
 				emit(0xEA, oam_addr & 0xFF, (oam_addr >> 8) & 0xFF)
-				emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
-				emit(0x47)  # ld b,a (base x)
-				emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
-				emit(0x80)  # add a,b
+				emit(0xFA, proj_x_addr & 0xFF, (proj_x_addr >> 8) & 0xFF)
 				emit(0xC6, (8 + col * 8) & 0xFF)
 				emit(0xEA, (oam_addr + 1) & 0xFF, ((oam_addr + 1) >> 8) & 0xFF)
 		oam_done_addr = len(code)
@@ -17607,6 +17938,21 @@ def _gba_eval_display_scroll_offset (script_runtime, frame : int = 1, start_time
 				continue
 			dx = -_gbc_delta_u16(camera_x, new_x)
 			dy = -_gbc_delta_u16(camera_y, new_y)
+			try:
+				_append_gbc_trace_lines([
+					'[gbc-trace] CameraScrollEval'
+					+ ':frame=' + str(int(frame or 0))
+					+ ',owner=' + str(op.get('owner_name') or '')
+					+ ',x_expr=' + repr(op.get('x', 0.0))
+					+ ',y_expr=' + repr(op.get('y', 0.0))
+					+ ',x_val=' + repr(x_val)
+					+ ',y_val=' + repr(y_val)
+					+ ',prev_u16=' + str([int(camera_x) & 0xFFFF, int(camera_y) & 0xFFFF])
+					+ ',new_u16=' + str([int(new_x) & 0xFFFF, int(new_y) & 0xFFFF])
+					+ ',delta=' + str([int(dx), int(dy)]),
+				])
+			except Exception:
+				pass
 			camera_x = _gbc_wrap_u16(new_x)
 			camera_y = _gbc_wrap_u16(new_y)
 			dx_total += dx
@@ -17734,6 +18080,19 @@ def _gba_get_runtime_display_scroll_profile (script_runtime, frame : int = 1, st
 		step_num_x = int(next_dx - base_dx)
 		step_num_y = int(next_dy - base_dy)
 		step_den = int(max(1, window))
+		try:
+			_append_gbc_trace_lines([
+				'[gbc-trace] CameraScrollProfile'
+				+ ':mode=camera_ops'
+				+ ',frame0=' + str(int(frame0))
+				+ ',frame1=' + str(int(frame1))
+				+ ',base=' + str([int(base_dx), int(base_dy)])
+				+ ',next=' + str([int(next_dx), int(next_dy)])
+				+ ',step_num=' + str([int(step_num_x), int(step_num_y)])
+				+ ',step_den=' + str(int(step_den)),
+			])
+		except Exception:
+			pass
 		return {
 			'init_dx' : int(base_dx),
 			'init_dy' : int(base_dy),
@@ -17755,6 +18114,17 @@ def _gba_get_runtime_display_scroll_profile (script_runtime, frame : int = 1, st
 		start_time = start_time,
 		include_update = True,
 	)
+	try:
+		_append_gbc_trace_lines([
+			'[gbc-trace] CameraScrollProfile'
+			+ ':mode=scroll_only'
+			+ ',frame=' + str(int(frame or 1))
+			+ ',init=' + str([int(init_dx), int(init_dy)])
+			+ ',total=' + str([int(total_dx), int(total_dy)])
+			+ ',step=' + str([int(total_dx - init_dx), int(total_dy - init_dy)]),
+		])
+	except Exception:
+		pass
 	return {
 		'init_dx' : int(init_dx),
 		'init_dy' : int(init_dy),
@@ -19408,10 +19778,31 @@ def BuildGbc (world):
 						break
 			except Exception:
 				camera_follow_mode = False
-			# Do not bake absolute camera offsets into world transforms/colliders.
-			# Runtime uses scroll_profile (init/step) directly.
+			scroll_profile_runtime = dict(scroll_profile or {})
+			# Bake initial absolute camera offset into world transforms/colliders so
+			# phase-1 runtime does not collapse large absolute camera positions into
+			# SCX/SCY low-byte wrap at boot (e.g. 255 appearing like 0).
 			camera_offset_x = 0
 			camera_offset_y = 0
+			if camera_ops_present and (not camera_follow_mode):
+				try:
+					camera_offset_x = int(scroll_profile.get('init_dx', 0))
+				except Exception:
+					camera_offset_x = 0
+				try:
+					camera_offset_y = int(scroll_profile.get('init_dy', 0))
+				except Exception:
+					camera_offset_y = 0
+				scroll_profile_runtime['init_dx'] = 0
+				scroll_profile_runtime['init_dy'] = 0
+			else:
+				scroll_profile_runtime['init_dx'] = int(scroll_profile_runtime.get('init_dx', 0))
+				scroll_profile_runtime['init_dy'] = int(scroll_profile_runtime.get('init_dy', 0))
+			scroll_profile_runtime['step_dx'] = int(scroll_profile_runtime.get('step_dx', 0))
+			scroll_profile_runtime['step_dy'] = int(scroll_profile_runtime.get('step_dy', 0))
+			scroll_profile_runtime['step_dx_num'] = int(scroll_profile_runtime.get('step_dx_num', scroll_profile_runtime.get('step_dx', 0)))
+			scroll_profile_runtime['step_dy_num'] = int(scroll_profile_runtime.get('step_dy_num', scroll_profile_runtime.get('step_dy', 0)))
+			scroll_profile_runtime['step_den'] = int(max(1, int(scroll_profile_runtime.get('step_den', 1))))
 			phase1_transform_overrides = composite_transform_overrides
 			_append_gbc_trace_lines([
 				'[gbc-trace] BuildGbc:scroll_profile:init_dx=' + str(int(scroll_profile.get('init_dx', 0)))
@@ -19421,10 +19812,18 @@ def BuildGbc (world):
 				+ ',step_dx_num=' + str(int(scroll_profile.get('step_dx_num', scroll_profile.get('step_dx', 0))))
 				+ ',step_dy_num=' + str(int(scroll_profile.get('step_dy_num', scroll_profile.get('step_dy', 0))))
 				+ ',step_den=' + str(int(scroll_profile.get('step_den', 1))),
+				'[gbc-trace] BuildGbc:scroll_profile_runtime:init_dx=' + str(int(scroll_profile_runtime.get('init_dx', 0)))
+				+ ',init_dy=' + str(int(scroll_profile_runtime.get('init_dy', 0)))
+				+ ',step_dx_num=' + str(int(scroll_profile_runtime.get('step_dx_num', scroll_profile_runtime.get('step_dx', 0))))
+				+ ',step_dy_num=' + str(int(scroll_profile_runtime.get('step_dy_num', scroll_profile_runtime.get('step_dy', 0))))
+				+ ',step_den=' + str(int(scroll_profile_runtime.get('step_den', 1))),
 				'[gbc-trace] BuildGbc:camera_offset_bake:x=' + str(int(camera_offset_x)) + ',y=' + str(int(camera_offset_y)) + ',camera_ops=' + ('1' if camera_ops_present else '0'),
 				'[gbc-trace] BuildGbc:camera_follow_mode=' + ('1' if camera_follow_mode else '0'),
 			])
 			bake_runtime = _gba_runtime_without_display_scroll(script_runtime)
+			# Keep camera ops active when compositing phase1 background so absolute
+			# camera placement (e.g. 255) is baked into the initial visible region.
+			phase1_composite_runtime = script_runtime if (camera_ops_present and (not camera_follow_mode)) else bake_runtime
 			rigid_sprite_obs = [
 				ob for ob in physics_image_obs
 				if (
@@ -19481,7 +19880,7 @@ def BuildGbc (world):
 					bg_imgs,
 					image_surfaces = image_surfaces,
 					transform_overrides = phase1_transform_overrides,
-					script_runtime = bake_runtime,
+					script_runtime = phase1_composite_runtime,
 					frame = 1,
 				)
 				canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
@@ -19591,7 +19990,7 @@ def BuildGbc (world):
 						bg_imgs,
 						image_surfaces = image_surfaces,
 						transform_overrides = phase1_transform_overrides,
-						script_runtime = bake_runtime,
+						script_runtime = phase1_composite_runtime,
 						frame = 1,
 					)
 					canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
@@ -19640,25 +20039,41 @@ def BuildGbc (world):
 				collider_rects = _gbc_collect_runtime_colliders(
 					physics_scene_obs,
 					ignored_names = active_body_names,
+					scroll_x_gba = (float(camera_offset_x) if ((not camera_follow_mode) and camera_ops_present) else 0.0),
+					scroll_y_gba = (float(camera_offset_y) if ((not camera_follow_mode) and camera_ops_present) else 0.0),
 					preconverted_names = fallback_proxy_names,
 					debug_rows = collider_debug_rows,
 				)
-				if (not camera_follow_mode) and camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
-					collider_rects = _gbc_shift_collider_rects_by_camera(collider_rects, camera_offset_x, camera_offset_y)
 				_append_gbc_trace_lines([
 					'[gbc-trace] BuildGbc:multi_body_collider_debug=' + (', '.join(collider_debug_rows) if collider_debug_rows else '<none>'),
 				])
+				try:
+					_init_sx = int(scroll_profile_runtime.get('init_dx', 0))
+					_init_sy = int(scroll_profile_runtime.get('init_dy', 0))
+					_step_num_x = int(scroll_profile_runtime.get('step_dx_num', scroll_profile_runtime.get('step_dx', 0)))
+					_step_num_y = int(scroll_profile_runtime.get('step_dy_num', scroll_profile_runtime.get('step_dy', 0)))
+					_step_den = int(scroll_profile_runtime.get('step_den', 1))
+					_append_gbc_trace_lines([
+						'[gbc-trace] BuildGbc:phase1_scroll_params:mode=multi'
+						+ ',init=' + str([_init_sx, _init_sy])
+						+ ',init_u16=' + str([_init_sx & 0xFFFF, _init_sy & 0xFFFF])
+						+ ',step_num=' + str([_step_num_x, _step_num_y])
+						+ ',step_u16=' + str([_step_num_x & 0xFFFF, _step_num_y & 0xFFFF])
+						+ ',step_den=' + str(_step_den),
+					])
+				except Exception:
+					pass
 				rom = _gbc_build_dynamic_physics_rom_multi(
 					canvas_gbc,
 					body_specs_runtime,
 					bg_palette_bank,
 					collider_rects = collider_rects,
-					init_scroll_x = scroll_profile.get('init_dx', 0),
-					init_scroll_y = scroll_profile.get('init_dy', 0),
-					scroll_step_x = scroll_profile.get('step_dx_num', scroll_profile.get('step_dx', 0)),
-					scroll_step_y = scroll_profile.get('step_dy_num', scroll_profile.get('step_dy', 0)),
-					scroll_step_den_x = scroll_profile.get('step_den', 1),
-					scroll_step_den_y = scroll_profile.get('step_den', 1),
+					init_scroll_x = scroll_profile_runtime.get('init_dx', 0),
+					init_scroll_y = scroll_profile_runtime.get('init_dy', 0),
+					scroll_step_x = scroll_profile_runtime.get('step_dx_num', scroll_profile_runtime.get('step_dx', 0)),
+					scroll_step_y = scroll_profile_runtime.get('step_dy_num', scroll_profile_runtime.get('step_dy', 0)),
+					scroll_step_den_x = scroll_profile_runtime.get('step_den', 1),
+					scroll_step_den_y = scroll_profile_runtime.get('step_den', 1),
 				)
 			else:
 				sprite_ob = None
@@ -19689,7 +20104,7 @@ def BuildGbc (world):
 					bg_imgs,
 					image_surfaces = image_surfaces,
 					transform_overrides = phase1_transform_overrides,
-					script_runtime = bake_runtime,
+					script_runtime = phase1_composite_runtime,
 					frame = 1,
 				)
 				canvas_gbc = _gba_resize_cover_rgba(canvas_gba_space, 160, 144)
@@ -19770,13 +20185,13 @@ def BuildGbc (world):
 				collider_rects = _gbc_collect_runtime_colliders(
 					physics_scene_obs,
 					ignored_name = sprite_ob.name,
+					scroll_x_gba = (float(camera_offset_x) if ((not camera_follow_mode) and camera_ops_present) else 0.0),
+					scroll_y_gba = (float(camera_offset_y) if ((not camera_follow_mode) and camera_ops_present) else 0.0),
 					preconverted_names = fallback_proxy_names,
 					debug_rows = collider_debug_rows,
 					debug_include_ignored = True,
 					rect_meta = collider_rect_meta,
 				)
-				if (not camera_follow_mode) and camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
-					collider_rects = _gbc_shift_collider_rects_by_camera(collider_rects, camera_offset_x, camera_offset_y)
 				_append_gbc_trace_lines([
 					'[gbc-trace] BuildGbc:single_body_collider_debug=' + (', '.join(collider_debug_rows) if collider_debug_rows else '<none>'),
 				])
@@ -19820,6 +20235,22 @@ def BuildGbc (world):
 					print('GBC export: phase1 interpreted gbc-py velocity script =', velocity_script)
 				elif not bool(_GBC_ENABLE_PHASE1_VELOCITY_SCRIPT):
 					print('GBC export: phase1 velocity_script inference disabled.')
+				try:
+					_init_sx = int(scroll_profile_runtime.get('init_dx', 0))
+					_init_sy = int(scroll_profile_runtime.get('init_dy', 0))
+					_step_num_x = int(scroll_profile_runtime.get('step_dx_num', scroll_profile_runtime.get('step_dx', 0)))
+					_step_num_y = int(scroll_profile_runtime.get('step_dy_num', scroll_profile_runtime.get('step_dy', 0)))
+					_step_den = int(scroll_profile_runtime.get('step_den', 1))
+					_append_gbc_trace_lines([
+						'[gbc-trace] BuildGbc:phase1_scroll_params:mode=single'
+						+ ',init=' + str([_init_sx, _init_sy])
+						+ ',init_u16=' + str([_init_sx & 0xFFFF, _init_sy & 0xFFFF])
+						+ ',step_num=' + str([_step_num_x, _step_num_y])
+						+ ',step_u16=' + str([_step_num_x & 0xFFFF, _step_num_y & 0xFFFF])
+						+ ',step_den=' + str(_step_den),
+					])
+				except Exception:
+					pass
 				rom = _gbc_build_dynamic_physics_rom(
 					canvas_gbc,
 					sprite_tile,
@@ -19836,12 +20267,12 @@ def BuildGbc (world):
 					init_vy = init_vy,
 					velocity_script = velocity_script,
 					aot_script = aot_script,
-					init_scroll_x = scroll_profile.get('init_dx', 0),
-					init_scroll_y = scroll_profile.get('init_dy', 0),
-					scroll_step_x = scroll_profile.get('step_dx_num', scroll_profile.get('step_dx', 0)),
-					scroll_step_y = scroll_profile.get('step_dy_num', scroll_profile.get('step_dy', 0)),
-					scroll_step_den_x = scroll_profile.get('step_den', 1),
-					scroll_step_den_y = scroll_profile.get('step_den', 1),
+					init_scroll_x = scroll_profile_runtime.get('init_dx', 0),
+					init_scroll_y = scroll_profile_runtime.get('init_dy', 0),
+					scroll_step_x = scroll_profile_runtime.get('step_dx_num', scroll_profile_runtime.get('step_dx', 0)),
+					scroll_step_y = scroll_profile_runtime.get('step_dy_num', scroll_profile_runtime.get('step_dy', 0)),
+					scroll_step_den_x = scroll_profile_runtime.get('step_den', 1),
+					scroll_step_den_y = scroll_profile_runtime.get('step_den', 1),
 					sprite_tile_palette_idxs = sprite_tile_pal_idx,
 					collision_w_px = collision_w_px,
 					collision_h_px = collision_h_px,
@@ -19888,11 +20319,20 @@ def BuildGbc (world):
 			)
 			_pipe_process_output_to_terminal(proc, prefix = 'mGBA')
 			if has_physics:
+				phase1_world_offset_x = 0.0
+				phase1_world_offset_y = 0.0
+				if (not camera_follow_mode) and camera_ops_present:
+					# Phase1 init positions are camera-shifted by `camera_offset_*`.
+					# Physics getters must undo that shift in script space.
+					# X uses the same orientation as internal coordinates, Y is flipped.
+					phase1_world_offset_x = float(-int(camera_offset_x))
+					phase1_world_offset_y = float(int(camera_offset_y))
 				runtime_print_env = _build_runtime_print_physics_env(
 					world,
 					runtime_print_scene_obs,
 					use_gbc_signed_positions = True,
-					gbc_script_world_offset = [float(camera_offset_x), float(-camera_offset_y)],
+					# Raw Rapier mirror remains in authored world space.
+					gbc_script_world_offset = [0.0, 0.0],
 				)
 				try:
 					# Keep gbc-py print mirroring aligned with phase1 body semantics.
@@ -19933,11 +20373,11 @@ def BuildGbc (world):
 							_rt_colliders = _gbc_collect_runtime_colliders(
 								physics_scene_obs,
 								ignored_names = _active_names,
+								scroll_x_gba = (float(camera_offset_x) if ((not camera_follow_mode) and camera_ops_present) else 0.0),
+								scroll_y_gba = (float(camera_offset_y) if ((not camera_follow_mode) and camera_ops_present) else 0.0),
 								preconverted_names = fallback_proxy_names,
 								rect_meta = _rt_rect_meta,
 							)
-							if (not camera_follow_mode) and camera_ops_present and (int(camera_offset_x) != 0 or int(camera_offset_y) != 0):
-								_rt_colliders = _gbc_shift_collider_rects_by_camera(_rt_colliders, camera_offset_x, camera_offset_y)
 							_phase1_print_env = _build_gbc_phase1_print_env(
 								_player_ob,
 								int(_player_spec.get('sprite_tiles_w', 1)),
@@ -19953,9 +20393,14 @@ def BuildGbc (world):
 								physics_scene_obs = physics_scene_obs,
 								runtime_handle_env = runtime_print_env,
 								collider_rect_meta = _rt_rect_meta,
-								script_world_offset = [float(camera_offset_x), float(-camera_offset_y)],
+								# Keep phase1 mirror get/set_rigid_body_position in world space.
+								script_world_offset = [phase1_world_offset_x, phase1_world_offset_y],
 							)
 							if isinstance(_phase1_print_env, dict) and _phase1_print_env.get('sim', None) is not None:
+								_append_gbc_trace_lines([
+									'[gbc-trace] BuildGbc:phase1_print_env_active=1'
+									+ ',offset=' + str([TryChangeToInt(phase1_world_offset_x), TryChangeToInt(phase1_world_offset_y)]),
+								])
 								runtime_print_env = _phase1_print_env
 				except Exception:
 					pass
