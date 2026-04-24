@@ -55,7 +55,7 @@ _GBC_ENABLE_GENERAL_AOT = str(
 _GBC_PHASE1_TRANSPILE_CACHE_VERSION = 3
 # Keep phase1 behavior driven by regular runtime scripts, not inferred
 # velocity profiles.
-_GBC_ENABLE_PHASE1_VELOCITY_SCRIPT = False
+_GBC_ENABLE_PHASE1_VELOCITY_SCRIPT = True
 
 isLinux = False
 POTRACE_PATH = 'potrace-1.16.'
@@ -2521,6 +2521,10 @@ def _eval_runtime_expr_value (value, frame : int = None, start_time : float = No
 		'keys' : key_state,
 		'js13k_get_pressed' : (lambda : key_state),
 	})
+	# Script camera expressions may use SCREEN_SIZE in gbc-py.
+	eval_locals.setdefault('SCREEN_SIZE', [160.0, 144.0])
+	eval_locals.setdefault('SCREEN_WIDTH', 160.0)
+	eval_locals.setdefault('SCREEN_HEIGHT', 144.0)
 	try:
 		runtime_globals = __import__('builtins').globals()
 	except Exception:
@@ -3076,6 +3080,40 @@ def _script_has_explicit_set_camera_position_call (code : str):
 		if isinstance(func, ast.Name) and str(func.id) == 'set_camera_position':
 			return True
 	return False
+
+def _strip_set_camera_position_calls_for_motion_transpile (code : str):
+	"""
+	Remove standalone set_camera_position(...) calls from a script while keeping
+	all motion/input logic intact for phase1 velocity transpilation.
+	"""
+	if not isinstance(code, str) or code.strip() == '':
+		return str(code or '')
+	try:
+		tree = ast.parse(code)
+	except Exception:
+		return str(code)
+	class _StripCameraCalls(ast.NodeTransformer):
+		def visit_Expr (self, node):
+			node = self.generic_visit(node)
+			val = getattr(node, 'value', None)
+			if (
+				isinstance(val, ast.Call)
+				and isinstance(getattr(val, 'func', None), ast.Name)
+				and str(val.func.id) == 'set_camera_position'
+			):
+				# Remove camera-only call from motion transpile input entirely.
+				return None
+			return node
+	try:
+		tree = _StripCameraCalls().visit(tree)
+		ast.fix_missing_locations(tree)
+		return ast.unparse(tree)
+	except Exception:
+		try:
+			# Conservative text fallback for simple one-line camera calls.
+			return re.sub(r'(?m)^\s*set_camera_position\s*\(.*?\)\s*$', '', str(code))
+		except Exception:
+			return str(code)
 
 def _extract_dynamic_set_camera_ops_from_stmts (stmts, is_init : bool, parent_condition = None):
 	camera_ops = []
@@ -3959,19 +3997,53 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 		# (for example due transformed wrappers), still emit a deterministic
 		# owner camera op so GBC fallback does not drop camera control entirely.
 		if not extracted_camera_ops and _script_has_explicit_set_camera_position_call(str(raw_code or '')):
-			owner_pos = _resolve_static_owner_camera_position(owner_name)
-			if isinstance(owner_pos, (list, tuple)) and len(owner_pos) >= 2:
+			raw_txt = str(raw_code or '')
+			# Prefer dynamic follow semantics when source call referenced `pos[...]`.
+			# Falling back to a static owner position can freeze camera movement.
+			looks_like_pos_follow = bool(
+				re.search(
+					r'set_camera_position\s*\(\s*pos\s*\[\s*0\s*\]\s*,\s*pos\s*\[\s*1\s*\]\s*\)',
+					raw_txt,
+				)
+			)
+			if looks_like_pos_follow:
 				extracted_camera_ops = [{
 					'op' : 'set_display_camera_pos',
-					'x' : float(owner_pos[0]),
-					'y' : float(owner_pos[1]),
+					'x' : 'pos[0]',
+					'y' : 'pos[1]',
 					'is_init' : bool(is_init),
+					'camera_follow_owner' : owner_name,
+					'fallback_dynamic_pos' : True,
 				}]
+			else:
+				owner_pos = _resolve_static_owner_camera_position(owner_name)
+				if isinstance(owner_pos, (list, tuple)) and len(owner_pos) >= 2:
+					extracted_camera_ops = [{
+						'op' : 'set_display_camera_pos',
+						'x' : float(owner_pos[0]),
+						'y' : float(owner_pos[1]),
+						'is_init' : bool(is_init),
+					}]
 		for camera_op in extracted_camera_ops:
 			camera_op = dict(camera_op or {})
 			camera_op['owner_name'] = owner_name
 			camera_op['scope_key'] = scope_key
 			camera_op['global_eval_fallback_env'] = dict(global_eval_fallback_env)
+			raw_x_expr_txt = str(camera_op.get('x', ''))
+			raw_y_expr_txt = str(camera_op.get('y', ''))
+			def _camera_follow_expr_hint (_txt):
+				try:
+					t = str(_txt or '')
+				except Exception:
+					return False
+				return bool(
+					re.search(r'\bpos\s*\[', t)
+					or re.search(r'\bthis\s*\.\s*get_position\s*\(', t)
+					or re.search(r'\b(?:gbc_get_object_position|get_object_position)\s*\(', t)
+					or re.search(r'\bsim\s*\.\s*get_rigid_body_position\s*\(', t)
+				)
+			raw_x_follow_hint = _camera_follow_expr_hint(raw_x_expr_txt)
+			raw_y_follow_hint = _camera_follow_expr_hint(raw_y_expr_txt)
 			camera_op['x'] = _inline_runtime_expr_with_env(
 				camera_op.get('x', 0.0),
 				const_env = env.get('const_env', {}),
@@ -4012,13 +4084,14 @@ def _augment_runtime_with_dynamic_circles (script_runtime : dict, script_entries
 					_time_base = 0.0
 				camera_op['time_accumulator_base'] = float(_time_base)
 				camera_op['time_accumulator_hz'] = 60.0
-			if ('pos[' in x_expr_txt) or ('pos[' in y_expr_txt):
+			if raw_x_follow_hint or raw_y_follow_hint or ('pos[' in x_expr_txt) or ('pos[' in y_expr_txt):
 				camera_op['camera_follow_owner'] = owner_name
-				owner_pos = _resolve_static_owner_camera_position(owner_name)
-				if isinstance(owner_pos, (list, tuple)) and len(owner_pos) >= 2:
-					camera_op['x'] = float(owner_pos[0])
-					camera_op['y'] = float(owner_pos[1])
-					camera_op['resolved_from_owner_pos'] = True
+				# Preserve dynamic follow expressions; do not collapse to static owner
+				# coordinates or camera will stop tracking at runtime.
+				if raw_x_follow_hint:
+					camera_op['x'] = raw_x_expr_txt
+				if raw_y_follow_hint:
+					camera_op['y'] = raw_y_expr_txt
 			if is_init:
 				init_display_ops.append(camera_op)
 			else:
@@ -4433,6 +4506,17 @@ def _runtime_expr_extra_env_for_display_op (op):
 						base_env['pos'] = [float(_owner_ob.location.x), float(-_owner_ob.location.y)]
 				except Exception:
 					pass
+		# Final fallback for export-time camera expression evaluation.
+		if 'pos' not in base_env:
+			try:
+				_owner_pos = _resolve_static_owner_camera_position(owner_name)
+			except Exception:
+				_owner_pos = None
+			if isinstance(_owner_pos, (list, tuple)) and len(_owner_pos) >= 2:
+				try:
+					base_env['pos'] = [float(_owner_pos[0]), float(_owner_pos[1])]
+				except Exception:
+					pass
 	return base_env
 
 def _trace_display_camera_eval (stage, op, frame, x_expr, y_expr, x_val, y_val, x_u16, y_u16, extra_env = None):
@@ -4600,8 +4684,6 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        sim = None\n'
 		'_js13k_gbc_cam_x = int(globals().get("_js13k_gbc_cam_x", 0) or 0)\n'
 		'_js13k_gbc_cam_y = int(globals().get("_js13k_gbc_cam_y", 0) or 0)\n'
-		'_js13k_gbc_cam_x = int(_js13k_gbc_cam_x) % 65536\n'
-		'_js13k_gbc_cam_y = int(_js13k_gbc_cam_y) % 65536\n'
 		'def set_camera_position(x, y):\n'
 		'    global _js13k_gbc_cam_x, _js13k_gbc_cam_y\n'
 		'    try:\n'
@@ -4612,8 +4694,6 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        new_y = int(round(float(y)))\n'
 		'    except:\n'
 		'        new_y = int(_js13k_gbc_cam_y)\n'
-		'    new_x = int(new_x) % 65536\n'
-		'    new_y = int(new_y) % 65536\n'
 		'    _js13k_gbc_cam_x = int(new_x)\n'
 		'    _js13k_gbc_cam_y = int(new_y)\n'
 		'    globals()["_js13k_gbc_cam_x"] = int(_js13k_gbc_cam_x)\n'
@@ -4886,6 +4966,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'    except:\n'
 		'        pass\n'
 		'_js13k_gbc_pos_bias = 32768.0\n'
+		'_js13k_gbc_unbias_trace_count = 0\n'
 		'def _js13k_gbc_bias_pos_for_set(_pos):\n'
 		'    try:\n'
 		'        return [\n'
@@ -4896,12 +4977,43 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        return _pos\n'
 		'def _js13k_gbc_unbias_pos_for_get(_pos):\n'
 		'    try:\n'
-		'        return [\n'
-		'            float(_pos[0]) - _js13k_gbc_pos_bias,\n'
-		'            -(float(_pos[1]) - _js13k_gbc_pos_bias),\n'
-		'        ]\n'
+		'        x = float(_pos[0])\n'
+		'        y = float(_pos[1])\n'
 		'    except:\n'
 		'        return [0.0, 0.0]\n'
+		'    _raw_x = x\n'
+		'    _raw_y = y\n'
+		'    _did_convert = False\n'
+		'    # Convert only when values look bias-encoded (~+/-32768). Leave\n'
+		'    # ordinary authored/world coordinates untouched.\n'
+		'    _half = float(_js13k_gbc_pos_bias) * 0.5\n'
+		'    if x < -_half:\n'
+		'        x = x + float(_js13k_gbc_pos_bias)\n'
+		'        _did_convert = True\n'
+		'    elif x > _half:\n'
+		'        x = x - float(_js13k_gbc_pos_bias)\n'
+		'        _did_convert = True\n'
+		'    if y < -_half:\n'
+		'        y = -(y + float(_js13k_gbc_pos_bias))\n'
+		'        _did_convert = True\n'
+		'    elif y > _half:\n'
+		'        y = -(y - float(_js13k_gbc_pos_bias))\n'
+		'        _did_convert = True\n'
+		'    if _did_convert:\n'
+		'        try:\n'
+		'            global _js13k_gbc_unbias_trace_count\n'
+		'            if int(_js13k_gbc_unbias_trace_count) < 24:\n'
+		'                _append = globals().get("_append_gbc_trace_lines", None)\n'
+		'                if callable(_append):\n'
+		'                    _append([\n'
+		'                        "[gbc-trace] RuntimeGetPosUnbias:raw=" + str([_raw_x, _raw_y])\n'
+		'                        + ",norm=" + str([x, y])\n'
+		'                        + ",count=" + str(int(_js13k_gbc_unbias_trace_count) + 1),\n'
+		'                    ])\n'
+		'                _js13k_gbc_unbias_trace_count = int(_js13k_gbc_unbias_trace_count) + 1\n'
+		'        except:\n'
+		'            pass\n'
+		'    return [x, y]\n'
 		'def _js13k_gbc_resolve_collider_handle(_collider):\n'
 		'    try:\n'
 		'        if isinstance(_collider, (tuple, list)) and len(_collider) == 2:\n'
@@ -4987,7 +5099,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        sim = _GbcMutableSimProxy(sim)\n'
 		'    except:\n'
 		'        pass\n'
-		'if False and (sim is not None) and hasattr(sim, "get_rigid_body_position") and not getattr(sim, "_js13k_gbc_get_rbpos_safe", False):\n'
+		'if (sim is not None) and hasattr(sim, "get_rigid_body_position") and not getattr(sim, "_js13k_gbc_get_rbpos_safe", False):\n'
 		'    _js13k_gbc_orig_get_rigid_body_position = sim.get_rigid_body_position\n'
 		'    def _js13k_gbc_get_rigid_body_position_safe(rigidBody):\n'
 		'        try:\n'
@@ -5008,7 +5120,7 @@ def _inject_gbc_signed_position_wrappers (code : str):
 		'        sim._js13k_gbc_set_rbpos_safe = True\n'
 		'    except:\n'
 		'        pass\n'
-		'if False and (sim is not None) and hasattr(sim, "get_collider_position") and not getattr(sim, "_js13k_gbc_get_colpos_safe", False):\n'
+		'if (sim is not None) and hasattr(sim, "get_collider_position") and not getattr(sim, "_js13k_gbc_get_colpos_safe", False):\n'
 		'    _js13k_gbc_orig_get_collider_position = sim.get_collider_position\n'
 		'    def _js13k_gbc_get_collider_position_safe(collider):\n'
 		'        try:\n'
@@ -5446,7 +5558,70 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				'                return type(self._raw).__name__ != "_GbcPhase1MirrorSim"',
 				'            except:',
 				'                return True',
+				'        def _resolve_rb_handle(self, rigidBody):',
+				'            _rb = rigidBody',
+				'            _name = ""',
+				'            if isinstance(_rb, str):',
+				'                _name = _rb',
+				'                _rb = None',
+				'            if _rb is not None:',
+				'                return _rb',
+				'            if _name == "":',
+				'                try:',
+				'                    _name = str(owner_key)',
+				'                except:',
+				'                    _name = ""',
+				'            _cands = []',
+				'            if isinstance(_name, str) and _name != "":',
+				'                _cands = [_name]',
+				'                if _name.startswith("_"):',
+				'                    _cands.append(_name[1:])',
+				'                else:',
+				'                    _cands.append("_" + _name)',
+				'                if not _name.endswith(":0"):',
+				'                    _cands.append(_name + ":0")',
+				'            _maps = []',
+				'            try:',
+				'                _m = globals().get("rigidBodiesIds", {})',
+				'                if isinstance(_m, dict):',
+				'                    _maps.append(_m)',
+				'            except:',
+				'                pass',
+				'            try:',
+				'                _m = globals().get("rigidBodies", {})',
+				'                if isinstance(_m, dict):',
+				'                    _maps.append(_m)',
+				'            except:',
+				'                pass',
+				'            try:',
+				'                _m = getattr(self._raw, "named_rigid_bodies", {})',
+				'                if isinstance(_m, dict):',
+				'                    _maps.append(_m)',
+				'            except:',
+				'                pass',
+				'            for _src in _maps:',
+				'                for _k in _cands:',
+				'                    try:',
+				'                        _v = _src.get(_k, None)',
+				'                    except:',
+				'                        _v = None',
+				'                    if _v is not None:',
+				'                        return _v',
+				'            try:',
+				'                _get_rb = globals().get("get_rigidbody", None)',
+				'                if callable(_get_rb) and isinstance(_name, str) and _name != "":',
+				'                    _v = _get_rb(_name)',
+				'                    if _v is not None:',
+				'                        return _v',
+				'            except:',
+				'                pass',
+				'            if isinstance(_name, str) and _name != "":',
+				'                return _name',
+				'            return rigidBody',
 				'        def set_linear_velocity(self, rigidBody, vel, wakeUp = True):',
+				'            rigidBody = self._resolve_rb_handle(rigidBody)',
+				'            if rigidBody is None:',
+				'                return None',
 				'            try:',
 				'                vx = float(vel[0])',
 				'                vy = float(vel[1])',
@@ -5457,6 +5632,9 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				'                vy = -vy',
 				'            return self._raw.set_linear_velocity(rigidBody, [vx, vy], wakeUp)',
 				'        def get_linear_velocity(self, rigidBody):',
+				'            rigidBody = self._resolve_rb_handle(rigidBody)',
+				'            if rigidBody is None:',
+				'                return [0.0, 0.0]',
 				'            try:',
 				'                _v = self._raw.get_linear_velocity(rigidBody)',
 				'                _vx = float(_v[0])',
@@ -6405,8 +6583,8 @@ def set_camera_position (x, y):
 		_y = int(round(float(y)))
 	except Exception:
 		_y = int(round(float(_cameraPos.y)))
-	_x = int(_x) % 65536
-	_y = int(_y) % 65536
+	_x = int(_x)
+	_y = int(_y)
 	_cameraPos.x = float(_x)
 	_cameraPos.y = float(_y)
 	off.x = float(_cameraPos.x)
@@ -6815,6 +6993,43 @@ def _get_script_locals (instanceName, scriptKey, this):
 	if not callable(localsDict.get('print', None)):
 		localsDict['print'] = localsDict['_js13k_print']
 	def _js13k_call_print (*args, sep = ' ', end = '\n', file = None, flush = False):
+		try:
+			def _norm_pair (_v):
+				try:
+					if isinstance(_v, (list, tuple)) and len(_v) >= 2:
+						_n = _normalize_gbc_script_position([float(_v[0]), float(_v[1])])
+						return [float(_n[0]), float(_n[1])]
+				except Exception:
+					pass
+				return _v
+			def _is_zero_pair (_v):
+				try:
+					return (
+						isinstance(_v, (list, tuple))
+						and len(_v) >= 2
+						and abs(float(_v[0])) <= 1e-6
+						and abs(float(_v[1])) <= 1e-6
+					)
+				except Exception:
+					return False
+			_args = list(args or [])
+			_args = [_norm_pair(_a) for _a in _args]
+			if len(_args) >= 3:
+				_rb = _args[0]
+				_col_hit = _args[1]
+				if (_col_hit is None) and _is_zero_pair(_args[2]):
+					try:
+						_live = sim.get_rigid_body_position(_rb)
+					except Exception:
+						_live = None
+					_live = _norm_pair(_live)
+					if isinstance(_live, (list, tuple)) and len(_live) >= 2:
+						_lx = float(_live[0]); _ly = float(_live[1])
+						if (abs(_lx) + abs(_ly)) > 1e-6:
+							_args[2] = [_lx, _ly]
+			args = tuple(_args)
+		except Exception:
+			pass
 		for _fn in (localsDict.get('_js13k_print', None), localsDict.get('print', None), __import__('builtins').print):
 			if callable(_fn):
 				try:
@@ -7195,17 +7410,21 @@ def _normalize_gbc_script_position (_pos):
 		y = float(_pos[1])
 	except Exception:
 		return _pos
+	try:
+		bias = float(globals().get('_GBC_POSITION_BIAS', 32768.0))
+	except Exception:
+		bias = 32768.0
 	# Some runtimes expose bias-encoded signed values directly.
 	# Normalize those back into script-space coordinates.
-	half_bias = float(_GBC_POSITION_BIAS) * 0.5
+	half_bias = float(bias) * 0.5
 	if x < -half_bias:
-		x = x + float(_GBC_POSITION_BIAS)
+		x = x + float(bias)
 	elif x > half_bias:
-		x = x - float(_GBC_POSITION_BIAS)
+		x = x - float(bias)
 	if y < -half_bias:
-		y = -(y + float(_GBC_POSITION_BIAS))
+		y = -(y + float(bias))
 	elif y > half_bias:
-		y = -(y - float(_GBC_POSITION_BIAS))
+		y = -(y - float(bias))
 	return [x, y]
 
 def _prefer_static_pos_when_dynamic_zero (_name, _dynamic_pos):
@@ -9886,6 +10105,29 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 		src = txt.strip()
 		if src == '':
 			return txt
+		def _normalize_pair_values (_x, _y, _trace_key):
+			try:
+				_norm = _normalize_gbc_script_position([float(_x), float(_y)])
+				_nx = float(_norm[0]); _ny = float(_norm[1])
+				if (abs(_nx - float(_x)) <= 1e-6) and (abs(_ny - float(_y)) <= 1e-6):
+					return None
+				try:
+					_g = __import__('builtins').globals()
+					_count = int(_g.get(_trace_key, 0))
+					if _count < 24:
+						_append = _g.get('_append_gbc_trace_lines', None)
+						if callable(_append):
+							_append([
+								'[gbc-trace] RuntimePrintTextNormalize:raw=' + str([float(_x), float(_y)])
+								+ ',norm=' + str([_nx, _ny])
+								+ ',count=' + str(_count + 1),
+							])
+						_g[_trace_key] = _count + 1
+				except Exception:
+					pass
+				return [_nx, _ny]
+			except Exception:
+				return None
 		def _coerce_numeric_like (_val):
 			if isinstance(_val, list):
 				return [_coerce_numeric_like(v) for v in _val]
@@ -9908,9 +10150,39 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 		except Exception:
 			return txt
 		val = _coerce_numeric_like(val)
+		# Final guardrail: normalize bias-encoded coordinate pairs that can leak
+		# through some runtime print paths as literal list/tuple text.
+		try:
+			if isinstance(val, (list, tuple)) and len(val) >= 2:
+				_nx = float(val[0]); _ny = float(val[1])
+				_norm = _normalize_pair_values(_nx, _ny, '_gbc_print_text_norm_trace_count')
+				if isinstance(_norm, list):
+					val = list(_norm)
+		except Exception:
+			pass
 		if isinstance(val, str):
 			return val
-		return str(val)
+		out_txt = str(val)
+		# Also normalize list-like coordinate substrings inside larger messages,
+		# e.g. "pos=[-32678.0, -32728.0]".
+		try:
+			def _replace_coord_pair (_m):
+				try:
+					_x = float(_m.group(1)); _y = float(_m.group(2))
+				except Exception:
+					return _m.group(0)
+				_norm = _normalize_pair_values(_x, _y, '_gbc_print_text_norm_sub_trace_count')
+				if not isinstance(_norm, list):
+					return _m.group(0)
+				return '[' + str(float(_norm[0])) + ', ' + str(float(_norm[1])) + ']'
+			out_txt = re.sub(
+				r'\[\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)\s*\]',
+				_replace_coord_pair,
+				out_txt,
+			)
+		except Exception:
+			pass
+		return out_txt
 	_prev = None
 	while text != _prev:
 		_prev = text
@@ -9929,8 +10201,7 @@ def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : f
 	else:
 		text = _replace_runtime_ticks_calls(text, ticks)
 		text = _replace_runtime_key_calls(text)
-	if had_expr_placeholder:
-		text = _normalize_runtime_print_text(text)
+	text = _normalize_runtime_print_text(text)
 	return text
 
 def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
@@ -10294,6 +10565,51 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				])
 			except Exception:
 				pass
+		def _mirror_normalize_script_pos (_raw, _kind):
+			try:
+				_norm = _normalize_gbc_script_position(_raw)
+			except Exception:
+				return [0.0, 0.0]
+			try:
+				_raw_x = float(_raw[0]); _raw_y = float(_raw[1])
+				_norm_x = float(_norm[0]); _norm_y = float(_norm[1])
+			except Exception:
+				return _norm
+			if (abs(_raw_x - _norm_x) > 1e-6) or (abs(_raw_y - _norm_y) > 1e-6):
+				try:
+					_g = __import__('builtins').globals()
+					_count = int(_g.get('_gbc_mirror_sim_pos_norm_trace_count', 0))
+					if _count < 24:
+						_append = _g.get('_append_gbc_trace_lines', None)
+						if callable(_append):
+							_append([
+								'[gbc-trace] MirrorSimPosNormalize:kind=' + str(_kind)
+								+ ',raw=' + str([_raw_x, _raw_y])
+								+ ',norm=' + str([_norm_x, _norm_y])
+								+ ',count=' + str(_count + 1),
+							])
+						_g['_gbc_mirror_sim_pos_norm_trace_count'] = _count + 1
+				except Exception:
+					pass
+			return _norm
+		class _MirrorScriptSimProxy:
+			__slots__ = ('_sim',)
+			def __init__ (self, _sim):
+				self._sim = _sim
+			def __getattr__ (self, _name):
+				return getattr(self._sim, _name)
+			def get_rigid_body_position (self, *args, **kwargs):
+				try:
+					_raw = self._sim.get_rigid_body_position(*args, **kwargs)
+				except Exception:
+					return [0.0, 0.0]
+				return _mirror_normalize_script_pos(_raw, 'rb')
+			def get_collider_position (self, *args, **kwargs):
+				try:
+					_raw = self._sim.get_collider_position(*args, **kwargs)
+				except Exception:
+					return [0.0, 0.0]
+				return _mirror_normalize_script_pos(_raw, 'col')
 		def _eval_env_for_owner(owner, frame = None, scope_key = None):
 			env = {}
 			try:
@@ -10344,6 +10660,17 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				for k, v in runtime_env.items():
 					if k not in env:
 						env[k] = v
+			# Ensure mirror script calls to sim.get_*_position always pass through
+			# script-space normalization regardless of backend wrapper state.
+			_sim_obj = env.get('sim', env.get('physics', None))
+			if _sim_obj is not None:
+				try:
+					if not isinstance(_sim_obj, _MirrorScriptSimProxy):
+						_sim_obj = _MirrorScriptSimProxy(_sim_obj)
+					env['sim'] = _sim_obj
+					env['physics'] = _sim_obj
+				except Exception:
+					pass
 			def _mirror_lookup_handle (_name, *sources):
 				try:
 					key = str(_name)
@@ -10706,6 +11033,42 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					colliders_ids = env.get('collidersIds', {})
 					colliders_named = env.get('colliders', {})
 					this_obj.col = _resolve_script_lookup_exact_from_sources(owner, colliders_ids, colliders_named)
+					if this_obj.col is None and _owner_lookup_key != '':
+						this_obj.col = _resolve_script_lookup_exact_from_sources(_owner_lookup_key, colliders_ids, colliders_named)
+					if this_obj.col is None:
+						this_obj.col = _resolve_script_lookup_from_sources(
+							_owner_lookup_key if _owner_lookup_key != '' else owner,
+							colliders_ids,
+							colliders_named,
+						)
+					if this_obj.col is None:
+						for _obs_map in (env.get('obs', {}), env.get('objects', {})):
+							if not isinstance(_obs_map, dict):
+								continue
+							_entry = _resolve_script_lookup(_obs_map, owner)
+							if isinstance(_entry, dict) and _entry.get('col', None) is not None:
+								this_obj.col = _entry.get('col')
+								break
+					if this_obj.col is None:
+						try:
+							_named_cols = getattr(env.get('sim', None), 'named_colliders', {}) if env.get('sim', None) is not None else {}
+						except Exception:
+							_named_cols = {}
+						this_obj.col = _resolve_script_lookup_from_sources(
+							_owner_lookup_key if _owner_lookup_key != '' else owner,
+							_named_cols,
+						)
+					if this_obj.col is None:
+						try:
+							this_obj.col = getattr(this_obj, 'rb', None)
+						except Exception:
+							this_obj.col = None
+					if this_obj.col is None:
+						try:
+							if isinstance(_owner_lookup_key, str) and _owner_lookup_key != '':
+								this_obj.col = _owner_lookup_key
+						except Exception:
+							pass
 				except Exception:
 					pass
 				owner_attrs_fallback = dict(mirror_owner_attrs_by_owner.get(str(owner), {}))
@@ -11161,6 +11524,24 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					colliders_ids = env.get('collidersIds', {})
 					colliders_named = env.get('colliders', {})
 					this_obj.col = _resolve_script_lookup_exact_from_sources(owner, colliders_ids, colliders_named)
+					if this_obj.col is None:
+						this_obj.col = _resolve_script_lookup_from_sources(owner, colliders_ids, colliders_named)
+					if this_obj.col is None:
+						try:
+							_named_cols = getattr(env.get('sim', None), 'named_colliders', {}) if env.get('sim', None) is not None else {}
+						except Exception:
+							_named_cols = {}
+						this_obj.col = _resolve_script_lookup_from_sources(owner, _named_cols)
+					if this_obj.col is None:
+						try:
+							this_obj.col = getattr(this_obj, 'rb', None)
+						except Exception:
+							this_obj.col = None
+					if this_obj.col is None:
+						try:
+							this_obj.col = str(owner)
+						except Exception:
+							pass
 					owner_attributes = script_info.get('owner_attributes', {})
 					owner_attribute_types = script_info.get('owner_attribute_types', {})
 					if not isinstance(owner_attribute_types, dict):
@@ -11220,6 +11601,70 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 						env['col'] = getattr(this_obj, 'col', None)
 					except Exception:
 						env['col'] = None
+					if env.get('col', None) is None:
+						try:
+							_owner_txt = str(owner)
+						except Exception:
+							_owner_txt = ''
+						_direct_keys = []
+						if _owner_txt != '':
+							_direct_keys = [_owner_txt, '_' + _owner_txt, '__' + _owner_txt, _owner_txt + ':0']
+						for _col_map in (
+							colliders_ids,
+							colliders_named,
+							getattr(env.get('sim', None), 'named_colliders', {}) if env.get('sim', None) is not None else {},
+						):
+							if not isinstance(_col_map, dict):
+								continue
+							for _k in _direct_keys:
+								try:
+									_v = _col_map.get(_k, None)
+								except Exception:
+									_v = None
+								if _v is not None:
+									env['col'] = _v
+									try:
+										setattr(this_obj, 'col', _v)
+									except Exception:
+										try:
+											object.__setattr__(this_obj, 'col', _v)
+										except Exception:
+											pass
+									break
+							if env.get('col', None) is not None:
+								break
+					if env.get('col', None) is None:
+						try:
+							_owner_txt = str(owner)
+						except Exception:
+							_owner_txt = ''
+						if _owner_txt != '':
+							env['col'] = _owner_txt
+							try:
+								setattr(this_obj, 'col', _owner_txt)
+							except Exception:
+								try:
+									object.__setattr__(this_obj, 'col', _owner_txt)
+								except Exception:
+									pass
+					try:
+						_trace_globals = __import__('builtins').globals()
+						_trace_once_key = '_gbc_this_col_assign_trace_once'
+						if not bool(_trace_globals.get(_trace_once_key, False)):
+							_trace_globals[_trace_once_key] = True
+							_append_gbc_trace_lines([
+								'[gbc-trace] ThisColAssign'
+								+ ':tag=run-script'
+								+ ',owner=' + repr(str(owner))
+								+ ',scope=' + repr(str(scope_key))
+								+ ',frame=' + repr(frame)
+								+ ',this.col=' + repr(getattr(this_obj, 'col', None))
+								+ ',env.col=' + repr(env.get('col', None))
+								+ ',this.rb=' + repr(getattr(this_obj, 'rb', None))
+								+ ',env.rb=' + repr(env.get('rb', None)),
+							])
+					except Exception:
+						pass
 					_trace_mirror_this_binding('run-script', owner, scope_key, frame, this_obj, rigid_bodies_ids, rigid_bodies_named)
 				except Exception:
 					pass
@@ -11271,6 +11716,62 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 						return builtins_mod.print(*args, sep = sep, end = end, file = file, flush = flush)
 					except Exception:
 						return None
+				def _norm_print_arg (_v):
+					try:
+						if isinstance(_v, (list, tuple)) and len(_v) >= 2:
+							_x = float(_v[0]); _y = float(_v[1])
+							_norm = _normalize_gbc_script_position([_x, _y])
+							_nx = float(_norm[0]); _ny = float(_norm[1])
+							if (abs(_nx - _x) > 1e-6) or (abs(_ny - _y) > 1e-6):
+								try:
+									_g = __import__('builtins').globals()
+									_count = int(_g.get('_gbc_mirror_runtime_print_norm_trace_count', 0))
+									if _count < 24:
+										_append = _g.get('_append_gbc_trace_lines', None)
+										if callable(_append):
+											_append([
+												'[gbc-trace] MirrorRuntimePrintNormalize:raw=' + str([_x, _y])
+												+ ',norm=' + str([_nx, _ny])
+												+ ',count=' + str(_count + 1),
+											])
+										_g['_gbc_mirror_runtime_print_norm_trace_count'] = _count + 1
+								except Exception:
+									pass
+								return list(_norm)
+					except Exception:
+						pass
+					try:
+						if isinstance(_v, str):
+							_txt = str(_v).strip()
+							_parsed = ast.literal_eval(_txt)
+							if isinstance(_parsed, (list, tuple)) and len(_parsed) >= 2:
+								_x = float(_parsed[0]); _y = float(_parsed[1])
+								_norm = _normalize_gbc_script_position([_x, _y])
+								_nx = float(_norm[0]); _ny = float(_norm[1])
+								if (abs(_nx - _x) > 1e-6) or (abs(_ny - _y) > 1e-6):
+									try:
+										_g = __import__('builtins').globals()
+										_count = int(_g.get('_gbc_mirror_runtime_print_norm_trace_count', 0))
+										if _count < 24:
+											_append = _g.get('_append_gbc_trace_lines', None)
+											if callable(_append):
+												_append([
+													'[gbc-trace] MirrorRuntimePrintNormalize:raw=' + str([_x, _y])
+													+ ',norm=' + str([_nx, _ny])
+													+ ',kind=str'
+													+ ',count=' + str(_count + 1),
+												])
+											_g['_gbc_mirror_runtime_print_norm_trace_count'] = _count + 1
+									except Exception:
+										pass
+									return str(list(_norm))
+					except Exception:
+						pass
+					return _v
+				try:
+					args = tuple(_norm_print_arg(_a) for _a in list(args or []))
+				except Exception:
+					pass
 				try:
 					text = sep.join([str(a) for a in list(args or [])]) + str(end)
 				except Exception:
@@ -11289,6 +11790,522 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			env['_js13k_print'] = _mirror_runtime_print
 			env['print'] = _mirror_runtime_print
 			def _js13k_call_print (*args, sep = ' ', end = '\n', file = None, flush = False):
+				def _norm_call_print_arg (_v):
+					try:
+						if isinstance(_v, (list, tuple)) and len(_v) >= 2:
+							_x = float(_v[0]); _y = float(_v[1])
+							_bias = 32768.0
+							_half = _bias * 0.5
+							_nx = _x
+							_ny = _y
+							if _nx < -_half:
+								_nx = _nx + _bias
+							elif _nx > _half:
+								_nx = _nx - _bias
+							if _ny < -_half:
+								_ny = -(_ny + _bias)
+							elif _ny > _half:
+								_ny = -(_ny - _bias)
+							# If physics lookup returns the bias-origin sentinel,
+							# prefer live owner/world pose for printed script values.
+							if abs(_x + _bias) <= 1e-6 and abs(_y + _bias) <= 1e-6:
+								_live_dynamic = None
+								_rb_try = None
+								try:
+									try:
+										_rb_try = getattr(env.get('this', None), 'rb', None)
+									except Exception:
+										_rb_try = None
+									try:
+										if isinstance(_rb_try, (tuple, list)) and len(_rb_try) == 2:
+											if (abs(float(_rb_try[0])) <= 1e-6) and (abs(float(_rb_try[1])) <= 1e-6):
+												_rb_try = str(owner)
+									except Exception:
+										pass
+									if _rb_try is None:
+										_rb_try = env.get('rb', None)
+									if _rb_try is None:
+										_rb_try = _resolve_script_lookup_from_sources(
+											owner,
+											env.get('rigidBodiesIds', {}),
+											env.get('rigidBodies', {}),
+											__import__('builtins').globals().get('rigidBodiesIds', {}),
+											__import__('builtins').globals().get('rigidBodies', {}),
+										)
+									if _rb_try is None:
+										for _rb_map in (
+											env.get('rigidBodiesIds', {}),
+											env.get('rigidBodies', {}),
+											__import__('builtins').globals().get('rigidBodiesIds', {}),
+											__import__('builtins').globals().get('rigidBodies', {}),
+										):
+											if not isinstance(_rb_map, dict):
+												continue
+											for _cand_h in list(_rb_map.values()):
+												if _cand_h is None:
+													continue
+												_rb_try = _cand_h
+												break
+											if _rb_try is not None:
+												break
+									def _norm_pos_candidate (_p):
+										try:
+											if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+												_px = float(_p[0]); _py = float(_p[1])
+												_n = _normalize_gbc_script_position([_px, _py])
+												_nx = float(_n[0]); _ny = float(_n[1])
+												if abs(_nx + _bias) <= 1e-6 and abs(_ny + _bias) <= 1e-6:
+													return None
+												if (abs(_nx) + abs(_ny)) > 1e-6:
+													return [_nx, _ny]
+										except Exception:
+											pass
+										return None
+									for _sim_cand in (
+										env.get('sim', None),
+										getattr(env.get('sim', None), '_raw', None),
+										__import__('builtins').globals().get('sim', None),
+										getattr(__import__('builtins').globals().get('sim', None), '_raw', None),
+									):
+										if _sim_cand is None or _rb_try is None:
+											continue
+										try:
+											_pos_try = _sim_cand.get_rigid_body_position(_rb_try)
+										except Exception:
+											_pos_try = None
+										_live_dynamic = _norm_pos_candidate(_pos_try)
+										if isinstance(_live_dynamic, list):
+											break
+									if not isinstance(_live_dynamic, list):
+										try:
+											_fn_obs = __import__('builtins').globals().get('_runtime_obs_position_from_sources', None)
+											if callable(_fn_obs):
+												_pos_try = _fn_obs(
+													owner,
+													env.get('objects', {}),
+													env.get('obs', {}),
+													__import__('builtins').globals().get('objects', {}),
+													__import__('builtins').globals().get('obs', {}),
+												)
+												_live_dynamic = _norm_pos_candidate(_pos_try)
+										except Exception:
+											pass
+								except Exception:
+									_live_dynamic = None
+								if isinstance(_live_dynamic, list):
+									try:
+										_g = __import__('builtins').globals()
+										_count = int(_g.get('_gbc_js13k_call_print_owner_dynamic_trace_count', 0))
+										if _count < 24:
+											_append = _g.get('_append_gbc_trace_lines', None)
+											if callable(_append):
+												_append([
+													'[gbc-trace] Js13kCallPrintOwnerDynamic'
+													+ ':owner=' + repr(str(owner))
+													+ ',raw=' + str([_x, _y])
+													+ ',dyn=' + str([float(_live_dynamic[0]), float(_live_dynamic[1])])
+													+ ',count=' + str(_count + 1),
+												])
+											_g['_gbc_js13k_call_print_owner_dynamic_trace_count'] = _count + 1
+									except Exception:
+										pass
+									return [float(_live_dynamic[0]), float(_live_dynamic[1])]
+								# Last-resort dynamic estimate: integrate owner position
+								# from runtime linear velocity across frames.
+								try:
+									_g = __import__('builtins').globals()
+									_pose_state = _g.get('_gbc_js13k_call_print_pose_state', None)
+									if not isinstance(_pose_state, dict):
+										_pose_state = {}
+										_g['_gbc_js13k_call_print_pose_state'] = _pose_state
+									_state = _pose_state.get(str(owner), None)
+									if not isinstance(_state, dict):
+										_state = {}
+									_pos_state = _state.get('pos', None)
+									if not (isinstance(_pos_state, (list, tuple)) and len(_pos_state) >= 2):
+										_pos_state = None
+									_frame_prev = int(_state.get('frame', -1))
+									try:
+										_frame_now = int(frame if frame is not None else _frame_prev + 1)
+									except Exception:
+										_frame_now = _frame_prev + 1
+									_vel = None
+									_vel_src = 'none'
+									for _sim_cand in (
+										env.get('sim', None),
+										getattr(env.get('sim', None), '_raw', None),
+										_g.get('sim', None),
+										getattr(_g.get('sim', None), '_raw', None),
+									):
+										if _sim_cand is None or _rb_try is None:
+											continue
+										try:
+											_v_try = _sim_cand.get_linear_velocity(_rb_try)
+											if isinstance(_v_try, (list, tuple)) and len(_v_try) >= 2:
+												_vel = [float(_v_try[0]), float(_v_try[1])]
+												_vel_src = 'sim'
+												break
+										except Exception:
+											continue
+									if _pos_state is None:
+										try:
+											_seed = _js13k_call_get_object_position(owner)
+										except Exception:
+											_seed = None
+										if isinstance(_seed, (list, tuple)) and len(_seed) >= 2:
+											_pos_state = [float(_seed[0]), float(_seed[1])]
+											_frame_prev = _frame_now
+									try:
+										_v_env = env.get('vel', None)
+										if isinstance(_v_env, (list, tuple)) and len(_v_env) >= 2:
+											_vel = [float(_v_env[0]), float(_v_env[1])]
+											_vel_src = 'env.vel'
+									except Exception:
+										pass
+									if isinstance(_pos_state, list) and len(_pos_state) >= 2 and isinstance(_vel, list):
+										_df = max(1, int(_frame_now - _frame_prev))
+										_dt = float(_df) * (1.0 / 60.0)
+										_pos_state = [
+											float(_pos_state[0]) + float(_vel[0]) * _dt,
+											float(_pos_state[1]) + float(_vel[1]) * _dt,
+										]
+										_state['pos'] = [float(_pos_state[0]), float(_pos_state[1])]
+										_state['frame'] = int(_frame_now)
+										_pose_state[str(owner)] = _state
+										_count = int(_g.get('_gbc_js13k_call_print_owner_integrated_trace_count', 0))
+										if _count < 24:
+											_append = _g.get('_append_gbc_trace_lines', None)
+											if callable(_append):
+												_append([
+													'[gbc-trace] Js13kCallPrintOwnerIntegrated'
+													+ ':owner=' + repr(str(owner))
+													+ ',raw=' + str([_x, _y])
+													+ ',vel=' + str([float(_vel[0]), float(_vel[1])])
+													+ ',vel_src=' + str(_vel_src)
+													+ ',pos=' + str([float(_pos_state[0]), float(_pos_state[1])])
+													+ ',frame=' + str(int(_frame_now))
+													+ ',count=' + str(_count + 1),
+												])
+											_g['_gbc_js13k_call_print_owner_integrated_trace_count'] = _count + 1
+										return [float(_pos_state[0]), float(_pos_state[1])]
+								except Exception:
+									pass
+								try:
+									_live = _js13k_call_get_object_position(owner)
+								except Exception:
+									_live = None
+								try:
+									if isinstance(_live, (list, tuple)) and len(_live) >= 2:
+										_lx = float(_live[0]); _ly = float(_live[1])
+										if (abs(_lx) + abs(_ly)) > 1e-6:
+											try:
+												_g = __import__('builtins').globals()
+												_count = int(_g.get('_gbc_js13k_call_print_owner_fallback_trace_count', 0))
+												if _count < 24:
+													_append = _g.get('_append_gbc_trace_lines', None)
+													if callable(_append):
+														_append([
+															'[gbc-trace] Js13kCallPrintOwnerFallback'
+															+ ':owner=' + repr(str(owner))
+															+ ',raw=' + str([_x, _y])
+															+ ',live=' + str([_lx, _ly])
+															+ ',count=' + str(_count + 1),
+														])
+													_g['_gbc_js13k_call_print_owner_fallback_trace_count'] = _count + 1
+											except Exception:
+												pass
+											return [_lx, _ly]
+								except Exception:
+									pass
+							if (abs(_nx - _x) > 1e-6) or (abs(_ny - _y) > 1e-6):
+								try:
+									_g = __import__('builtins').globals()
+									_count = int(_g.get('_gbc_js13k_call_print_norm_trace_count', 0))
+									if _count < 24:
+										_append = _g.get('_append_gbc_trace_lines', None)
+										if callable(_append):
+											_append([
+												'[gbc-trace] Js13kCallPrintNormalize:raw=' + str([_x, _y])
+												+ ',norm=' + str([_nx, _ny])
+												+ ',count=' + str(_count + 1),
+											])
+										_g['_gbc_js13k_call_print_norm_trace_count'] = _count + 1
+								except Exception:
+									pass
+								return [float(_nx), float(_ny)]
+					except Exception as _norm_err:
+						try:
+							_g = __import__('builtins').globals()
+							_count = int(_g.get('_gbc_js13k_call_print_norm_fail_trace_count', 0))
+							if _count < 12:
+								_append = _g.get('_append_gbc_trace_lines', None)
+								if callable(_append):
+									_append([
+										'[gbc-trace] Js13kCallPrintNormalizeFail'
+										+ ':value=' + repr(_v)
+										+ ',err=' + repr(str(_norm_err))
+										+ ',count=' + str(_count + 1),
+									])
+								_g['_gbc_js13k_call_print_norm_fail_trace_count'] = _count + 1
+						except Exception:
+							pass
+					return _v
+				try:
+					args = tuple(_norm_call_print_arg(_a) for _a in list(args or []))
+				except Exception:
+					pass
+				try:
+					def _is_zero_pair (_v):
+						try:
+							return (
+								isinstance(_v, list)
+								and len(_v) >= 2
+								and abs(float(_v[0])) <= 1e-6
+								and abs(float(_v[1])) <= 1e-6
+							)
+						except Exception:
+							return False
+					def _live_owner_pos (_rb_hint = None):
+						_rb_cands = []
+						if _rb_hint is not None:
+							_rb_cands.append(_rb_hint)
+						try:
+							_rb_cands.append(getattr(env.get('this', None), 'rb', None))
+						except Exception:
+							pass
+						try:
+							_rb_cands.append(env.get('rb', None))
+						except Exception:
+							pass
+						_rb_cands.extend([(0, 0), [0, 0], str(owner)])
+						_seen_rb = set()
+						for _sim_cand in (
+							env.get('sim', None),
+							getattr(env.get('sim', None), '_raw', None),
+						):
+							if _sim_cand is None or not callable(getattr(_sim_cand, 'get_rigid_body_position', None)):
+								continue
+							for _rb_try in list(_rb_cands):
+								try:
+									_rb_key = repr(_rb_try)
+								except Exception:
+									_rb_key = str(type(_rb_try))
+								if _rb_key in _seen_rb:
+									continue
+								_seen_rb.add(_rb_key)
+								try:
+									_p = _sim_cand.get_rigid_body_position(_rb_try)
+									if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+										_n = _normalize_gbc_script_position([float(_p[0]), float(_p[1])])
+										_nx = float(_n[0]); _ny = float(_n[1])
+										if (abs(_nx) + abs(_ny)) > 1e-6:
+											return [_nx, _ny]
+								except Exception:
+									continue
+						for _sim_cand in (
+							env.get('sim', None),
+							getattr(env.get('sim', None), '_raw', None),
+						):
+							try:
+								_xg = getattr(_sim_cand, 'x', None)
+								_yg = getattr(_sim_cand, 'y', None)
+								if _xg is None or _yg is None:
+									continue
+								_xf = float(_xg)
+								_yf = float(_yg)
+								_bias = float(globals().get('_GBC_POSITION_BIAS', 32768.0))
+								_xs = float(_xf - _bias)
+								_ys = -float(_yf - _bias)
+								if (abs(_xs) + abs(_ys)) > 1e-6:
+									return [_xs, _ys]
+							except Exception:
+								continue
+						return None
+					_args_list = list(args or [])
+					_target_idx = []
+					if len(_args_list) >= 3:
+						try:
+							_rb0 = _args_list[0]
+							_ground1 = _args_list[1]
+							if isinstance(_rb0, (list, tuple)) and len(_rb0) >= 2 and (_ground1 is None):
+								_target_idx.append(2)
+						except Exception:
+							pass
+					if _target_idx == [] and len(_args_list) >= 1:
+						_target_idx.append(0)
+					for _idx in _target_idx:
+						if _idx < 0 or _idx >= len(_args_list):
+							continue
+						if not _is_zero_pair(_args_list[_idx]):
+							continue
+						_rb_hint = None
+						try:
+							if len(_args_list) >= 1:
+								_rb_hint = _args_list[0]
+						except Exception:
+							_rb_hint = None
+						try:
+							_g = __import__('builtins').globals()
+							_cache = _g.get('_gbc_last_phase1_rb_pos', None)
+							if isinstance(_cache, dict):
+								for _k in (
+									repr(_rb_hint),
+									repr(str(owner)),
+									repr((0, 0)),
+									'__last__',
+								):
+									_cp = _cache.get(_k, None)
+									if isinstance(_cp, (list, tuple)) and len(_cp) >= 2:
+										_cx = float(_cp[0]); _cy = float(_cp[1])
+										if (abs(_cx) + abs(_cy)) > 1e-6:
+											_args_list[_idx] = [_cx, _cy]
+											break
+						except Exception:
+							pass
+						if not _is_zero_pair(_args_list[_idx]):
+							continue
+						try:
+							def _nz_norm (_p):
+								try:
+									if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+										_n = _normalize_gbc_script_position([float(_p[0]), float(_p[1])])
+										_nx = float(_n[0]); _ny = float(_n[1])
+										if (abs(_nx) + abs(_ny)) > 1e-6:
+											return [_nx, _ny]
+								except Exception:
+									pass
+								return None
+							_live_direct = None
+							for _sim_cand in (
+								env.get('sim', None),
+								getattr(env.get('sim', None), '_raw', None),
+							):
+								if _sim_cand is None or not callable(getattr(_sim_cand, 'get_rigid_body_position', None)):
+									continue
+								for _rb_try in (_rb_hint, str(owner), (0, 0)):
+									try:
+										_p = _sim_cand.get_rigid_body_position(_rb_try)
+									except Exception:
+										_p = None
+									_live_direct = _nz_norm(_p)
+									if isinstance(_live_direct, list):
+										break
+								if isinstance(_live_direct, list):
+									break
+							if isinstance(_live_direct, list):
+								_args_list[_idx] = [float(_live_direct[0]), float(_live_direct[1])]
+								try:
+									_g = __import__('builtins').globals()
+									_append = _g.get('_append_gbc_trace_lines', None)
+									if callable(_append):
+										_append([
+											'[gbc-trace] Js13kCallPrintDirectPosRepair'
+											+ ':owner=' + repr(str(owner))
+											+ ',idx=' + str(int(_idx))
+											+ ',live=' + repr(_args_list[_idx]),
+										])
+								except Exception:
+									pass
+								continue
+						except Exception:
+							pass
+						_live = _live_owner_pos(_rb_hint)
+						if isinstance(_live, list):
+							_args_list[_idx] = [float(_live[0]), float(_live[1])]
+							try:
+								_g = __import__('builtins').globals()
+								_append = _g.get('_append_gbc_trace_lines', None)
+								if callable(_append):
+									_append([
+										'[gbc-trace] Js13kCallPrintZeroPosRepair'
+										+ ':owner=' + repr(str(owner))
+										+ ',idx=' + str(int(_idx))
+										+ ',live=' + repr(_args_list[_idx]),
+									])
+							except Exception:
+								pass
+					args = tuple(_args_list)
+				except Exception:
+					pass
+				try:
+					_g = __import__('builtins').globals()
+					try:
+						_this_obj = env.get('this', None)
+					except Exception:
+						_this_obj = None
+					try:
+						_env_col = env.get('col', None)
+					except Exception:
+						_env_col = None
+					if _env_col is None:
+						_fallback_col = None
+						try:
+							if _this_obj is not None:
+								_fallback_col = getattr(_this_obj, 'col', None)
+						except Exception:
+							_fallback_col = None
+						if _fallback_col is None:
+							try:
+								_fallback_col = getattr(_this_obj, 'rb', None) if _this_obj is not None else None
+							except Exception:
+								_fallback_col = None
+						if _fallback_col is None:
+							_fallback_col = env.get('rb', None)
+						if _fallback_col is None:
+							try:
+								_fallback_col = str(owner)
+							except Exception:
+								_fallback_col = None
+						if _fallback_col is not None:
+							env['col'] = _fallback_col
+							if _this_obj is not None:
+								try:
+									setattr(_this_obj, 'col', _fallback_col)
+								except Exception:
+									try:
+										object.__setattr__(_this_obj, 'col', _fallback_col)
+									except Exception:
+										pass
+					_once_key = '_gbc_this_col_assign_trace_dispatch_once'
+					if not bool(_g.get(_once_key, False)):
+						_g[_once_key] = True
+						_append = _g.get('_append_gbc_trace_lines', None)
+						if callable(_append):
+							try:
+								_this_obj = env.get('this', None)
+							except Exception:
+								_this_obj = None
+							try:
+								_this_col = getattr(_this_obj, 'col', None) if _this_obj is not None else None
+							except Exception:
+								_this_col = None
+							try:
+								_this_rb = getattr(_this_obj, 'rb', None) if _this_obj is not None else None
+							except Exception:
+								_this_rb = None
+							_append([
+								'[gbc-trace] ThisColAssign'
+								+ ':tag=dispatch'
+								+ ',owner=' + repr(str(owner))
+								+ ',frame=' + repr(frame)
+								+ ',this.col=' + repr(_this_col)
+								+ ',env.col=' + repr(env.get('col', None))
+								+ ',this.rb=' + repr(_this_rb)
+								+ ',env.rb=' + repr(env.get('rb', None))
+								+ ',args=' + repr(list(args or [])),
+							])
+					_call_count = int(_g.get('_gbc_js13k_call_print_trace_count', 0))
+					if _call_count < 24:
+						_append = _g.get('_append_gbc_trace_lines', None)
+						if callable(_append):
+							_append([
+								'[gbc-trace] Js13kCallPrintDispatch'
+								+ ':count=' + str(_call_count + 1)
+								+ ',args=' + repr(list(args or []))
+							])
+						_g['_gbc_js13k_call_print_trace_count'] = _call_count + 1
+				except Exception:
+					pass
 				for _fn in (env.get('_js13k_print', None), env.get('print', None), builtins_mod.print):
 					if callable(_fn):
 						try:
@@ -13031,40 +14048,89 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
 		frac_done_addr = len(code)
 		patch_jr(jr_frac_done, frac_done_addr)
+	def _emit_hw_scroll_from_i16_clamped (_scroll_addr, _scroll_hi_addr, _hw_reg):
+		# Hardware SCX/SCY are 8-bit, so writing raw low byte causes 256px wrap.
+		# Clamp signed scroll to [-128, 127] before negating for SCX/SCY.
+		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)  # ld a,(scroll hi)
+		emit(0xFE, 0x00)  # cp 0
+		jr_hi_zero = jr(0x28)  # jr z, hi_zero
+		emit(0xFE, 0xFF)  # cp $FF
+		jr_hi_ff = jr(0x28)  # jr z, hi_ff
+		emit(0xCB, 0x7F)  # bit 7,a
+		jr_sat_neg = jr(0x20)  # jr nz, sat_neg
+		ld_a_imm(0x81)  # -(+127) => 129
+		ldh_imm_a(_hw_reg)
+		jr_done_pos_sat = jr(0x18)  # jr done
+		sat_neg_addr = len(code)
+		patch_jr(jr_sat_neg, sat_neg_addr)
+		ld_a_imm(0x80)  # -(-128) => 128
+		ldh_imm_a(_hw_reg)
+		jr_done_neg_sat = jr(0x18)  # jr done
+		hi_zero_addr = len(code)
+		patch_jr(jr_hi_zero, hi_zero_addr)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
+		emit(0xFE, 0x80)  # cp 128
+		jr_hi_zero_in_range = jr(0x38)  # jr c, in_range
+		ld_a_imm(0x81)  # +overflow => clamp +127
+		ldh_imm_a(_hw_reg)
+		jr_done_hi_zero_sat = jr(0x18)  # jr done
+		hi_zero_in_range_addr = len(code)
+		patch_jr(jr_hi_zero_in_range, hi_zero_in_range_addr)
+		emit(0x2F)  # cpl
+		emit(0x3C)  # inc a
+		ldh_imm_a(_hw_reg)
+		jr_done_hi_zero_ok = jr(0x18)  # jr done
+		hi_ff_addr = len(code)
+		patch_jr(jr_hi_ff, hi_ff_addr)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
+		emit(0xFE, 0x80)  # cp 128
+		jr_hi_ff_in_range = jr(0x30)  # jr nc, in_range
+		ld_a_imm(0x80)  # -overflow => clamp -128
+		ldh_imm_a(_hw_reg)
+		jr_done_hi_ff_sat = jr(0x18)  # jr done
+		hi_ff_in_range_addr = len(code)
+		patch_jr(jr_hi_ff_in_range, hi_ff_in_range_addr)
+		emit(0x2F)  # cpl
+		emit(0x3C)  # inc a
+		ldh_imm_a(_hw_reg)
+		done_addr = len(code)
+		patch_jr(jr_done_pos_sat, done_addr)
+		patch_jr(jr_done_neg_sat, done_addr)
+		patch_jr(jr_done_hi_zero_sat, done_addr)
+		patch_jr(jr_done_hi_zero_ok, done_addr)
+		patch_jr(jr_done_hi_ff_sat, done_addr)
 	# Runtime display scroll: either scripted scroll profile or follow-camera mode.
 	if camera_follow_mode:
-		# scroll_x = center_x - x
-		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)
-		emit(0x2F)  # cpl
-		emit(0x3C)  # inc a
-		emit(0xC6, int(camera_follow_center_x) & 0xFF)
+		# scroll_x = center_x - x (full 16-bit; avoids 255px wrap)
+		emit(0xFA, x_addr & 0xFF, (x_addr >> 8) & 0xFF)  # ld a,(x lo)
+		emit(0x47)  # ld b,a
+		emit(0x3E, int(camera_follow_center_x) & 0xFF)  # ld a,center lo
+		emit(0x90)  # sub b
 		emit(0xEA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
-		# scroll_y = center_y - y
-		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)
-		emit(0x2F)  # cpl
-		emit(0x3C)  # inc a
-		emit(0xC6, int(camera_follow_center_y) & 0xFF)
+		emit(0xFA, x_hi_addr & 0xFF, (x_hi_addr >> 8) & 0xFF)  # ld a,(x hi)
+		emit(0x47)  # ld b,a
+		emit(0x3E, (int(camera_follow_center_x) >> 8) & 0xFF)  # ld a,center hi
+		emit(0x98)  # sbc a,b
+		emit(0xEA, scroll_x_hi_addr & 0xFF, (scroll_x_hi_addr >> 8) & 0xFF)
+		# scroll_y = center_y - y (full 16-bit)
+		emit(0xFA, y_addr & 0xFF, (y_addr >> 8) & 0xFF)  # ld a,(y lo)
+		emit(0x47)  # ld b,a
+		emit(0x3E, int(camera_follow_center_y) & 0xFF)  # ld a,center lo
+		emit(0x90)  # sub b
 		emit(0xEA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
+		emit(0xFA, y_hi_addr & 0xFF, (y_hi_addr >> 8) & 0xFF)  # ld a,(y hi)
+		emit(0x47)  # ld b,a
+		emit(0x3E, (int(camera_follow_center_y) >> 8) & 0xFF)  # ld a,center hi
+		emit(0x98)  # sbc a,b
+		emit(0xEA, scroll_y_hi_addr & 0xFF, (scroll_y_hi_addr >> 8) & 0xFF)
 	else:
 		_emit_scroll_axis_step(scroll_x_addr, scroll_x_hi_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
-		emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
-		emit(0x2F)  # cpl
-		emit(0x3C)  # inc a
-		ldh_imm_a(0x43)  # SCX = -scroll_x
+		_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -clamped(scroll_x)
 		_emit_scroll_axis_step(scroll_y_addr, scroll_y_hi_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
-		emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
-		emit(0x2F)  # cpl
-		emit(0x3C)  # inc a
-		ldh_imm_a(0x42)  # SCY = -scroll_y
+		_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)  # SCY = -clamped(scroll_y)
 	# Program hardware scroll registers from current scroll vars.
-	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
-	emit(0x2F)  # cpl
-	emit(0x3C)  # inc a
-	ldh_imm_a(0x43)  # SCX = -scroll_x
-	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
-	emit(0x2F)  # cpl
-	emit(0x3C)  # inc a
-	ldh_imm_a(0x42)  # SCY = -scroll_y
+	_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -clamped(scroll_x)
+	_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)  # SCY = -clamped(scroll_y)
 	# Integrate gravity to velocity with a 1/60 accumulator every frame.
 	# Apply multiple velocity steps when |gravity| exceeds denominator.
 	emit_gravity_axis_step(gacc_x_addr, vx_addr, grav_step_x)
@@ -13811,17 +14877,61 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
 		frac_done_addr = len(code)
 		patch_jr(jr_frac_done, frac_done_addr)
+	def _emit_hw_scroll_from_i16_clamped (_scroll_addr, _scroll_hi_addr, _hw_reg):
+		# SCX/SCY are byte registers; clamp signed scroll to avoid 256px wrap.
+		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)  # ld a,(scroll hi)
+		emit(0xFE, 0x00)  # cp 0
+		jr_hi_zero = jr(0x28)  # jr z, hi_zero
+		emit(0xFE, 0xFF)  # cp $FF
+		jr_hi_ff = jr(0x28)  # jr z, hi_ff
+		emit(0xCB, 0x7F)  # bit 7,a
+		jr_sat_neg = jr(0x20)  # jr nz, sat_neg
+		ld_a_imm(0x81)  # -(+127) => 129
+		ldh_imm_a(_hw_reg)
+		jr_done_pos_sat = jr(0x18)
+		sat_neg_addr = len(code)
+		patch_jr(jr_sat_neg, sat_neg_addr)
+		ld_a_imm(0x80)  # -(-128) => 128
+		ldh_imm_a(_hw_reg)
+		jr_done_neg_sat = jr(0x18)
+		hi_zero_addr = len(code)
+		patch_jr(jr_hi_zero, hi_zero_addr)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
+		emit(0xFE, 0x80)  # cp 128
+		jr_hi_zero_in_range = jr(0x38)  # jr c, in_range
+		ld_a_imm(0x81)
+		ldh_imm_a(_hw_reg)
+		jr_done_hi_zero_sat = jr(0x18)
+		hi_zero_in_range_addr = len(code)
+		patch_jr(jr_hi_zero_in_range, hi_zero_in_range_addr)
+		emit(0x2F)  # cpl
+		emit(0x3C)  # inc a
+		ldh_imm_a(_hw_reg)
+		jr_done_hi_zero_ok = jr(0x18)
+		hi_ff_addr = len(code)
+		patch_jr(jr_hi_ff, hi_ff_addr)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
+		emit(0xFE, 0x80)  # cp 128
+		jr_hi_ff_in_range = jr(0x30)  # jr nc, in_range
+		ld_a_imm(0x80)
+		ldh_imm_a(_hw_reg)
+		jr_done_hi_ff_sat = jr(0x18)
+		hi_ff_in_range_addr = len(code)
+		patch_jr(jr_hi_ff_in_range, hi_ff_in_range_addr)
+		emit(0x2F)  # cpl
+		emit(0x3C)  # inc a
+		ldh_imm_a(_hw_reg)
+		done_addr = len(code)
+		patch_jr(jr_done_pos_sat, done_addr)
+		patch_jr(jr_done_neg_sat, done_addr)
+		patch_jr(jr_done_hi_zero_sat, done_addr)
+		patch_jr(jr_done_hi_zero_ok, done_addr)
+		patch_jr(jr_done_hi_ff_sat, done_addr)
 	# Runtime display scroll shared across all bodies.
 	_emit_scroll_axis_step(scroll_x_addr, scroll_x_hi_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
-	emit(0xFA, scroll_x_addr & 0xFF, (scroll_x_addr >> 8) & 0xFF)
-	emit(0x2F)  # cpl
-	emit(0x3C)  # inc a
-	ldh_imm_a(0x43)  # SCX = -scroll_x
+	_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -clamped(scroll_x)
 	_emit_scroll_axis_step(scroll_y_addr, scroll_y_hi_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
-	emit(0xFA, scroll_y_addr & 0xFF, (scroll_y_addr >> 8) & 0xFF)
-	emit(0x2F)  # cpl
-	emit(0x3C)  # inc a
-	ldh_imm_a(0x42)  # SCY = -scroll_y
+	_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)  # SCY = -clamped(scroll_y)
 	for body_idx, body in enumerate(bodies):
 		base = 0xC100 + body_idx * 8
 		y_addr = base + 0
@@ -15437,10 +16547,115 @@ class _GbcPhase1MirrorSim:
 	def get_rigid_body_position (self, _rigidBody):
 		if not self._is_primary_rigidbody(_rigidBody):
 			return [0.0, 0.0]
-		return [
+		# Prefer live runtime object pose when available so printed/scripted
+		# position reads track the emulated object even if phase1 mirror
+		# collision prediction temporarily diverges (for example around camera
+		# follow + ground-cast edge cases).
+		try:
+			_g = __import__('builtins').globals()
+			_get_pos = _g.get('get_object_position', None)
+			if callable(_get_pos):
+				def _nonzero_or_none (_p):
+					try:
+						if isinstance(_p, (list, tuple)) and len(_p) >= 2:
+							_px = float(_p[0]); _py = float(_p[1])
+							if (abs(_px) + abs(_py)) > 1e-6:
+								return [_px, _py]
+					except Exception:
+						pass
+					return None
+				_candidates = []
+				try:
+					rb_key = str(_rigidBody)
+				except Exception:
+					rb_key = ''
+				try:
+					_rb_ids = _g.get('rigidBodiesIds', {})
+				except Exception:
+					_rb_ids = {}
+				if isinstance(_rb_ids, dict) and rb_key != '':
+					for _owner_key, _owner_handle in list(_rb_ids.items()):
+						try:
+							if str(_owner_handle) == rb_key:
+								_candidates.append(str(_owner_key))
+						except Exception:
+							pass
+				for _k in list(self.primary_rigidbody_keys or []):
+					try:
+						_txt = str(_k)
+					except Exception:
+						continue
+					if _txt == '' or _txt.startswith('_') or ':' in _txt:
+						continue
+					_candidates.append(_txt)
+				_seen = set()
+				for _name in _candidates:
+					if not isinstance(_name, str) or _name == '' or _name in _seen:
+						continue
+					_seen.add(_name)
+					try:
+						_p = _get_pos(_name)
+						_nz = _nonzero_or_none(_p)
+						if _nz is not None:
+							try:
+								_append = _g.get('_append_gbc_trace_lines', None)
+								if callable(_append):
+									_append([
+										'[gbc-trace] Phase1GetRbPos:src=live'
+										+ ',name=' + repr(_name)
+										+ ',rb=' + repr(_rigidBody)
+										+ ',out=' + repr(_nz),
+									])
+							except Exception:
+								pass
+						try:
+							_cache = _g.get('_gbc_last_phase1_rb_pos', None)
+							if not isinstance(_cache, dict):
+								_cache = {}
+							_cache[repr(_rigidBody)] = [float(_nz[0]), float(_nz[1])]
+							_cache[repr(str(_name))] = [float(_nz[0]), float(_nz[1])]
+							_cache['__last__'] = [float(_nz[0]), float(_nz[1])]
+							_g['_gbc_last_phase1_rb_pos'] = _cache
+						except Exception:
+							pass
+							return _nz
+					except Exception:
+						pass
+		except Exception:
+			pass
+		_fallback = [
 			float(self.x - _GBC_POSITION_BIAS) + float(self.script_world_offset_x),
 			-float(self.y - _GBC_POSITION_BIAS) + float(self.script_world_offset_y),
 		]
+		try:
+			_g = __import__('builtins').globals()
+			_append = _g.get('_append_gbc_trace_lines', None)
+			if callable(_append):
+				_append([
+					'[gbc-trace] Phase1GetRbPos:src=fallback'
+					+ ',rb=' + repr(_rigidBody)
+					+ ',xy=' + repr([self.x, self.y])
+					+ ',off=' + repr([self.script_world_offset_x, self.script_world_offset_y])
+					+ ',out=' + repr(_fallback),
+				])
+		except Exception:
+			pass
+		try:
+			_g = __import__('builtins').globals()
+			_cache = _g.get('_gbc_last_phase1_rb_pos', None)
+			if not isinstance(_cache, dict):
+				_cache = {}
+			_cache[repr(_rigidBody)] = [float(_fallback[0]), float(_fallback[1])]
+			for _k in list(self.primary_rigidbody_keys or []):
+				try:
+					_cache[repr(str(_k))] = [float(_fallback[0]), float(_fallback[1])]
+				except Exception:
+					continue
+			_cache['__last__'] = [float(_fallback[0]), float(_fallback[1])]
+			_g['_gbc_last_phase1_rb_pos'] = _cache
+		except Exception:
+			pass
+		return _fallback
 	def set_collider_position (self, _collider, pos, wakeUp = True):
 		try:
 			key = str(_collider)
@@ -16242,9 +17457,10 @@ def _gbc_transpile_phase1_motion (world, sprite_ob):
 	# Preserve old ordering semantics: update scripts are preferred for movement,
 	# then init scripts are used as fallback.
 	for code, allow_this_id, owner_name, symbol_constants in (update_codes + init_codes):
+		code_for_motion = _strip_set_camera_position_calls_for_motion_transpile(code)
 		try:
 			result = _gbc_transpiler_compile_velocity_script(
-				code,
+				code_for_motion,
 				target_keys = sorted(target_keys),
 				allow_this_id = bool(allow_this_id),
 				script_name = str(owner_name or '<script>'),
@@ -17694,6 +18910,47 @@ def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions
 				sim.set_collider_position = _wrap_set_pos(sim.set_collider_position)
 			except Exception:
 				pass
+	def _wrap_script_pos_normalize (_fn):
+		def _wrapped (*args, **kwargs):
+			try:
+				_raw = _fn(*args, **kwargs)
+				_norm = _normalize_gbc_script_position(_raw)
+				try:
+					_raw_x = float(_raw[0]); _raw_y = float(_raw[1])
+					_norm_x = float(_norm[0]); _norm_y = float(_norm[1])
+				except Exception:
+					return _norm
+				if (abs(_raw_x - _norm_x) > 1e-6) or (abs(_raw_y - _norm_y) > 1e-6):
+					try:
+						_g = __import__('builtins').globals()
+						_count = int(_g.get('_gbc_runtime_pos_norm_trace_count', 0))
+						if _count < 24:
+							_append = _g.get('_append_gbc_trace_lines', None)
+							if callable(_append):
+								_append([
+									'[gbc-trace] RuntimeGetPosNormalize:raw=' + str([_raw_x, _raw_y])
+									+ ',norm=' + str([_norm_x, _norm_y])
+									+ ',count=' + str(_count + 1),
+								])
+							_g['_gbc_runtime_pos_norm_trace_count'] = _count + 1
+					except Exception:
+						pass
+				return _norm
+			except Exception:
+				return [0.0, 0.0]
+		return _wrapped
+	if hasattr(sim, 'get_rigid_body_position') and not bool(getattr(sim, '_gbc_script_pos_norm_rb_wrapped', False)):
+		try:
+			sim.get_rigid_body_position = _wrap_script_pos_normalize(sim.get_rigid_body_position)
+			sim._gbc_script_pos_norm_rb_wrapped = True
+		except Exception:
+			pass
+	if hasattr(sim, 'get_collider_position') and not bool(getattr(sim, '_gbc_script_pos_norm_col_wrapped', False)):
+		try:
+			sim.get_collider_position = _wrap_script_pos_normalize(sim.get_collider_position)
+			sim._gbc_script_pos_norm_col_wrapped = True
+		except Exception:
+			pass
 	return {
 		'objects' : {},
 		'sim' : sim,
@@ -19737,9 +20994,12 @@ def BuildGbc (world):
 				x = float(override.get('x', 0.0))
 				y = float(override.get('y', 0.0))
 				try:
-					cam_xy = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
-					x -= float(cam_xy[0])
-					y -= float(cam_xy[1])
+					# Follow-camera runtime keeps body/collider math in world space;
+					# only subtract authored camera when baking non-follow camera ops.
+					if not bool(camera_follow_mode):
+						cam_xy = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
+						x -= float(cam_xy[0])
+						y -= float(cam_xy[1])
 				except Exception:
 					pass
 				return x, y
@@ -19748,17 +21008,19 @@ def BuildGbc (world):
 				x = float(pos.x)
 				y = float(pos.y)
 				try:
-					cam_xy = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
-					x -= float(cam_xy[0])
-					y -= float(cam_xy[1])
+					if not bool(camera_follow_mode):
+						cam_xy = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
+						x -= float(cam_xy[0])
+						y -= float(cam_xy[1])
 				except Exception:
 					pass
 				return x, y
 			x, y = _gbc_authored_image_pos_to_gba(sprite_ob)
 			try:
-				cam_xy = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
-				x -= float(cam_xy[0])
-				y -= float(cam_xy[1])
+				if not bool(camera_follow_mode):
+					cam_xy = _gba_eval_display_camera_pos(script_runtime, frame = 1, include_update = True)
+					x -= float(cam_xy[0])
+					y -= float(cam_xy[1])
 			except Exception:
 				pass
 			return x, y
@@ -19855,8 +21117,11 @@ def BuildGbc (world):
 				g = list(bpy.context.scene.gravity)
 				gravity_x = float(g[0])
 				gravity_y = float(g[1])
-			# Always compile/export as multi-body, even with one dynamic sprite.
-			if len(rigid_sprite_obs) >= 1:
+			# Multi-body path does not implement camera-follow semantics yet.
+			# When a single dynamic body requests follow-camera, route to the
+			# single-body runtime so camera tracks the player correctly.
+			force_single_body_follow = bool(camera_follow_mode) and (len(rigid_sprite_obs) == 1)
+			if len(rigid_sprite_obs) >= 1 and (not force_single_body_follow):
 				rigid_names = set()
 				for s in rigid_sprite_obs:
 					rigid_names.add(s.name)
@@ -20076,6 +21341,10 @@ def BuildGbc (world):
 					scroll_step_den_y = scroll_profile_runtime.get('step_den', 1),
 				)
 			else:
+				if force_single_body_follow:
+					_append_gbc_trace_lines([
+						'[gbc-trace] BuildGbc:single_body_follow_override=1',
+					])
 				sprite_ob = None
 				for ob in rigid_sprite_obs:
 					if getattr(ob, 'rigidBodyType', '') == 'dynamic':
@@ -20235,6 +21504,22 @@ def BuildGbc (world):
 					print('GBC export: phase1 interpreted gbc-py velocity script =', velocity_script)
 				elif not bool(_GBC_ENABLE_PHASE1_VELOCITY_SCRIPT):
 					print('GBC export: phase1 velocity_script inference disabled.')
+				body_specs_runtime = [{
+					'name' : str(getattr(sprite_ob, 'name', '') or ''),
+					'sprite_tiles_w' : int(sprite_tiles_w),
+					'sprite_tiles_h' : int(sprite_tiles_h),
+					'init_x' : int(init_x),
+					'init_y' : int(init_y),
+					'init_vx' : int(init_vx),
+					'init_vy' : int(init_vy),
+					'grav_step_x' : int(grav_step_x),
+					'grav_step_y' : int(grav_step_y),
+					'velocity_script' : velocity_script,
+					'collision_w_px' : int(collision_w_px),
+					'collision_h_px' : int(collision_h_px),
+					'collision_off_x_px' : int(collision_off_x_px),
+					'collision_off_y_px' : int(collision_off_y_px),
+				}]
 				try:
 					_init_sx = int(scroll_profile_runtime.get('init_dx', 0))
 					_init_sy = int(scroll_profile_runtime.get('init_dy', 0))
@@ -20251,6 +21536,27 @@ def BuildGbc (world):
 					])
 				except Exception:
 					pass
+				camera_follow_center_x = 0
+				camera_follow_center_y = 0
+				if camera_follow_mode:
+					try:
+						# Preserve scripted initial camera placement when enabling
+						# follow mode: center = body_init + initial_scroll.
+						# X is already matching expected behavior. For Y, convert the
+						# authored scroll delta into runtime GBC-cover units so follow
+						# center does not drift by a constant vertical offset.
+						camera_follow_center_x = int(init_x) + int(scroll_profile_runtime.get('init_dx', 0))
+						_raw_init_dy = float(scroll_profile_runtime.get('init_dy', 0))
+						_sgn_y = -1 if _raw_init_dy < 0 else 1
+						_init_dy_gbc = int(round(float(_gba_to_gbc_cover_len(abs(_raw_init_dy))))) * _sgn_y
+						# Follow runtime y still carries a viewport-center bias versus
+						# set_camera_position(pos[1]) semantics. Remove half-screen
+						# (144/2) so follow camera tracks to top-left like script ops.
+						_follow_y_anchor_bias = 72
+						camera_follow_center_y = int(init_y) + int(_init_dy_gbc) - int(_follow_y_anchor_bias)
+					except Exception:
+						camera_follow_center_x = 0
+						camera_follow_center_y = 0
 				rom = _gbc_build_dynamic_physics_rom(
 					canvas_gbc,
 					sprite_tile,
@@ -20279,8 +21585,8 @@ def BuildGbc (world):
 					collision_off_x_px = collision_off_x_px,
 					collision_off_y_px = collision_off_y_px,
 					camera_follow_mode = camera_follow_mode,
-					camera_follow_center_x = 0,
-					camera_follow_center_y = 0,
+					camera_follow_center_x = camera_follow_center_x,
+					camera_follow_center_y = camera_follow_center_y,
 				)
 		else:
 			_gba_apply_script_surface_ops(
@@ -20321,16 +21627,35 @@ def BuildGbc (world):
 			if has_physics:
 				phase1_world_offset_x = 0.0
 				phase1_world_offset_y = 0.0
-				if (not camera_follow_mode) and camera_ops_present:
-					# Phase1 init positions are camera-shifted by `camera_offset_*`.
-					# Physics getters must undo that shift in script space.
-					# X uses the same orientation as internal coordinates, Y is flipped.
-					phase1_world_offset_x = float(-int(camera_offset_x))
-					phase1_world_offset_y = float(int(camera_offset_y))
+				if camera_ops_present and (not bool(camera_follow_mode)):
+					def _gbc_cover_delta (_v):
+						try:
+							v = float(_v)
+						except Exception:
+							return 0.0
+						if abs(v) <= 1e-9:
+							return 0.0
+						s = -1.0 if v < 0.0 else 1.0
+						return s * float(_gba_to_gbc_cover_len(abs(v)))
+					try:
+						# Keep print-mirror physics getters in world space even when
+						# display camera ops are active. Runtime scroll profile values
+						# are authored in GBA space; convert scroll deltas to the
+						# same GBC-cover space used by mirrored body positions.
+						scroll_init_x = float(scroll_profile_runtime.get('init_dx', 0))
+						scroll_init_y = float(scroll_profile_runtime.get('init_dy', 0))
+						phase1_world_offset_x = float(_gbc_cover_delta(-scroll_init_x))
+						phase1_world_offset_y = float(_gbc_cover_delta(scroll_init_y))
+					except Exception:
+						phase1_world_offset_x = 0.0
+						phase1_world_offset_y = 0.0
 				runtime_print_env = _build_runtime_print_physics_env(
 					world,
 					runtime_print_scene_obs,
-					use_gbc_signed_positions = True,
+					# Runtime Rapier print env reports authored/world coordinates.
+					# Only enable signed-position shim when we intend to consume
+					# phase1-style biased coordinates; camera-op runs stay unbiased.
+					use_gbc_signed_positions = (not bool(camera_ops_present)),
 					# Raw Rapier mirror remains in authored world space.
 					gbc_script_world_offset = [0.0, 0.0],
 				)
@@ -20373,8 +21698,12 @@ def BuildGbc (world):
 							_rt_colliders = _gbc_collect_runtime_colliders(
 								physics_scene_obs,
 								ignored_names = _active_names,
-								scroll_x_gba = (float(camera_offset_x) if ((not camera_follow_mode) and camera_ops_present) else 0.0),
-								scroll_y_gba = (float(camera_offset_y) if ((not camera_follow_mode) and camera_ops_present) else 0.0),
+								# Keep print-mirror collision probes in authored/world space.
+								# Camera scroll is already represented by script_world_offset in
+								# the phase1 mirror sim; applying scroll here double-shifts
+								# colliders and can pin grounded detection at a stale Y level.
+								scroll_x_gba = 0.0,
+								scroll_y_gba = 0.0,
 								preconverted_names = fallback_proxy_names,
 								rect_meta = _rt_rect_meta,
 							)
@@ -20393,15 +21722,90 @@ def BuildGbc (world):
 								physics_scene_obs = physics_scene_obs,
 								runtime_handle_env = runtime_print_env,
 								collider_rect_meta = _rt_rect_meta,
+								collision_w_px = int(_player_spec.get('collision_w_px', int(_player_spec.get('sprite_tiles_w', 1)) * 8)),
+								collision_h_px = int(_player_spec.get('collision_h_px', int(_player_spec.get('sprite_tiles_h', 1)) * 8)),
+								collision_off_x_px = int(_player_spec.get('collision_off_x_px', 0)),
+								collision_off_y_px = int(_player_spec.get('collision_off_y_px', 0)),
 								# Keep phase1 mirror get/set_rigid_body_position in world space.
 								script_world_offset = [phase1_world_offset_x, phase1_world_offset_y],
 							)
 							if isinstance(_phase1_print_env, dict) and _phase1_print_env.get('sim', None) is not None:
-								_append_gbc_trace_lines([
-									'[gbc-trace] BuildGbc:phase1_print_env_active=1'
-									+ ',offset=' + str([TryChangeToInt(phase1_world_offset_x), TryChangeToInt(phase1_world_offset_y)]),
-								])
-								runtime_print_env = _phase1_print_env
+								def _is_dead_runtime_rb (_h):
+									try:
+										if isinstance(_h, (tuple, list)) and len(_h) == 2:
+											return (abs(float(_h[0])) <= 1e-6) and (abs(float(_h[1])) <= 1e-6)
+									except Exception:
+										pass
+									return False
+								def _runtime_rb_unusable (_rb, _rb_ids, _rb_named, _owner_name):
+									if _rb is None:
+										return True
+									if _is_dead_runtime_rb(_rb):
+										return True
+									try:
+										_owner_txt = str(_owner_name or '')
+									except Exception:
+										_owner_txt = ''
+									if _owner_txt == '':
+										return False
+									try:
+										_candidates = list(_script_lookup_candidate_names(_owner_txt) or [])
+									except Exception:
+										_candidates = []
+									for _c in (_owner_txt, '_' + _owner_txt, _owner_txt + ':0', '_' + _owner_txt + ':0'):
+										if _c not in _candidates:
+											_candidates.append(_c)
+									_seen_any = False
+									for _src in (
+										_rb_ids if isinstance(_rb_ids, dict) else {},
+										_rb_named if isinstance(_rb_named, dict) else {},
+									):
+										for _cand in _candidates:
+											try:
+												_v = _src.get(_cand, None)
+											except Exception:
+												_v = None
+											if _v is None:
+												continue
+											_seen_any = True
+											if not _is_dead_runtime_rb(_v):
+												return False
+									if _seen_any:
+										return True
+									return False
+								if camera_ops_present:
+									# Camera-display ops can make phase1 mirror collision probing
+									# diverge from what the emulated scene renders. Keep print
+									# physics bound to the runtime Rapier mirror in this mode so
+									# script position/velocity prints stay in sync with gameplay.
+									_append_gbc_trace_lines([
+										'[gbc-trace] BuildGbc:phase1_print_env_active=0'
+										+ ',reason=camera_ops_present',
+									])
+									try:
+										_rt_rb_ids = runtime_print_env.get('rigidBodiesIds', runtime_print_env.get('rigidBodies', {}))
+										_rt_rb_named = runtime_print_env.get('rigidBodies', _rt_rb_ids)
+										_rt_rb = _resolve_script_lookup_exact_from_sources(
+											_player_name,
+											_rt_rb_ids if isinstance(_rt_rb_ids, dict) else {},
+											_rt_rb_named if isinstance(_rt_rb_named, dict) else {},
+										)
+									except Exception:
+										_rt_rb = None
+									if _runtime_rb_unusable(_rt_rb, _rt_rb_ids, _rt_rb_named, _player_name):
+										_append_gbc_trace_lines([
+											'[gbc-trace] BuildGbc:phase1_print_env_fallback=1'
+											+ ',reason=runtime_rb_unusable'
+											+ ',owner=' + str(_player_name)
+											+ ',rb=' + repr(_rt_rb),
+										])
+										runtime_print_env = _phase1_print_env
+								else:
+									_append_gbc_trace_lines([
+										'[gbc-trace] BuildGbc:phase1_print_env_active=1'
+										+ ',offset=' + str([TryChangeToInt(phase1_world_offset_x), TryChangeToInt(phase1_world_offset_y)]),
+									])
+									runtime_print_env = _phase1_print_env
 				except Exception:
 					pass
 			else:
