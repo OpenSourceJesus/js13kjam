@@ -12123,16 +12123,49 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 						return None
 					_args_list = list(args or [])
 					_target_idx = []
+					def _push_target_idx (_i):
+						try:
+							_i = int(_i)
+						except Exception:
+							return
+						if _i < 0 or _i >= len(_args_list):
+							return
+						if _i not in _target_idx:
+							_target_idx.append(_i)
+					# Prefer repairing arguments that are explicitly the script `pos`
+					# value so leading debug literals (e.g. print(1, pos, vel)) do not
+					# bypass zero-position repair.
+					try:
+						_pos_hint = env.get('pos', None)
+						if isinstance(_pos_hint, (list, tuple)) and len(_pos_hint) >= 2:
+							for _i, _arg in enumerate(_args_list):
+								if _arg is _pos_hint:
+									_push_target_idx(_i)
+							if _target_idx == []:
+								try:
+									_px = float(_pos_hint[0]); _py = float(_pos_hint[1])
+								except Exception:
+									_px = None; _py = None
+								if _px is not None and _py is not None:
+									for _i, _arg in enumerate(_args_list):
+										try:
+											if isinstance(_arg, (list, tuple)) and len(_arg) >= 2:
+												if abs(float(_arg[0]) - _px) <= 1e-6 and abs(float(_arg[1]) - _py) <= 1e-6:
+													_push_target_idx(_i)
+										except Exception:
+											continue
+					except Exception:
+						pass
 					if len(_args_list) >= 3:
 						try:
 							_rb0 = _args_list[0]
 							_ground1 = _args_list[1]
 							if isinstance(_rb0, (list, tuple)) and len(_rb0) >= 2 and (_ground1 is None):
-								_target_idx.append(2)
+								_push_target_idx(2)
 						except Exception:
 							pass
 					if _target_idx == [] and len(_args_list) >= 1:
-						_target_idx.append(0)
+						_push_target_idx(0)
 					for _idx in _target_idx:
 						if _idx < 0 or _idx >= len(_args_list):
 							continue
