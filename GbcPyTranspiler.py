@@ -1693,3 +1693,348 @@ def compile_general_script (
 		symbol_prefix = str(symbol_prefix or 'gbc_script'),
 	)
 	return compiler.compile()
+
+
+@dataclass
+class GbcCFunctionCompileResult:
+	c_source: str
+	diagnostics: List[str] = field(default_factory = list)
+
+
+class _GeneralCFunctionTranspiler:
+	def __init__ (self, code: str, function_name: str, this_var_name: str = 'js13k_this'):
+		self.code = str(code or '')
+		self.function_name = str(function_name or 'gbc_script_fn')
+		self.this_var_name = str(this_var_name or 'js13k_this')
+		self.tree = ast.parse(self.code)
+		self.indent = 0
+		self.lines: List[str] = []
+		self.local_symbols: Set[str] = set()
+		self.local_symbol_types: Dict[str, str] = {}
+		self.diagnostics: List[str] = []
+
+	def _disallow_node (self, node, what: str):
+		line = getattr(node, 'lineno', None)
+		raise GbcTranspileError(
+			'Unsupported in C transpiler subset: ' + str(what),
+			line = int(line) if isinstance(line, int) else None,
+		)
+
+	def _validate_tree (self):
+		for node in ast.walk(self.tree):
+			if isinstance(node, (ast.Import, ast.ImportFrom, ast.AsyncFunctionDef, ast.Try, ast.With, ast.Delete, ast.Lambda, ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp, ast.Await, ast.Yield, ast.YieldFrom)):
+				self._disallow_node(node, type(node).__name__)
+			if isinstance(node, ast.Call) and len(list(getattr(node, 'keywords', []) or [])) > 0:
+				self._disallow_node(node, 'keyword args')
+			if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ('eval', 'exec', 'compile', '__import__'):
+				self._disallow_node(node, node.func.id)
+		for stmt in list(getattr(self.tree, 'body', []) or []):
+			if isinstance(stmt, (ast.Assign, ast.AugAssign, ast.If, ast.While, ast.Expr, ast.Pass, ast.FunctionDef, ast.Return, ast.Break, ast.Continue)):
+				continue
+			self._disallow_node(stmt, type(stmt).__name__)
+
+	def _safe_ident (self, txt: str) -> str:
+		out = ''.join([(ch if (ch.isalnum() or ch == '_') else '_') for ch in str(txt or '')])
+		out = out.strip('_')
+		if out == '':
+			out = 'v'
+		if out[0].isdigit():
+			out = '_' + out
+		return out
+
+	def _c_string_literal (self, txt: str) -> str:
+		s = str(txt or '')
+		s = s.replace('\\', '\\\\')
+		s = s.replace('"', '\\"')
+		s = s.replace('\n', '\\n')
+		s = s.replace('\r', '\\r')
+		s = s.replace('\t', '\\t')
+		return '"' + s + '"'
+
+	def _expr_to_c (self, expr) -> str:
+		if isinstance(expr, ast.Constant):
+			if isinstance(expr.value, bool):
+				return '1' if bool(expr.value) else '0'
+			if isinstance(expr.value, (int, float)):
+				return str(int(round(float(expr.value))))
+			if isinstance(expr.value, str):
+				return self._c_string_literal(expr.value)
+			if expr.value is None:
+				return '0'
+			self._disallow_node(expr, 'non-numeric constant')
+		if isinstance(expr, ast.Name):
+			if expr.id == 'this':
+				return self.this_var_name
+			return self._safe_ident(expr.id)
+		if isinstance(expr, ast.Attribute):
+			if isinstance(expr.value, ast.Name) and expr.value.id == 'this':
+				return self.this_var_name + '->' + self._safe_ident(expr.attr)
+			base = self._expr_to_c(expr.value)
+			return self._safe_ident(str(base) + '_' + str(expr.attr))
+		if isinstance(expr, ast.Subscript):
+			base = self._expr_to_c(expr.value)
+			idx = expr.slice
+			if hasattr(ast, 'Index') and isinstance(idx, ast.Index):
+				idx = idx.value
+			return '(' + base + '[' + self._expr_to_c(idx) + '])'
+		if isinstance(expr, ast.List):
+			items = [self._expr_to_c(x) for x in list(expr.elts or [])]
+			return '((int32_t[]){' + ', '.join(items) + '})'
+		if isinstance(expr, ast.Tuple):
+			items = [self._expr_to_c(x) for x in list(expr.elts or [])]
+			return '((int32_t[]){' + ', '.join(items) + '})'
+		if isinstance(expr, ast.UnaryOp):
+			if isinstance(expr.op, ast.Not):
+				return '(!(' + self._expr_to_c(expr.operand) + '))'
+			if isinstance(expr.op, ast.USub):
+				return '(-(' + self._expr_to_c(expr.operand) + '))'
+			if isinstance(expr.op, ast.UAdd):
+				return '(+(' + self._expr_to_c(expr.operand) + '))'
+		if isinstance(expr, ast.BoolOp):
+			parts = [self._expr_to_c(v) for v in list(expr.values or [])]
+			if parts == []:
+				return '0'
+			joiner = ' && ' if isinstance(expr.op, ast.And) else ' || '
+			return '(' + joiner.join(['(' + p + ')' for p in parts]) + ')'
+		if isinstance(expr, ast.BinOp):
+			l = self._expr_to_c(expr.left)
+			r = self._expr_to_c(expr.right)
+			if isinstance(expr.op, ast.Add):
+				return '((' + l + ') + (' + r + '))'
+			if isinstance(expr.op, ast.Sub):
+				return '((' + l + ') - (' + r + '))'
+			if isinstance(expr.op, ast.Mult):
+				return '((' + l + ') * (' + r + '))'
+			if isinstance(expr.op, ast.Div):
+				return '((' + l + ') / (' + r + '))'
+			if isinstance(expr.op, ast.FloorDiv):
+				return '((' + l + ') / (' + r + '))'
+			if isinstance(expr.op, ast.Mod):
+				return '((' + l + ') % (' + r + '))'
+			self._disallow_node(expr, type(expr.op).__name__)
+		if isinstance(expr, ast.Compare) and len(list(expr.ops or [])) == 1 and len(list(expr.comparators or [])) == 1:
+			op = expr.ops[0]
+			l = self._expr_to_c(expr.left)
+			r = self._expr_to_c(expr.comparators[0])
+			if isinstance(op, ast.Eq):
+				return '((' + l + ') == (' + r + '))'
+			if isinstance(op, ast.NotEq):
+				return '((' + l + ') != (' + r + '))'
+			if isinstance(op, ast.Lt):
+				return '((' + l + ') < (' + r + '))'
+			if isinstance(op, ast.LtE):
+				return '((' + l + ') <= (' + r + '))'
+			if isinstance(op, ast.Gt):
+				return '((' + l + ') > (' + r + '))'
+			if isinstance(op, ast.GtE):
+				return '((' + l + ') >= (' + r + '))'
+			self._disallow_node(expr, type(op).__name__)
+		if isinstance(expr, ast.Call):
+			fn = expr.func
+			if isinstance(fn, ast.Name):
+				fn_name = self._safe_ident(fn.id)
+			elif isinstance(fn, ast.Attribute):
+				fn_name = self._safe_ident(self._expr_to_c(fn))
+			else:
+				self._disallow_node(expr, 'indirect call')
+			if fn_name == 'print':
+				fn_name = 'js13k_print'
+			args = [self._expr_to_c(a) for a in list(expr.args or [])]
+			return fn_name + '(' + ', '.join(args) + ')'
+		self._disallow_node(expr, type(expr).__name__)
+		return '0'
+
+	def _target_to_c_lvalue (self, target) -> str:
+		if isinstance(target, ast.Name):
+			if target.id == 'this':
+				self._disallow_node(target, 'assign to this')
+			return self._safe_ident(target.id)
+		if isinstance(target, ast.Attribute):
+			if isinstance(target.value, ast.Name) and target.value.id == 'this':
+				return self.this_var_name + '->' + self._safe_ident(target.attr)
+			return self._safe_ident(self._expr_to_c(target))
+		if isinstance(target, ast.Subscript):
+			return self._expr_to_c(target)
+		self._disallow_node(target, 'assignment target')
+		return '/*unsupported_target*/'
+
+	def _collect_local_symbols (self, stmts):
+		for stmt in list(stmts or []):
+			if isinstance(stmt, ast.Assign):
+				for t in list(stmt.targets or []):
+					if isinstance(t, (ast.Name, ast.Attribute)):
+						if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == 'this':
+							continue
+						name = self._target_to_c_lvalue(t)
+						self.local_symbols.add(name)
+						if isinstance(stmt.value, (ast.List, ast.Tuple)):
+							self.local_symbol_types[name] = 'int32_t*'
+						elif isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+							self.local_symbol_types[name] = 'const char*'
+						else:
+							self.local_symbol_types.setdefault(name, 'int32_t')
+			elif isinstance(stmt, ast.AugAssign):
+				if isinstance(stmt.target, (ast.Name, ast.Attribute)):
+					if isinstance(stmt.target, ast.Attribute) and isinstance(stmt.target.value, ast.Name) and stmt.target.value.id == 'this':
+						continue
+					name = self._target_to_c_lvalue(stmt.target)
+					self.local_symbols.add(name)
+					self.local_symbol_types.setdefault(name, 'int32_t')
+			elif isinstance(stmt, (ast.If, ast.While)):
+				self._collect_local_symbols(getattr(stmt, 'body', []))
+				self._collect_local_symbols(getattr(stmt, 'orelse', []))
+			elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Subscript):
+				b = stmt.value.base
+				if isinstance(b, (ast.Name, ast.Attribute)):
+					if isinstance(b, ast.Attribute) and isinstance(b.value, ast.Name) and b.value.id == 'this':
+						continue
+					name = self._target_to_c_lvalue(b)
+					self.local_symbols.add(name)
+					self.local_symbol_types[name] = 'int32_t*'
+
+	def _emit_line (self, txt: str):
+		self.lines.append(('\t' * max(0, int(self.indent))) + str(txt))
+
+	def _emit_stmt (self, stmt):
+		if isinstance(stmt, ast.Pass):
+			self._emit_line(';')
+			return
+		if isinstance(stmt, ast.Assign) and len(list(stmt.targets or [])) >= 1:
+			rhs = self._expr_to_c(stmt.value)
+			for t in list(stmt.targets or []):
+				self._emit_line(self._target_to_c_lvalue(t) + ' = ' + rhs + ';')
+			return
+		if isinstance(stmt, ast.AugAssign):
+			lhs = self._target_to_c_lvalue(stmt.target)
+			rhs = self._expr_to_c(stmt.value)
+			if isinstance(stmt.op, ast.Add):
+				self._emit_line(lhs + ' += ' + rhs + ';')
+			elif isinstance(stmt.op, ast.Sub):
+				self._emit_line(lhs + ' -= ' + rhs + ';')
+			else:
+				self._disallow_node(stmt, type(stmt.op).__name__)
+			return
+		if isinstance(stmt, ast.Expr):
+			self._emit_line(self._expr_to_c(stmt.value) + ';')
+			return
+		if isinstance(stmt, ast.If):
+			self._emit_line('if (' + self._expr_to_c(stmt.test) + ') {')
+			self.indent += 1
+			for inner in list(stmt.body or []):
+				self._emit_stmt(inner)
+			self.indent -= 1
+			if list(stmt.orelse or []) != []:
+				self._emit_line('} else {')
+				self.indent += 1
+				for inner in list(stmt.orelse or []):
+					self._emit_stmt(inner)
+				self.indent -= 1
+			self._emit_line('}')
+			return
+		if isinstance(stmt, ast.While):
+			self._emit_line('while (' + self._expr_to_c(stmt.test) + ') {')
+			self.indent += 1
+			for inner in list(stmt.body or []):
+				self._emit_stmt(inner)
+			self.indent -= 1
+			self._emit_line('}')
+			return
+		if isinstance(stmt, ast.Break):
+			self._emit_line('break;')
+			return
+		if isinstance(stmt, ast.Continue):
+			self._emit_line('continue;')
+			return
+		if isinstance(stmt, ast.Return):
+			if stmt.value is None:
+				self._emit_line('return 0;')
+			else:
+				self._emit_line('return ' + self._expr_to_c(stmt.value) + ';')
+			return
+		if isinstance(stmt, ast.FunctionDef):
+			self._disallow_node(stmt, 'nested FunctionDef')
+		self._disallow_node(stmt, type(stmt).__name__)
+
+	def _emit_function_def (self, fn_node: ast.FunctionDef):
+		fn_name = self._safe_ident(fn_node.name)
+		params = ['int32_t ' + self._safe_ident(a.arg) for a in list(getattr(fn_node.args, 'args', []) or [])]
+		self._emit_line('int32_t ' + fn_name + ' (' + ', '.join(params) + ') {')
+		self.indent += 1
+		inner_locals: Set[str] = set()
+		for inner in list(getattr(fn_node, 'body', []) or []):
+			if isinstance(inner, ast.Assign):
+				for t in list(inner.targets or []):
+					if isinstance(t, (ast.Name, ast.Attribute)):
+						if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == 'this':
+							continue
+						inner_locals.add(self._target_to_c_lvalue(t))
+			elif isinstance(inner, ast.AugAssign):
+				if isinstance(inner.target, (ast.Name, ast.Attribute)):
+					if isinstance(inner.target, ast.Attribute) and isinstance(inner.target.value, ast.Name) and inner.target.value.id == 'this':
+						continue
+					inner_locals.add(self._target_to_c_lvalue(inner.target))
+		for name in sorted(list(inner_locals)):
+			if name in [self._safe_ident(a.arg) for a in list(getattr(fn_node.args, 'args', []) or [])]:
+				continue
+			self._emit_line('int32_t ' + name + ' = 0;')
+		if inner_locals != set():
+			self._emit_line('')
+		for inner in list(getattr(fn_node, 'body', []) or []):
+			if isinstance(inner, ast.FunctionDef):
+				self._disallow_node(inner, 'nested FunctionDef')
+			self._emit_stmt(inner)
+		self._emit_line('return 0;')
+		self.indent -= 1
+		self._emit_line('}')
+
+	def transpile (self) -> GbcCFunctionCompileResult:
+		self._validate_tree()
+		body = list(getattr(self.tree, 'body', []) or [])
+		top_level_fn_defs = [s for s in body if isinstance(s, ast.FunctionDef)]
+		top_level_stmts = [s for s in body if not isinstance(s, ast.FunctionDef)]
+		self._collect_local_symbols(top_level_stmts)
+		self.lines = []
+		for fn in top_level_fn_defs:
+			self._emit_function_def(fn)
+			self._emit_line('')
+		self._emit_line('int32_t ' + self._safe_ident(self.function_name) + ' (void) {')
+		self.indent += 1
+		for sym in sorted(list(self.local_symbols)):
+			if sym == self._safe_ident(self.function_name):
+				continue
+			if sym == self.this_var_name:
+				continue
+			decl_t = str(self.local_symbol_types.get(sym, 'int32_t'))
+			if decl_t == 'int32_t*':
+				self._emit_line('int32_t *' + sym + ' = 0;')
+			elif decl_t == 'const char*':
+				self._emit_line('const char *' + sym + ' = 0;')
+			else:
+				self._emit_line('int32_t ' + sym + ' = 0;')
+		if self.local_symbols != set():
+			self._emit_line('')
+		for stmt in top_level_stmts:
+			self._emit_stmt(stmt)
+		self._emit_line('return 0;')
+		self.indent -= 1
+		self._emit_line('}')
+		return GbcCFunctionCompileResult(
+			c_source = '\n'.join(self.lines) + '\n',
+			diagnostics = [
+				'C subset transpiler: statements=' + str(len(body)),
+				'C subset transpiler: locals=' + str(len(self.local_symbols)),
+			],
+		)
+
+
+def compile_script_to_c_function (
+	code: str,
+	function_name: str = 'gbc_script_fn',
+	this_var_name: str = 'js13k_this',
+) -> GbcCFunctionCompileResult:
+	transpiler = _GeneralCFunctionTranspiler(
+		code = str(code or ''),
+		function_name = str(function_name or 'gbc_script_fn'),
+		this_var_name = str(this_var_name or 'js13k_this'),
+	)
+	return transpiler.transpile()

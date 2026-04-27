@@ -26,6 +26,11 @@ class GbcCameraScrollRegressionTests(unittest.TestCase):
 		self.assertIn('_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)', src)
 		self.assertIn('_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)', src)
 
+	def test_runtime_projection_keeps_full_i16_scroll_state(self):
+		src = self._read_main_py()
+		self.assertNotIn('_emit_clamp_scroll_i16_signed_byte(scroll_x_addr, scroll_x_hi_addr)', src)
+		self.assertNotIn('_emit_clamp_scroll_i16_signed_byte(scroll_y_addr, scroll_y_hi_addr)', src)
+
 	def test_phase1_print_colliders_do_not_apply_camera_scroll(self):
 		src = self._read_main_py()
 		self.assertIn('scroll_x_gba = 0.0', src)

@@ -22,6 +22,14 @@ for repo in ('Py2Js', 'Py2Gb', 'tinifyjs', 'PyRapier2d', 'blender-curve-to-svg')
 	if not os.path.isdir(os.path.join(_thisDir, repo)):
 		Run (f'git clone https://github.com/OpenSourceJesus/{repo} --depth=1')
 
+# Vendor ZGB locally for GBC C export integration.
+thirdPartyDir = os.path.join(_thisDir, 'Third Party')
+zgbDir = os.path.join(thirdPartyDir, 'ZGB')
+if not os.path.isdir(thirdPartyDir):
+	os.makedirs(thirdPartyDir, exist_ok = True)
+if not os.path.isdir(zgbDir):
+	Run (f'git clone https://github.com/Zal0/ZGB.git "{zgbDir}" --depth=1')
+
 # Exaloop/codon (bash installer)
 if IS_WINDOWS:
 	# Try Git Bash or WSL bash

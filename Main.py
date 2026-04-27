@@ -39,11 +39,13 @@ except Exception:
 try:
 	from GbcPyTranspiler import compile_velocity_script as _gbc_transpiler_compile_velocity_script
 	from GbcPyTranspiler import compile_general_script as _gbc_transpiler_compile_general_script
+	from GbcPyTranspiler import compile_script_to_c_function as _gbc_transpiler_compile_script_to_c_function
 	from GbcPyTranspiler import GBC_AOT_ABI_SPEC as _GBC_AOT_ABI_SPEC
 	from GbcPyTranspiler import GbcTranspileError as _GbcTranspileError
 except Exception:
 	_gbc_transpiler_compile_velocity_script = None
 	_gbc_transpiler_compile_general_script = None
+	_gbc_transpiler_compile_script_to_c_function = None
 	_GBC_AOT_ABI_SPEC = None
 	_GbcTranspileError = Exception
 # Phase1 runtime movement depends on transpiled motion extraction.
@@ -58,7 +60,7 @@ _GBC_PHASE1_TRANSPILE_CACHE_VERSION = 3
 _GBC_ENABLE_PHASE1_VELOCITY_SCRIPT = True
 
 isLinux = False
-POTRACE_PATH = 'potrace-1.16.'
+POTRACE_PATH = os.path.join(_thisDir, 'Third Party', 'potrace-1.16.')
 UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
 DONT_MANGLE_INDCTR = '-no_mangle=['
 NO_PHYSICS_INDCTR = '-no_physics'
@@ -5361,7 +5363,7 @@ def _build_fallback_gbc_script_runtime (world):
 	return runtime
 
 def ExportGbcPyAssembly (world, gbc_out_path : str):
-	'''Collect gbc-py scripts from world and exported objects; write translated assembly next to the .gbc.'''
+	'''Collect gbc-py scripts and emit a ZGB C companion file.'''
 	global exportType
 	_append_gbc_trace_lines([
 		'[gbc-trace] ExportGbcPyAssembly:start out=' + str(gbc_out_path),
@@ -5369,315 +5371,360 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 	])
 	prev_export = exportType
 	exportType = 'gbc'
-	script_entries = []
-	def _is_valid_gbc_attribute_name (_name):
-		return isinstance(_name, str) and _name != '' and _name.isidentifier() and (not keyword.iskeyword(_name))
-	def _collect_validated_gbc_script_attributes (_ob):
-		attr_map = GetAttributes(_ob)
-		if not isinstance(attr_map, dict) or attr_map == {}:
-			return {}
-		invalid_names = []
-		for _name in list(attr_map.keys()):
-			if not _is_valid_gbc_attribute_name(_name):
-				invalid_names.append(str(_name))
-		if invalid_names:
-			raise RuntimeError(
-				'GBC export: object "' + str(_ob.name) + '" has included attributes that are not valid variable names: '
-				+ ', '.join(sorted(set(invalid_names)))
-			)
-		return dict(attr_map)
-	def _validate_gbc_object_attributes_for_export (_ob):
-		_collect_validated_gbc_script_attributes(_ob)
-	def _build_gbc_local_this_attributes_prefix (_owner_name, _owner_attributes):
-		lines = []
-		reserved_attr_locals = {
-			'this', 'sim', 'physics', 'objects', 'obs', 'rigidBodies', 'rbs', 'colliders', 'cols',
-			'get_rigidbody', 'get_collider', 'get_object_position', 'get_object_rotation',
-			'gbc_get_rigidbody', 'gbc_get_collider', 'gbc_get_object_position', 'gbc_get_object_rotation',
-			'_js13k_internal_get_object_position', '_js13k_internal_get_object_rotation',
-			'_js13k_pos_resolver', '_js13k_rot_resolver',
-			'_js13k_print',
-			'_js13k_call_print',
-			'_js13k_call_get_object_position',
-			'_js13k_call_get_object_rotation',
-			'__js13k_helpers__',
-			'print',
-		}
-		_owner_key = str(_owner_name or '')
-		if _owner_key != '' and _owner_key != '__world__':
-			lines.extend([
-				'owner_key = %r' %(_owner_key),
-				'try:',
-				'    owner_key = str(this.id)',
-				'except:',
-				'    try:',
-				'        owner_key = str(this.name)',
-				'    except:',
-				'        owner_key = %r' %(_owner_key),
-				'owner_keys = [owner_key]',
-				'try:',
-				'    if isinstance(owner_key, str) and owner_key != "":',
-				'        owner_keys.append("_" + owner_key)',
-				'        owner_keys.append(owner_key + ":0")',
-				'        owner_keys.append("_" + owner_key + ":0")',
-				'        if owner_key.startswith("__gbc_spawn_"):',
-				'            spawn_suffix = owner_key[len("__gbc_spawn_"): ]',
-				'            phys_key = "__gbc_spawnphys_" + spawn_suffix',
-				'            owner_keys.append(phys_key)',
-				'            owner_keys.append("_" + phys_key)',
-				'            owner_keys.append(phys_key + ":0")',
-				'            owner_keys.append("_" + phys_key + ":0")',
-				'            source_key = spawn_suffix',
-				'            split_idx = source_key.find("_")',
-				'            if split_idx > 0 and source_key[:split_idx].isdigit() and source_key[split_idx + 1:] != "":',
-				'                source_key = source_key[split_idx + 1:]',
-				'            owner_keys.append(source_key)',
-				'            owner_keys.append("_" + source_key)',
-				'            owner_keys.append(source_key + ":0")',
-				'            owner_keys.append("_" + source_key + ":0")',
-				'        elif owner_key.startswith("__gbc_spawnphys_"):',
-				'            spawn_suffix = owner_key[len("__gbc_spawnphys_"): ]',
-				'            draw_key = "__gbc_spawn_" + spawn_suffix',
-				'            owner_keys.append(draw_key)',
-				'            owner_keys.append("_" + draw_key)',
-				'            owner_keys.append(draw_key + ":0")',
-				'            owner_keys.append("_" + draw_key + ":0")',
-				'            source_key = spawn_suffix',
-				'            split_idx = source_key.find("_")',
-				'            if split_idx > 0 and source_key[:split_idx].isdigit() and source_key[split_idx + 1:] != "":',
-				'                source_key = source_key[split_idx + 1:]',
-				'            owner_keys.append(source_key)',
-				'            owner_keys.append("_" + source_key)',
-				'            owner_keys.append(source_key + ":0")',
-				'            owner_keys.append("_" + source_key + ":0")',
-				'except:',
-				'    owner_keys = [owner_key]',
-				'try:',
-				'    _rb_ids = globals().get("rigidBodiesIds", {})',
-				'except:',
-				'    _rb_ids = {}',
-				'try:',
-				'    _col_ids = globals().get("collidersIds", {})',
-				'except:',
-				'    _col_ids = {}',
-				'rb = None',
-				'for _key in owner_keys:',
-				'    try:',
-				'        rb = rb if rb is not None else get_rigidbody(_key)',
-				'    except:',
-				'        rb = rb',
-				'    if rb is not None:',
-				'        break',
-				'    try:',
-				'        rb = rb if rb is not None else rigidBodies[_key]',
-				'    except:',
-				'        rb = rb',
-				'    if rb is not None:',
-				'        break',
-				'    try:',
-				'        rb = rb if rb is not None else _rb_ids[_key]',
-				'    except:',
-				'        rb = rb',
-				'    if rb is not None:',
-				'        break',
-				'col = None',
-				'col_key_hit = None',
-				'for _key in owner_keys:',
-				'    try:',
-				'        col = col if col is not None else get_collider(_key)',
-				'    except:',
-				'        col = col',
-				'    if col is not None:',
-				'        col_key_hit = _key',
-				'        break',
-				'    try:',
-				'        col = col if col is not None else colliders[_key]',
-				'    except:',
-				'        col = col',
-				'    if col is not None:',
-				'        col_key_hit = _key',
-				'        break',
-				'    try:',
-				'        col = col if col is not None else _col_ids[_key]',
-				'    except:',
-				'        col = col',
-				'    if col is not None:',
-				'        col_key_hit = _key',
-				'        break',
-				'if col is None:',
-				'    _resolver = globals().get("_resolve_script_lookup_from_sources", None)',
-				'    if callable(_resolver):',
-				'        for _key in owner_keys:',
-				'            try:',
-				'                col = _resolver(_key, _col_ids, colliders)',
-				'            except:',
-				'                col = col',
-				'            if col is not None:',
-				'                col_key_hit = "resolved:" + str(_key)',
-				'                break',
-				# Keep local `col` stable for gbc-py lowered scripts (this.col -> col)
-				# and make phase1 mirror lookups deterministic by owner id.
-				'if isinstance(owner_key, str) and owner_key != "":',
-				'    col = owner_key',
-				'    if col_key_hit is None:',
-				'        col_key_hit = "owner_key"',
-				'    else:',
-				'        col_key_hit = "owner_key+" + str(col_key_hit)',
-				'try:',
-				'    print("[gbc-col-debug]", "owner_key=", owner_key, "hit=", col_key_hit, "candidate_count=", len(owner_keys), "col_is_none=", (col is None))',
-				'except:',
-				'    pass',
-				'try:',
-				'    if col is None:',
-				'        _col_ids_keys = []',
-				'        try:',
-				'            _col_ids_keys = list(getattr(_col_ids, "keys", lambda : [])())',
-				'        except:',
-				'            _col_ids_keys = []',
-				'        print("[gbc-col-keys]", "owner_key=", owner_key, "keys=", _col_ids_keys[:10], "key_count=", len(_col_ids_keys))',
-				'except:',
-				'    pass',
-				'try:',
-				'    this.rb = rb',
-				'except:',
-				'    pass',
-				'try:',
-				'    this.col = col',
-				'except:',
-				'    pass',
-				# Keep fallback gbc-py script semantics aligned with phase1: script-space
-				# Y is up, while backing sim APIs may be Y-down.
-				'try:',
-				'    _js13k_sim_raw = sim',
-				'    class _Js13kGbcSimProxy:',
-				'        __slots__ = ("_raw",)',
-				'        def __init__(self, raw):',
-				'            self._raw = raw',
-				'        def _needs_y_flip(self):',
-				'            try:',
-				'                return type(self._raw).__name__ != "_GbcPhase1MirrorSim"',
-				'            except:',
-				'                return True',
-				'        def _resolve_rb_handle(self, rigidBody):',
-				'            _rb = rigidBody',
-				'            _name = ""',
-				'            if isinstance(_rb, str):',
-				'                _name = _rb',
-				'                _rb = None',
-				'            if _rb is not None:',
-				'                return _rb',
-				'            if _name == "":',
-				'                try:',
-				'                    _name = str(owner_key)',
-				'                except:',
-				'                    _name = ""',
-				'            _cands = []',
-				'            if isinstance(_name, str) and _name != "":',
-				'                _cands = [_name]',
-				'                if _name.startswith("_"):',
-				'                    _cands.append(_name[1:])',
-				'                else:',
-				'                    _cands.append("_" + _name)',
-				'                if not _name.endswith(":0"):',
-				'                    _cands.append(_name + ":0")',
-				'            _maps = []',
-				'            try:',
-				'                _m = globals().get("rigidBodiesIds", {})',
-				'                if isinstance(_m, dict):',
-				'                    _maps.append(_m)',
-				'            except:',
-				'                pass',
-				'            try:',
-				'                _m = globals().get("rigidBodies", {})',
-				'                if isinstance(_m, dict):',
-				'                    _maps.append(_m)',
-				'            except:',
-				'                pass',
-				'            try:',
-				'                _m = getattr(self._raw, "named_rigid_bodies", {})',
-				'                if isinstance(_m, dict):',
-				'                    _maps.append(_m)',
-				'            except:',
-				'                pass',
-				'            for _src in _maps:',
-				'                for _k in _cands:',
-				'                    try:',
-				'                        _v = _src.get(_k, None)',
-				'                    except:',
-				'                        _v = None',
-				'                    if _v is not None:',
-				'                        return _v',
-				'            try:',
-				'                _get_rb = globals().get("get_rigidbody", None)',
-				'                if callable(_get_rb) and isinstance(_name, str) and _name != "":',
-				'                    _v = _get_rb(_name)',
-				'                    if _v is not None:',
-				'                        return _v',
-				'            except:',
-				'                pass',
-				'            if isinstance(_name, str) and _name != "":',
-				'                return _name',
-				'            return rigidBody',
-				'        def set_linear_velocity(self, rigidBody, vel, wakeUp = True):',
-				'            rigidBody = self._resolve_rb_handle(rigidBody)',
-				'            if rigidBody is None:',
-				'                return None',
-				'            try:',
-				'                vx = float(vel[0])',
-				'                vy = float(vel[1])',
-				'            except:',
-				'                vx = 0.0',
-				'                vy = 0.0',
-				'            if self._needs_y_flip():',
-				'                vy = -vy',
-				'            return self._raw.set_linear_velocity(rigidBody, [vx, vy], wakeUp)',
-				'        def get_linear_velocity(self, rigidBody):',
-				'            rigidBody = self._resolve_rb_handle(rigidBody)',
-				'            if rigidBody is None:',
-				'                return [0.0, 0.0]',
-				'            try:',
-				'                _v = self._raw.get_linear_velocity(rigidBody)',
-				'                _vx = float(_v[0])',
-				'                _vy = float(_v[1])',
-				'                if self._needs_y_flip():',
-				'                    _vy = -_vy',
-				'                return [_vx, _vy]',
-				'            except:',
-				'                return [0.0, 0.0]',
-				'        def set_rigid_body_velocity(self, rigidBody, vel, wakeUp = True):',
-				'            return self.set_linear_velocity(rigidBody, vel, wakeUp)',
-				'        def get_rigid_body_velocity(self, rigidBody):',
-				'            return self.get_linear_velocity(rigidBody)',
-				'        def __getattr__(self, name):',
-				'            return getattr(self._raw, name)',
-				'    sim = _Js13kGbcSimProxy(_js13k_sim_raw)',
-				'    physics = sim',
-				'except:',
-				'    pass',
-			])
-		if not isinstance(_owner_attributes, dict) or _owner_attributes == {}:
-			return '\n'.join(lines).strip()
-		# Keep owner attributes on `this.*`, but hydrate from persisted `obs` state
-		# so runtimes that recreate `this` each frame still preserve script state.
-		lines.extend([
-			'try:',
-			'    _js13k_owner_state = obs.get(owner_key, {}) if isinstance(obs, dict) else {}',
-			'except:',
-			'    _js13k_owner_state = {}',
-			'if not isinstance(_js13k_owner_state, dict):',
-			'    _js13k_owner_state = {}',
-		])
-		for _name in sorted(_owner_attributes.keys()):
-			if str(_name) in reserved_attr_locals:
+	def _safe_c_identifier (_value, _fallback = 'script'):
+		txt = str(_value or '')
+		out = ''.join([ch if (ch.isalnum() or ch == '_') else '_' for ch in txt])
+		out = re.sub(r'_+', '_', out).strip('_')
+		if out == '':
+			out = str(_fallback)
+		if out[0].isdigit():
+			out = '_' + out
+		return out
+	def _collect_script_entries ():
+		entries = []
+		def _append (_owner_name, _script_txt, _is_init, _is_global, _script, _symbol_hint, _owner_attributes = None, _owner_attribute_types = None):
+			raw_script_txt = str(_script_txt or '')
+			norm_script_txt = _normalize_gb_script_code(raw_script_txt, bool(_is_init), 'gbc-py', _owner_name)
+			entries.append({
+				'code' : str(norm_script_txt or ''),
+				'raw_code' : raw_script_txt,
+				'source_code' : raw_script_txt,
+				'source_line_offset' : 0,
+				'is_init' : bool(_is_init),
+				'is_global' : bool(_is_global),
+				'script_obj' : _script,
+				'owner_name' : str(_owner_name or '__world__'),
+				'symbol_hint' : str(_symbol_hint or 'script'),
+				'owner_attributes' : dict(_owner_attributes) if isinstance(_owner_attributes, dict) else {},
+				'owner_attribute_types' : dict(_owner_attribute_types) if isinstance(_owner_attribute_types, dict) else {},
+			})
+		if world:
+			for scriptInfo in GetScripts(world):
+				if str(scriptInfo[2]) != 'gbc-py':
+					continue
+				_append(
+					'__world__',
+					scriptInfo[0],
+					scriptInfo[1],
+					bool(scriptInfo[4]) if len(scriptInfo) > 4 else False,
+					scriptInfo[3],
+					'world_' + getattr(scriptInfo[3], 'name', 'script'),
+					{},
+					{},
+				)
+		for ob in bpy.data.objects:
+			if (not getattr(ob, 'exportOb', False)) or ob.hide_get() or (not IsExportHierarchyEnabled(ob)):
 				continue
-			_default_expr = repr(_owner_attributes[_name])
-			lines.extend([
-				'try:',
-				'    setattr(this, ' + repr(str(_name)) + ', _js13k_owner_state.get(' + repr(str(_name)) + ', getattr(this, ' + repr(str(_name)) + ', ' + _default_expr + ')))',
-				'except:',
-				'    pass',
-			])
-		return '\n'.join(lines).strip()
+			try:
+				owner_attrs = dict(GetAttributes(ob) or {})
+			except Exception:
+				owner_attrs = {}
+			try:
+				owner_attr_types = dict(GetAttributeTypes(ob) or {})
+			except Exception:
+				owner_attr_types = {}
+			for scriptInfo in GetScripts(ob):
+				if str(scriptInfo[2]) != 'gbc-py':
+					continue
+				_append(
+					ob.name,
+					scriptInfo[0],
+					scriptInfo[1],
+					bool(scriptInfo[4]) if len(scriptInfo) > 4 else False,
+					scriptInfo[3],
+					ob.name + '_' + getattr(scriptInfo[3], 'name', 'script'),
+					owner_attrs,
+					owner_attr_types,
+				)
+		return entries
+	def _write_gbc_py_zgb_c (_script_entries, _out_path):
+		base_no_ext = os.path.splitext(str(_out_path or ''))[0]
+		if base_no_ext == '':
+			base_no_ext = os.path.join(TMP_DIR, 'export')
+		c_path = base_no_ext + '_scripts_zgb.c'
+		c_dir = os.path.dirname(c_path)
+		if c_dir != '':
+			os.makedirs(c_dir, exist_ok = True)
+		def _owner_sym (_owner):
+			return _safe_c_identifier(str(_owner or '__world__'), 'owner')
+		def _c_string_literal (_value):
+			s = str(_value or '')
+			s = s.replace('\\', '\\\\')
+			s = s.replace('"', '\\"')
+			s = s.replace('\n', '\\n')
+			s = s.replace('\r', '\\r')
+			s = s.replace('\t', '\\t')
+			return '"' + s + '"'
+		def _infer_field_spec (_value):
+			if isinstance(_value, str):
+				return ('const char*', _c_string_literal(_value))
+			if isinstance(_value, bool):
+				return ('int32_t', '1' if bool(_value) else '0')
+			if isinstance(_value, (int, float)):
+				try:
+					return ('int32_t', str(int(round(float(_value)))))
+				except Exception:
+					return ('int32_t', '0')
+			if isinstance(_value, (list, tuple)):
+				return ('int32_t*', '0')
+			return ('int32_t', '0')
+		zgb_vendor_include_dir = os.path.join(_thisDir, 'Third Party', 'ZGB', 'common', 'include').replace('\\', '/')
+		zgb_main_header = os.path.join(zgb_vendor_include_dir, 'main.h').replace('\\', '/')
+		if not os.path.isfile(zgb_main_header):
+			raise RuntimeError('Vendored ZGB header missing: ' + str(zgb_main_header))
+		owner_specs = {}
+		for _entry in list(_script_entries or []):
+			if not isinstance(_entry, dict):
+				continue
+			_owner = str(_entry.get('owner_name', '__world__') or '__world__')
+			_spec = owner_specs.setdefault(_owner, {})
+			_attrs = _entry.get('owner_attributes', {})
+			if isinstance(_attrs, dict):
+				for _name, _value in _attrs.items():
+					if not (isinstance(_name, str) and _name.isidentifier()):
+						continue
+					if _name not in _spec:
+						_spec[_name] = _infer_field_spec(_value)
+			_src = str(_entry.get('source_code', _entry.get('raw_code', _entry.get('code', ''))) or '')
+			try:
+				_tree = ast.parse(_src)
+				for _node in ast.walk(_tree):
+					if isinstance(_node, ast.Attribute) and isinstance(_node.value, ast.Name) and _node.value.id == 'this' and isinstance(_node.attr, str) and _node.attr.isidentifier():
+						_spec.setdefault(_node.attr, ('int32_t', '0'))
+			except Exception:
+				pass
+		lines = [
+			'/* Auto-generated by ExportGbcPyAssembly (gbc-py -> ZGB C). */',
+			'#include "main.h"',
+			'#include <stdint.h>',
+			'extern void js13k_print(int32_t v);',
+			'',
+			'/* pygame.key.get_pressed() compatibility for transpiled scripts. */',
+			'enum {',
+			'\tpygame_K_LEFT = 0,',
+			'\tpygame_K_RIGHT = 1,',
+			'\tpygame_K_UP = 2,',
+			'\tpygame_K_DOWN = 3,',
+			'\tpygame_K_A = 4,',
+			'\tpygame_K_B = 5,',
+			'\tpygame_K_START = 6,',
+			'\tpygame_K_SELECT = 7',
+			'};',
+			'static int32_t js13k_key_state[8] = {0,0,0,0,0,0,0,0};',
+			'static void js13k_update_key_state(void) {',
+			'\tUINT8 keys = joypad();',
+			'\tjs13k_key_state[pygame_K_LEFT] = (keys & J_LEFT) ? 1 : 0;',
+			'\tjs13k_key_state[pygame_K_RIGHT] = (keys & J_RIGHT) ? 1 : 0;',
+			'\tjs13k_key_state[pygame_K_UP] = (keys & J_UP) ? 1 : 0;',
+			'\tjs13k_key_state[pygame_K_DOWN] = (keys & J_DOWN) ? 1 : 0;',
+			'\tjs13k_key_state[pygame_K_A] = (keys & J_A) ? 1 : 0;',
+			'\tjs13k_key_state[pygame_K_B] = (keys & J_B) ? 1 : 0;',
+			'\tjs13k_key_state[pygame_K_START] = (keys & J_START) ? 1 : 0;',
+			'\tjs13k_key_state[pygame_K_SELECT] = (keys & J_SELECT) ? 1 : 0;',
+			'}',
+			'int32_t *pygame_key_get_pressed(void) { return js13k_key_state; }',
+			'',
+			'typedef int32_t (*js13k_gbc_script_fn_t)(void);',
+			'typedef struct js13k_gbc_script_entry_t {',
+			'\tconst char *owner;',
+			'\tuint8_t is_init;',
+			'\tuint8_t is_global;',
+			'\tjs13k_gbc_script_fn_t fn;',
+			'} js13k_gbc_script_entry_t;',
+			'',
+		]
+		for _owner in sorted(owner_specs.keys()):
+			_owner_struct = 'js13k_owner_state_' + _owner_sym(_owner) + '_t'
+			_owner_inst = 'js13k_owner_state_' + _owner_sym(_owner)
+			_this_ptr = 'js13k_this_' + _owner_sym(_owner)
+			_fields = owner_specs.get(_owner, {})
+			lines.append('typedef struct ' + _owner_struct + ' {')
+			if _fields == {}:
+				lines.append('\tint32_t __dummy;')
+			else:
+				for _field_name in sorted(_fields.keys()):
+					_field_type, _field_default = _fields[_field_name]
+					if _field_type == 'const char*':
+						lines.append('\tconst char *' + _field_name + ';')
+					elif _field_type == 'int32_t*':
+						lines.append('\tint32_t *' + _field_name + ';')
+					else:
+						lines.append('\tint32_t ' + _field_name + ';')
+			lines.append('} ' + _owner_struct + ';')
+			lines.append('static ' + _owner_struct + ' ' + _owner_inst + ' = {')
+			if _fields == {}:
+				lines.append('\t.__dummy = 0,')
+			else:
+				for _field_name in sorted(_fields.keys()):
+					_field_type, _field_default = _fields[_field_name]
+					lines.append('\t.' + _field_name + ' = ' + str(_field_default) + ',')
+			lines.append('};')
+			lines.append('static ' + _owner_struct + ' *' + _this_ptr + ' = &' + _owner_inst + ';')
+			lines.append('')
+		fn_rows = []
+		for idx, entry in enumerate(list(_script_entries or [])):
+			if not isinstance(entry, dict):
+				continue
+			is_init = bool(entry.get('is_init', False))
+			owner_name = str(entry.get('owner_name', '__world__') or '__world__')
+			this_var_name = 'js13k_this_' + _owner_sym(owner_name)
+			fn_name = 'js13k_gbc_%s_%s_%03i' %(
+				_safe_c_identifier(entry.get('symbol_hint', 'script'), 'script'),
+				('init' if is_init else 'update'),
+				int(idx),
+			)
+			# Prefer authored/source script text for C transpilation so runtime
+			# normalization shims (which can include Python-only try/except guards)
+			# do not expand the unsupported subset.
+			source_code = str(entry.get('source_code', entry.get('raw_code', entry.get('code', ''))) or '')
+			if callable(_gbc_transpiler_compile_script_to_c_function):
+				compiled_c = _gbc_transpiler_compile_script_to_c_function(
+					source_code,
+					function_name = fn_name,
+					this_var_name = this_var_name,
+				)
+				c_src = str(getattr(compiled_c, 'c_source', '') or '')
+				if c_src.strip() == '':
+					raise RuntimeError('C transpiler produced empty output for script function: ' + str(fn_name))
+				for row in c_src.rstrip().splitlines():
+					lines.append(str(row))
+			else:
+				raise RuntimeError('C transpiler backend unavailable for script function: ' + str(fn_name))
+			lines.append('')
+			fn_rows.append({
+				'owner_name' : owner_name,
+				'is_init' : bool(is_init),
+				'is_global' : bool(entry.get('is_global', False)),
+				'fn_name' : fn_name,
+			})
+		init_fn_names = [str(row['fn_name']) for row in fn_rows if bool(row.get('is_init', False))]
+		update_fn_names = [str(row['fn_name']) for row in fn_rows if not bool(row.get('is_init', False))]
+		owner_order = []
+		owner_init_map = {}
+		owner_update_map = {}
+		for row in fn_rows:
+			owner = str(row.get('owner_name', '__world__') or '__world__')
+			if owner not in owner_order:
+				owner_order.append(owner)
+			if bool(row.get('is_init', False)):
+				owner_init_map.setdefault(owner, []).append(str(row.get('fn_name', '')))
+			else:
+				owner_update_map.setdefault(owner, []).append(str(row.get('fn_name', '')))
+		lines.append('const js13k_gbc_script_entry_t js13k_gbc_scripts[] = {')
+		for row in fn_rows:
+			lines.append(
+				'\t{ '
+				+ json.dumps(str(row['owner_name']), ensure_ascii = True)
+				+ ', '
+				+ ('1' if bool(row['is_init']) else '0')
+				+ ', '
+				+ ('1' if bool(row['is_global']) else '0')
+				+ ', '
+				+ str(row['fn_name'])
+				+ ' },'
+			)
+		lines.extend([
+			'};',
+			'const uint16_t js13k_gbc_script_count = (uint16_t)(sizeof(js13k_gbc_scripts) / sizeof(js13k_gbc_scripts[0]));',
+			'',
+			'const js13k_gbc_script_fn_t js13k_gbc_init_scripts[] = {',
+		])
+		for fn_name in init_fn_names:
+			lines.append('\t' + str(fn_name) + ',')
+		lines.extend([
+			'};',
+			'const uint16_t js13k_gbc_init_script_count = (uint16_t)(sizeof(js13k_gbc_init_scripts) / sizeof(js13k_gbc_init_scripts[0]));',
+			'',
+			'const js13k_gbc_script_fn_t js13k_gbc_update_scripts[] = {',
+		])
+		for fn_name in update_fn_names:
+			lines.append('\t' + str(fn_name) + ',')
+		lines.extend([
+			'};',
+			'const uint16_t js13k_gbc_update_script_count = (uint16_t)(sizeof(js13k_gbc_update_scripts) / sizeof(js13k_gbc_update_scripts[0]));',
+			'',
+			'/* ZGB-facing state hooks. */',
+			'void js13k_zgb_START (void) {',
+			'\tuint16_t i;',
+			'\tjs13k_update_key_state();',
+			'\tfor (i = 0; i < js13k_gbc_init_script_count; ++i) if (js13k_gbc_init_scripts[i] != 0) js13k_gbc_init_scripts[i]();',
+			'}',
+			'',
+			'void js13k_zgb_UPDATE (void) {',
+			'\tuint16_t i;',
+			'\tjs13k_update_key_state();',
+			'\tfor (i = 0; i < js13k_gbc_update_script_count; ++i) if (js13k_gbc_update_scripts[i] != 0) js13k_gbc_update_scripts[i]();',
+			'}',
+			'',
+			'#ifdef JS13K_ZGB_BIND_STATE_HOOKS',
+			'void START (void) { js13k_zgb_START(); }',
+			'void UPDATE (void) { js13k_zgb_UPDATE(); }',
+			'#endif',
+			'',
+			'void js13k_gbc_run_all_init_scripts (void) {',
+			'\tuint16_t i;',
+			'\tfor (i = 0; i < js13k_gbc_init_script_count; ++i) if (js13k_gbc_init_scripts[i] != 0) js13k_gbc_init_scripts[i]();',
+			'}',
+			'',
+			'void js13k_gbc_run_all_update_scripts (void) {',
+			'\tuint16_t i;',
+			'\tfor (i = 0; i < js13k_gbc_update_script_count; ++i) if (js13k_gbc_update_scripts[i] != 0) js13k_gbc_update_scripts[i]();',
+			'}',
+			'',
+		])
+		for owner in owner_order:
+			owner_sym = _owner_sym(owner)
+			lines.append('void js13k_zgb_owner_' + owner_sym + '_START (void) {')
+			lines.append('\tjs13k_update_key_state();')
+			for fn_name in owner_init_map.get(owner, []):
+				if fn_name != '':
+					lines.append('\t' + fn_name + '();')
+			lines.append('}')
+			lines.append('void js13k_zgb_owner_' + owner_sym + '_UPDATE (void) {')
+			lines.append('\tjs13k_update_key_state();')
+			for fn_name in owner_update_map.get(owner, []):
+				if fn_name != '':
+					lines.append('\t' + fn_name + '();')
+			lines.append('}')
+			lines.append('')
+		with open(c_path, 'w', encoding = 'utf-8') as f:
+			f.write('\n'.join(lines) + '\n')
+		return c_path, zgb_vendor_include_dir
+	try:
+		runtime_script_entries = _collect_script_entries()
+		runtime = {
+			'script_count' : int(len(runtime_script_entries)),
+			'init_quit' : False,
+			'update_quit' : False,
+			'init_draw_circles' : [],
+			'update_draw_circles' : [],
+			'init_display_ops' : [],
+			'update_display_ops' : [],
+			'surface_ops' : [],
+			'builtin_only_quit' : True,
+		}
+		runtime = _augment_runtime_with_dynamic_circles(runtime, runtime_script_entries)
+		runtime['gbc_transpiled_scripts'] = []
+		runtime['script_backend'] = 'zgb_c'
+		zgb_c_path, zgb_vendor_include_dir = _write_gbc_py_zgb_c(runtime_script_entries, gbc_out_path)
+		runtime['zgb_c_path'] = str(zgb_c_path)
+		runtime['zgb_vendor_include_dir'] = str(zgb_vendor_include_dir)
+		runtime['zgb_vendor_root'] = os.path.join(_thisDir, 'third_party', 'ZGB').replace('\\', '/')
+		runtime['zgb_compile_include_flags'] = ['-I' + str(zgb_vendor_include_dir)]
+		runtime.pop('assembly_path', None)
+		_append_gbc_trace_lines([
+			'[gbc-trace] ExportGbcPyAssembly:runtime_script_entries=' + str(len(runtime_script_entries)),
+			'[gbc-trace] ExportGbcPyAssembly:zgb_c_path=' + str(runtime.get('zgb_c_path', '')),
+			'[gbc-trace] ExportGbcPyAssembly:end runtime_script_count=' + str(runtime.get('script_count', 0)),
+		])
+		return runtime
+	except Exception as err:
+		_append_gbc_trace_lines([
+			'[gbc-trace] ExportGbcPyAssembly:exception=' + str(err),
+		])
+		raise
+	finally:
+		exportType = prev_export
 
 def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 	if not isinstance(_owner_attributes, dict) or _owner_attributes == {}:
@@ -5910,56 +5957,10 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 				norm_script_txt = local_attr_suffix
 			else:
 				norm_script_txt = norm_script_txt + '\n' + local_attr_suffix
+		# GBC export now targets generated ZGB C only. Do not run asm-generating
+		# gbc transpiler paths while collecting script entries.
 		transpiled_meta = None
-		if callable(_gbc_transpiler_compile_velocity_script):
-			try:
-				owner_keys = set()
-				if isinstance(_owner_name, str) and _owner_name != '' and _owner_name != '__world__':
-					owner_keys.add(str(_owner_name))
-					owner_keys.add('_' + str(_owner_name))
-				if isinstance(_symbol_hint, str) and _symbol_hint != '':
-					owner_keys.add(str(_symbol_hint))
-					owner_keys.add('_' + str(_symbol_hint))
-				if owner_keys != set():
-					_comp_consts = _gbc_symbol_constants_from_attributes(rewrite_attributes)
-					_comp = _gbc_transpiler_compile_velocity_script(
-						norm_script_txt,
-						target_keys = sorted(owner_keys),
-						allow_this_id = bool(_owner_name != '__world__'),
-						script_name = str(_owner_name if _owner_name else '<script>'),
-						strict_compiler_mode = bool(_GBC_STRICT_COMPILER_MODE),
-						symbol_constants = _comp_consts,
-					)
-					if _comp is not None and isinstance(getattr(_comp, 'velocity_script', None), dict):
-						transpiled_meta = {
-							'velocity_script' : dict(getattr(_comp, 'velocity_script', {})),
-							'init_velocity' : list(getattr(_comp, 'init_velocity', [0, 0]) or [0, 0]),
-							'asm_byte_len' : len(bytes(getattr(_comp, 'asm_bytes', b'') or b'')),
-							'asm_listing' : list(getattr(_comp, 'asm_listing', []) or []),
-							'symbol_map' : dict(getattr(_comp, 'symbol_map', {}) or {}),
-							'diagnostics' : list(getattr(_comp, 'diagnostics', []) or []),
-						}
-			except Exception:
-				transpiled_meta = None
 		general_aot_meta = None
-		if _GBC_ENABLE_GENERAL_AOT and callable(_gbc_transpiler_compile_general_script):
-			try:
-				_general_comp = _gbc_transpiler_compile_general_script(
-					str(norm_script_txt or ''),
-					base_addr = 0x150,
-					symbol_prefix = 'script_' + str(_symbol_hint or _owner_name or 'anon'),
-				)
-				if _general_comp is not None:
-					general_aot_meta = {
-						'asm_byte_len' : len(bytes(getattr(_general_comp, 'asm_bytes', b'') or b'')),
-						'asm_listing' : list(getattr(_general_comp, 'asm_listing', []) or []),
-						'symbol_map' : dict(getattr(_general_comp, 'symbol_map', {}) or {}),
-						'diagnostics' : list(getattr(_general_comp, 'diagnostics', []) or []),
-						'init_offset' : getattr(_general_comp, 'init_offset', None),
-						'update_offset' : getattr(_general_comp, 'update_offset', None),
-					}
-			except Exception:
-				general_aot_meta = None
 		script_entries.append({
 			'code' : norm_script_txt,
 			'raw_code' : raw_script_txt,
@@ -6363,27 +6364,195 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 		pass
 	exportType = prev_export
 	transpiled_entries = []
-	try:
-		for _entry in list(runtime_script_entries or []):
-			_tm = _entry.get('gbc_transpiled', None) if isinstance(_entry, dict) else None
-			if not isinstance(_tm, dict):
+	def _safe_c_identifier (_value, _fallback = 'script'):
+		txt = str(_value or '')
+		out = ''.join([ch if (ch.isalnum() or ch == '_') else '_' for ch in txt])
+		out = re.sub(r'_+', '_', out).strip('_')
+		if out == '':
+			out = str(_fallback)
+		if out[0].isdigit():
+			out = '_' + out
+		return out
+	def _write_gbc_py_zgb_c (_script_entries, _out_path):
+		base_no_ext = os.path.splitext(str(_out_path or ''))[0]
+		if base_no_ext == '':
+			base_no_ext = os.path.join(TMP_DIR, 'export')
+		c_path = base_no_ext + '_scripts_zgb.c'
+		lines = [
+			'/*',
+			' * Auto-generated by ExportGbcPyAssembly.',
+			' * Source language: gbc-py',
+			' * Target: ZGB C',
+			' */',
+			'#include <gb/gb.h>',
+			'#include <stdint.h>',
+			'',
+			'typedef void (*js13k_gbc_script_fn_t)(void);',
+			'typedef struct js13k_gbc_script_entry_t {',
+			'\tconst char *owner;',
+			'\tuint8_t is_init;',
+			'\tuint8_t is_global;',
+			'\tjs13k_gbc_script_fn_t fn;',
+			'} js13k_gbc_script_entry_t;',
+			'',
+		]
+		fn_rows = []
+		for idx, entry in enumerate(list(_script_entries or [])):
+			if not isinstance(entry, dict):
 				continue
-			transpiled_entries.append({
-				'owner_name' : str(_entry.get('owner_name', '__world__') if isinstance(_entry, dict) else '__world__'),
-				'is_init' : bool(_entry.get('is_init', False) if isinstance(_entry, dict) else False),
-				'script' : dict(_tm),
+			owner_name = str(entry.get('owner_name', '__world__') or '__world__')
+			symbol_hint = str(entry.get('symbol_hint', 'script') or 'script')
+			is_init = bool(entry.get('is_init', False))
+			is_global = bool(entry.get('is_global', False))
+			phase = 'init' if is_init else 'update'
+			fn_name = 'js13k_gbc_%s_%s_%03i' %(
+				_safe_c_identifier(symbol_hint, 'script'),
+				str(phase),
+				int(idx),
+			)
+			lines.append('void ' + fn_name + ' (void) {')
+			lines.append('\t/* gbc-py source (manual port target):')
+			for row in str(entry.get('source_code', entry.get('raw_code', entry.get('code', ''))) or '').splitlines():
+				lines.append('\t * ' + str(row).replace('*/', '* /'))
+			lines.append('\t */')
+			lines.append('\t/* TODO: port script body to ZGB C manually. */')
+			lines.append('}')
+			lines.append('')
+			fn_rows.append({
+				'owner_name' : owner_name,
+				'is_init' : is_init,
+				'is_global' : is_global,
+				'fn_name' : fn_name,
 			})
-	except Exception:
-		transpiled_entries = []
+		init_fn_names = [str(row['fn_name']) for row in fn_rows if bool(row.get('is_init', False))]
+		update_fn_names = [str(row['fn_name']) for row in fn_rows if not bool(row.get('is_init', False))]
+		lines.append('const js13k_gbc_script_entry_t js13k_gbc_scripts[] = {')
+		for row in fn_rows:
+			lines.append(
+				'\t{ '
+				+ json.dumps(str(row['owner_name']), ensure_ascii = True)
+				+ ', '
+				+ ('1' if bool(row['is_init']) else '0')
+				+ ', '
+				+ ('1' if bool(row['is_global']) else '0')
+				+ ', '
+				+ str(row['fn_name'])
+				+ ' },'
+			)
+		lines.append('};')
+		lines.append('const uint16_t js13k_gbc_script_count = (uint16_t)(sizeof(js13k_gbc_scripts) / sizeof(js13k_gbc_scripts[0]));')
+		lines.append('')
+		lines.append('const js13k_gbc_script_fn_t js13k_gbc_init_scripts[] = {')
+		for fn_name in init_fn_names:
+			lines.append('\t' + str(fn_name) + ',')
+		lines.append('};')
+		lines.append('const uint16_t js13k_gbc_init_script_count = (uint16_t)(sizeof(js13k_gbc_init_scripts) / sizeof(js13k_gbc_init_scripts[0]));')
+		lines.append('')
+		lines.append('const js13k_gbc_script_fn_t js13k_gbc_update_scripts[] = {')
+		for fn_name in update_fn_names:
+			lines.append('\t' + str(fn_name) + ',')
+		lines.append('};')
+		lines.append('const uint16_t js13k_gbc_update_script_count = (uint16_t)(sizeof(js13k_gbc_update_scripts) / sizeof(js13k_gbc_update_scripts[0]));')
+		lines.append('')
+		lines.extend([
+			'static uint8_t js13k_gbc_owner_matches (const char *a, const char *b) {',
+			'\tif (a == b) return 1;',
+			'\tif ((a == 0) || (b == 0)) return 0;',
+			'\twhile ((*a != 0) && (*b != 0)) {',
+			'\t\tif (*a != *b) return 0;',
+			'\t\ta++;',
+			'\t\tb++;',
+			'\t}',
+			'\treturn (uint8_t)(*a == *b);',
+			'}',
+			'',
+			'void js13k_gbc_dispatch_init_script (uint16_t index) {',
+			'\tif (index >= js13k_gbc_init_script_count) return;',
+			'\tif (js13k_gbc_init_scripts[index] != 0) js13k_gbc_init_scripts[index]();',
+			'}',
+			'',
+			'void js13k_gbc_dispatch_update_script (uint16_t index) {',
+			'\tif (index >= js13k_gbc_update_script_count) return;',
+			'\tif (js13k_gbc_update_scripts[index] != 0) js13k_gbc_update_scripts[index]();',
+			'}',
+			'',
+			'void js13k_gbc_run_all_init_scripts (void) {',
+			'\tuint16_t i;',
+			'\tfor (i = 0; i < js13k_gbc_init_script_count; ++i) {',
+			'\t\tjs13k_gbc_dispatch_init_script(i);',
+			'\t}',
+			'}',
+			'',
+			'void js13k_gbc_run_all_update_scripts (void) {',
+			'\tuint16_t i;',
+			'\tfor (i = 0; i < js13k_gbc_update_script_count; ++i) {',
+			'\t\tjs13k_gbc_dispatch_update_script(i);',
+			'\t}',
+			'}',
+			'',
+			'void js13k_gbc_run_owner_init_scripts (const char *owner) {',
+			'\tuint16_t i;',
+			'\tfor (i = 0; i < js13k_gbc_script_count; ++i) {',
+			'\t\tconst js13k_gbc_script_entry_t *entry = &js13k_gbc_scripts[i];',
+			'\t\tif (!entry->is_init) continue;',
+			'\t\tif (!js13k_gbc_owner_matches(entry->owner, owner)) continue;',
+			'\t\tif (entry->fn != 0) entry->fn();',
+			'\t}',
+			'}',
+			'',
+			'void js13k_gbc_run_owner_update_scripts (const char *owner) {',
+			'\tuint16_t i;',
+			'\tfor (i = 0; i < js13k_gbc_script_count; ++i) {',
+			'\t\tconst js13k_gbc_script_entry_t *entry = &js13k_gbc_scripts[i];',
+			'\t\tif (entry->is_init) continue;',
+			'\t\tif (!js13k_gbc_owner_matches(entry->owner, owner)) continue;',
+			'\t\tif (entry->fn != 0) entry->fn();',
+			'\t}',
+			'}',
+			'',
+		])
+		with open(c_path, 'w', encoding = 'utf-8') as f:
+			f.write('\n'.join(lines) + '\n')
+		return c_path
+	def _finalize_gbc_runtime_export (_runtime):
+		runtime_out = _runtime if isinstance(_runtime, dict) else {
+			'script_count' : 0,
+			'init_quit' : False,
+			'update_quit' : False,
+			'init_draw_circles' : [],
+			'update_draw_circles' : [],
+			'init_display_ops' : [],
+			'update_display_ops' : [],
+			'surface_ops' : [],
+			'builtin_only_quit' : True,
+		}
+		runtime_out['script_count'] = int(len(list(runtime_script_entries or [])))
+		runtime_out = _augment_runtime_with_dynamic_circles(runtime_out, runtime_script_entries)
+		runtime_out['gbc_transpiled_scripts'] = list(transpiled_entries)
+		try:
+			zgb_c_path = _write_gbc_py_zgb_c(runtime_script_entries, gbc_out_path)
+			runtime_out['zgb_c_path'] = str(zgb_c_path)
+			runtime_out['script_backend'] = 'zgb_c'
+		except Exception as err:
+			_append_gbc_trace_lines([
+				'[gbc-trace] ExportGbcPyAssembly:zgb_c_export_failed=' + str(err),
+			])
+			runtime_out['script_backend'] = 'zgb_c_missing'
+		# GBC export now targets ZGB C output; remove assembly-centric metadata/artifacts.
+		asm_path = runtime_out.pop('assembly_path', None)
+		if isinstance(asm_path, str) and asm_path != '':
+			try:
+				if os.path.isfile(asm_path):
+					os.remove(asm_path)
+			except Exception:
+				pass
+		return runtime_out
 	if _py2gb_export_gba_py_assembly:
-		runtime = _run_py2gb_export_with_resolved_logs(_py2gb_export_gba_py_assembly, runtime_script_entries, gbc_out_path, strict_print_exprs = True)
-		runtime = _augment_runtime_with_dynamic_circles(runtime, runtime_script_entries)
-		if isinstance(runtime, dict):
-			runtime['gbc_transpiled_scripts'] = list(transpiled_entries)
-		return runtime
+		_append_gbc_trace_lines([
+			'[gbc-trace] ExportGbcPyAssembly:skipping_py2gb_asm_backend=1',
+		])
 	runtime = {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'init_display_ops' : [], 'update_display_ops' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
-	runtime = _augment_runtime_with_dynamic_circles(runtime, runtime_script_entries)
-	runtime['gbc_transpiled_scripts'] = list(transpiled_entries)
+	runtime = _finalize_gbc_runtime_export(runtime)
 	_append_gbc_trace_lines([
 		'[gbc-trace] ExportGbcPyAssembly:end runtime_script_count=' + str(runtime.get('script_count', 0) if isinstance(runtime, dict) else 0),
 	])
@@ -13766,6 +13935,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		init_scroll_y = int(camera_follow_center_y - int(init_y))
 		scroll_step_x = 0
 		scroll_step_y = 0
+	init_scx_u8 = (-_gbc_clamp_signed_byte(int(init_scroll_x))) & 0xFF
+	init_scy_u8 = (-_gbc_clamp_signed_byte(int(init_scroll_y))) & 0xFF
 	script_spec = velocity_script if isinstance(velocity_script, dict) else None
 	script_base_vx = 0
 	script_left_delta = 0
@@ -13977,8 +14148,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			pal_idx = sprite_tile_palette_idxs[idx] if idx < len(sprite_tile_palette_idxs) else 0
 			ld_a_imm(0x08 | (pal_idx & 0x07))  # OBJ tile bank 1 + palette
 			emit(0xEA, (base + 3) & 0xFF, ((base + 3) >> 8) & 0xFF)
-	ld_a_imm((-int(init_scroll_y)) & 0xFF); ldh_imm_a(0x42)
-	ld_a_imm((-int(init_scroll_x)) & 0xFF); ldh_imm_a(0x43)
+	ld_a_imm(int(init_scy_u8)); ldh_imm_a(0x42)
+	ld_a_imm(int(init_scx_u8)); ldh_imm_a(0x43)
 	ld_a_imm(0x93)  # LCDC on with OBJ
 	ldh_imm_a(0x40)
 	emit(0xFB)  # ei
@@ -14132,6 +14303,52 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		patch_jr(jr_done_hi_zero_sat, done_addr)
 		patch_jr(jr_done_hi_zero_ok, done_addr)
 		patch_jr(jr_done_hi_ff_sat, done_addr)
+	def _emit_clamp_scroll_i16_signed_byte (_scroll_addr, _scroll_hi_addr):
+		# Clamp runtime scroll state so projection stays in sync with SCX/SCY.
+		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)  # ld a,(scroll hi)
+		emit(0xFE, 0x00)  # cp 0
+		jr_hi_zero = jr(0x28)  # jr z, hi_zero
+		emit(0xFE, 0xFF)  # cp $FF
+		jr_hi_ff = jr(0x28)  # jr z, hi_ff
+		emit(0xCB, 0x7F)  # bit 7,a
+		jr_hi_other_neg = jr(0x20)  # jr nz, hi_other_neg
+		ld_a_imm(0x7F)
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		emit(0xAF)  # xor a
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		jr_done_pos = jr(0x18)  # jr done
+		hi_other_neg_addr = len(code)
+		patch_jr(jr_hi_other_neg, hi_other_neg_addr)
+		ld_a_imm(0x80)
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		ld_a_imm(0xFF)
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		jr_done_neg = jr(0x18)  # jr done
+		hi_zero_addr = len(code)
+		patch_jr(jr_hi_zero, hi_zero_addr)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
+		emit(0xFE, 0x80)  # cp 128
+		jr_hi_zero_ok = jr(0x38)  # jr c, done
+		ld_a_imm(0x7F)
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		emit(0xAF)  # xor a
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		jr_done_hi_zero = jr(0x18)  # jr done
+		hi_ff_addr = len(code)
+		patch_jr(jr_hi_ff, hi_ff_addr)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
+		emit(0xFE, 0x80)  # cp 128
+		jr_hi_ff_ok = jr(0x30)  # jr nc, done
+		ld_a_imm(0x80)
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		ld_a_imm(0xFF)
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		done_addr = len(code)
+		patch_jr(jr_done_pos, done_addr)
+		patch_jr(jr_done_neg, done_addr)
+		patch_jr(jr_hi_zero_ok, done_addr)
+		patch_jr(jr_done_hi_zero, done_addr)
+		patch_jr(jr_hi_ff_ok, done_addr)
 	# Runtime display scroll: either scripted scroll profile or follow-camera mode.
 	if camera_follow_mode:
 		# scroll_x = center_x - x (full 16-bit; avoids 255px wrap)
@@ -14158,9 +14375,9 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		emit(0xEA, scroll_y_hi_addr & 0xFF, (scroll_y_hi_addr >> 8) & 0xFF)
 	else:
 		_emit_scroll_axis_step(scroll_x_addr, scroll_x_hi_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
-		_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -clamped(scroll_x)
 		_emit_scroll_axis_step(scroll_y_addr, scroll_y_hi_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
-		_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)  # SCY = -clamped(scroll_y)
+	# Keep runtime scroll as full 16-bit so projection never aliases every 256px.
+	# Only SCX/SCY writes are clamped because hardware scroll registers are 8-bit.
 	# Program hardware scroll registers from current scroll vars.
 	_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -clamped(scroll_x)
 	_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)  # SCY = -clamped(scroll_y)
@@ -14575,6 +14792,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			aot_body_sources[int(body_idx)] = src
 	aot_init_call_patches = []
 	aot_update_call_patches = []
+	init_scx_u8 = (-_gbc_clamp_signed_byte(int(init_scroll_x))) & 0xFF
+	init_scy_u8 = (-_gbc_clamp_signed_byte(int(init_scroll_y))) & 0xFF
 	scroll_x_addr = 0xC0F0
 	scroll_y_addr = 0xC0F1
 	scroll_acc_x_addr = 0xC0F6
@@ -14821,8 +15040,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				attr = 0x08 | (int(sprite_tile_palette_idxs[tile_idx]) & 0x07) if tile_idx < len(sprite_tile_palette_idxs) else (0x08 | (palette_idx & 0x07))
 				ld_a_imm(attr)
 				emit(0xEA, (oam_addr + 3) & 0xFF, ((oam_addr + 3) >> 8) & 0xFF)  # attrs
-	ld_a_imm((-int(init_scroll_y)) & 0xFF); ldh_imm_a(0x42)
-	ld_a_imm((-int(init_scroll_x)) & 0xFF); ldh_imm_a(0x43)
+	ld_a_imm(int(init_scy_u8)); ldh_imm_a(0x42)
+	ld_a_imm(int(init_scx_u8)); ldh_imm_a(0x43)
 	ld_a_imm(0x93)  # LCDC on with OBJ
 	ldh_imm_a(0x40)
 	emit(0xFB)  # ei
@@ -14960,10 +15179,56 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		patch_jr(jr_done_hi_zero_sat, done_addr)
 		patch_jr(jr_done_hi_zero_ok, done_addr)
 		patch_jr(jr_done_hi_ff_sat, done_addr)
+	def _emit_clamp_scroll_i16_signed_byte (_scroll_addr, _scroll_hi_addr):
+		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)  # ld a,(scroll hi)
+		emit(0xFE, 0x00)  # cp 0
+		jr_hi_zero = jr(0x28)  # jr z, hi_zero
+		emit(0xFE, 0xFF)  # cp $FF
+		jr_hi_ff = jr(0x28)  # jr z, hi_ff
+		emit(0xCB, 0x7F)  # bit 7,a
+		jr_hi_other_neg = jr(0x20)  # jr nz, hi_other_neg
+		ld_a_imm(0x7F)
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		emit(0xAF)  # xor a
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		jr_done_pos = jr(0x18)
+		hi_other_neg_addr = len(code)
+		patch_jr(jr_hi_other_neg, hi_other_neg_addr)
+		ld_a_imm(0x80)
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		ld_a_imm(0xFF)
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		jr_done_neg = jr(0x18)
+		hi_zero_addr = len(code)
+		patch_jr(jr_hi_zero, hi_zero_addr)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
+		emit(0xFE, 0x80)  # cp 128
+		jr_hi_zero_ok = jr(0x38)  # jr c, done
+		ld_a_imm(0x7F)
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		emit(0xAF)  # xor a
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		jr_done_hi_zero = jr(0x18)
+		hi_ff_addr = len(code)
+		patch_jr(jr_hi_ff, hi_ff_addr)
+		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
+		emit(0xFE, 0x80)  # cp 128
+		jr_hi_ff_ok = jr(0x30)  # jr nc, done
+		ld_a_imm(0x80)
+		emit(0xEA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)
+		ld_a_imm(0xFF)
+		emit(0xEA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)
+		done_addr = len(code)
+		patch_jr(jr_done_pos, done_addr)
+		patch_jr(jr_done_neg, done_addr)
+		patch_jr(jr_hi_zero_ok, done_addr)
+		patch_jr(jr_done_hi_zero, done_addr)
+		patch_jr(jr_hi_ff_ok, done_addr)
 	# Runtime display scroll shared across all bodies.
 	_emit_scroll_axis_step(scroll_x_addr, scroll_x_hi_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
-	_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -clamped(scroll_x)
 	_emit_scroll_axis_step(scroll_y_addr, scroll_y_hi_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
+	# Preserve full 16-bit scroll for projection; clamp only for SCX/SCY output.
+	_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -clamped(scroll_x)
 	_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)  # SCY = -clamped(scroll_y)
 	for body_idx, body in enumerate(bodies):
 		base = 0xC100 + body_idx * 8
@@ -20881,8 +21146,13 @@ def BuildGbc (world):
 				'[gbc-trace] BuildGbc:script_runtime_non_dict=' + str(type(script_runtime)),
 			])
 			script_runtime = _build_fallback_gbc_script_runtime(world)
+		zgb_c_path = str((script_runtime or {}).get('zgb_c_path', '') or '')
+		if zgb_c_path == '' or (not os.path.isfile(zgb_c_path)):
+			raise RuntimeError('GBC export requires generated ZGB C script backend; missing file: ' + str(zgb_c_path or '<none>'))
 		_append_gbc_trace_lines([
 			'[gbc-trace] BuildGbc:print_calls=' + str(len(list((script_runtime or {}).get('print_calls') or []))),
+			'[gbc-trace] BuildGbc:script_backend=' + str((script_runtime or {}).get('script_backend', '<none>')),
+			'[gbc-trace] BuildGbc:zgb_c_path=' + str(zgb_c_path),
 		])
 		_append_gbc_trace_lines([
 			'[gbc-trace] BuildGbc:after ExportGbcPyAssembly',
@@ -22567,7 +22837,7 @@ SHAPE_TYPES = ['ball', 'halfspace', 'cuboid', 'roundCuboid', 'capsule', 'segment
 RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinematicPositionBased', 'kinematic-position-based', ''), ('kinematicVelocityBased', 'kinematic-velocity-based', '')]
 RIGID_BODY_TYPES = ['dynamic', 'fixed', 'kinematicPositionBased', 'kinematicVelocityBased']
 JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
-SCRIPT_TYPE_ITEMS = [('html-py', 'html-py', ''), ('html-js', 'html-js', ''), ('exe', 'exe', ''), ('unity', 'unity', ''), ('gba-py', 'gba-py', 'Python → Thumb asm for GBA (see Export to GBA)'), ('gbc-py', 'gbc-py', 'Python → assembly for GBC (see Export to GBC)')]
+SCRIPT_TYPE_ITEMS = [('html-py', 'html-py', ''), ('html-js', 'html-js', ''), ('exe', 'exe', ''), ('unity', 'unity', ''), ('gba-py', 'gba-py', 'Python → Thumb asm for GBA (see Export to GBA)'), ('gbc-py', 'gbc-py', 'Python → ZGB C for GBC (see Export to GBC)')]
 BOUNCINESS_COMBINE_RULE_ITEMS = [('average', 'average', ''), ('minimum', 'min', ''), ('multiply', 'multiply', ''), ('maximum', 'max', '')]
 BOUNCINESS_COMBINE_RULES = ['average', 'minimum', 'multiply', 'maximum']
 
