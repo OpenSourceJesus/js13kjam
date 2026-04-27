@@ -649,14 +649,20 @@ def compile_velocity_script (
 	base_vy_found = False
 	left_delta = 0
 	right_delta = 0
+	up_delta = 0
+	down_delta = 0
 	jump_y = None
 	jump_vy_max = None
 	jump_release_cut = False
 	jump_edge_trigger = False
 	saw_left_assign = False
 	saw_right_assign = False
+	saw_up_assign = False
+	saw_down_assign = False
 	unresolved_left_assign = False
 	unresolved_right_assign = False
+	unresolved_up_assign = False
+	unresolved_down_assign = False
 	saw_jump_assign = False
 	unresolved_jump_assign = False
 	target_hit = False
@@ -710,15 +716,17 @@ def compile_velocity_script (
 			if isinstance(stmt.target, IrSubscript) and isinstance(stmt.target.base, IrName) and stmt.target.base.name == vel_alias_name:
 				d = _small_int(stmt.value, consts)
 				idx = _subscript_const_index(stmt.target)
-				if isinstance(d, int) and isinstance(idx, int) and idx == 0:
+				if isinstance(d, int) and isinstance(idx, int) and idx in (0, 1):
 					if stmt.op == '-':
 						d = -d
-					key_name = None
-					# left/right deltas are inferred in enclosing if blocks; direct
-					# top-level aug-assign on vel[0] is treated as baseline motion.
-					if key_name is None:
+					# key deltas are inferred in enclosing if blocks; direct top-level
+					# aug-assign on vel components is treated as baseline motion.
+					if idx == 0:
 						base_vx += d
 						base_vx_found = True
+					else:
+						base_vy += d
+						base_vy_found = True
 		elif isinstance(stmt, IrExprStmt) and isinstance(stmt.value, IrCall):
 			call = stmt.value
 			if (
@@ -783,6 +791,19 @@ def compile_velocity_script (
 								right_delta += d
 							else:
 								unresolved_right_assign = True
+					elif idx == 1:
+						if key_name == 'K_UP':
+							saw_up_assign = True
+							if isinstance(d, int):
+								up_delta += d
+							else:
+								unresolved_up_assign = True
+						elif key_name == 'K_DOWN':
+							saw_down_assign = True
+							if isinstance(d, int):
+								down_delta += d
+							else:
+								unresolved_down_assign = True
 			(
 				jump_y,
 				jump_vy_max,
@@ -819,6 +840,10 @@ def compile_velocity_script (
 		dynamic_reasons.append('left_delta')
 	if saw_right_assign and unresolved_right_assign:
 		dynamic_reasons.append('right_delta')
+	if saw_up_assign and unresolved_up_assign:
+		dynamic_reasons.append('up_delta')
+	if saw_down_assign and unresolved_down_assign:
+		dynamic_reasons.append('down_delta')
 	if saw_jump_assign and unresolved_jump_assign:
 		dynamic_reasons.append('jump_y')
 	if dynamic_reasons != []:
@@ -842,6 +867,8 @@ def compile_velocity_script (
 		'base_vy': int(base_vy),
 		'left_delta': int(left_delta),
 		'right_delta': int(right_delta),
+		'up_delta': int(up_delta),
+		'down_delta': int(down_delta),
 		'jump_y': None if jump_y is None else int(jump_y),
 		'jump_vy_max': None if jump_vy_max is None else int(jump_vy_max),
 		'jump_release_cut': bool(jump_release_cut),

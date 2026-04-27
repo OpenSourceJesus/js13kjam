@@ -20,11 +20,13 @@ class GbcCameraScrollRegressionTests(unittest.TestCase):
 		self.assertNotIn('% 65536', body)
 		self.assertNotIn('& 0xFFFF', body)
 
-	def test_scx_scy_writes_use_clamped_i16_helper(self):
+	def test_scx_scy_writes_do_not_clamp_camera_position(self):
 		src = self._read_main_py()
 		self.assertGreaterEqual(src.count('def _emit_hw_scroll_from_i16_clamped'), 2)
 		self.assertIn('_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)', src)
 		self.assertIn('_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)', src)
+		self.assertNotIn('(-_gbc_clamp_signed_byte(int(init_scroll_x))) & 0xFF', src)
+		self.assertNotIn('(-_gbc_clamp_signed_byte(int(init_scroll_y))) & 0xFF', src)
 
 	def test_runtime_projection_keeps_full_i16_scroll_state(self):
 		src = self._read_main_py()
@@ -91,6 +93,11 @@ class GbcCameraScrollRegressionTests(unittest.TestCase):
 		self.assertIn('MirrorSimPosNormalize:kind=', src)
 		self.assertIn("env['sim'] = _sim_obj", src)
 		self.assertIn("env['physics'] = _sim_obj", src)
+
+	def test_mirror_eval_seeds_shared_global_state_into_env(self):
+		src = self._read_main_py()
+		self.assertIn("env['_js13k_gbc_global_values'] = shared_global_values", src)
+		self.assertIn("env['_js13k_gbc_global_init_done'] = init_done", src)
 
 	def test_mirror_this_col_uses_fuzzy_collider_lookup(self):
 		src = self._read_main_py()

@@ -10803,6 +10803,21 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					if _name in env:
 						continue
 					env[_name] = shared_global_values.get(_name, 0)
+			# Mirror scripts run under per-script globals dicts; expose shared global
+			# backing stores explicitly so generated global init prelude does not
+			# recreate/reset them per script execution.
+			if isinstance(shared_global_values, dict):
+				env['_js13k_gbc_global_values'] = shared_global_values
+			else:
+				shared_global_values = {}
+				_g_runtime['_js13k_gbc_global_values'] = shared_global_values
+				env['_js13k_gbc_global_values'] = shared_global_values
+			if isinstance(init_done, set):
+				env['_js13k_gbc_global_init_done'] = init_done
+			else:
+				init_done = set()
+				_g_runtime['_js13k_gbc_global_init_done'] = init_done
+				env['_js13k_gbc_global_init_done'] = init_done
 			# Runtime scripts share globals; mirror eval should expose world-scope
 			# bindings (for example global gbc-py vars) to local owner scripts.
 			if owner != '__world__':
@@ -13935,12 +13950,15 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		init_scroll_y = int(camera_follow_center_y - int(init_y))
 		scroll_step_x = 0
 		scroll_step_y = 0
-	init_scx_u8 = (-_gbc_clamp_signed_byte(int(init_scroll_x))) & 0xFF
-	init_scy_u8 = (-_gbc_clamp_signed_byte(int(init_scroll_y))) & 0xFF
+	init_scx_u8 = (-int(init_scroll_x)) & 0xFF
+	init_scy_u8 = (-int(init_scroll_y)) & 0xFF
 	script_spec = velocity_script if isinstance(velocity_script, dict) else None
 	script_base_vx = 0
+	script_base_vy = 0
 	script_left_delta = 0
 	script_right_delta = 0
+	script_up_delta = 0
+	script_down_delta = 0
 	script_jump_y = None
 	script_jump_vy_max = None
 	script_jump_release_cut = False
@@ -13948,8 +13966,12 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 	if script_spec is not None:
 		# Script-space X is opposite phase1 internal X (step uses invert_dir = True).
 		script_base_vx = _gbc_clamp_signed_byte(-int(script_spec.get('base_vx', 0)))
+		# Script-space Y is up, internal phase1 velocity is down.
+		script_base_vy = _gbc_clamp_signed_byte(-int(script_spec.get('base_vy', 0)))
 		script_left_delta = _gbc_clamp_signed_byte(-int(script_spec.get('left_delta', 0)))
 		script_right_delta = _gbc_clamp_signed_byte(-int(script_spec.get('right_delta', 0)))
+		script_up_delta = _gbc_clamp_signed_byte(-int(script_spec.get('up_delta', 0)))
+		script_down_delta = _gbc_clamp_signed_byte(-int(script_spec.get('down_delta', 0)))
 		if script_spec.get('jump_y', None) is not None:
 			script_jump_y = _gbc_clamp_signed_byte(int(script_spec.get('jump_y', 0)))
 		if script_spec.get('jump_vy_max', None) is not None:
@@ -14253,56 +14275,11 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		frac_done_addr = len(code)
 		patch_jr(jr_frac_done, frac_done_addr)
 	def _emit_hw_scroll_from_i16_clamped (_scroll_addr, _scroll_hi_addr, _hw_reg):
-		# Hardware SCX/SCY are 8-bit, so writing raw low byte causes 256px wrap.
-		# Clamp signed scroll to [-128, 127] before negating for SCX/SCY.
-		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)  # ld a,(scroll hi)
-		emit(0xFE, 0x00)  # cp 0
-		jr_hi_zero = jr(0x28)  # jr z, hi_zero
-		emit(0xFE, 0xFF)  # cp $FF
-		jr_hi_ff = jr(0x28)  # jr z, hi_ff
-		emit(0xCB, 0x7F)  # bit 7,a
-		jr_sat_neg = jr(0x20)  # jr nz, sat_neg
-		ld_a_imm(0x81)  # -(+127) => 129
-		ldh_imm_a(_hw_reg)
-		jr_done_pos_sat = jr(0x18)  # jr done
-		sat_neg_addr = len(code)
-		patch_jr(jr_sat_neg, sat_neg_addr)
-		ld_a_imm(0x80)  # -(-128) => 128
-		ldh_imm_a(_hw_reg)
-		jr_done_neg_sat = jr(0x18)  # jr done
-		hi_zero_addr = len(code)
-		patch_jr(jr_hi_zero, hi_zero_addr)
+		# Keep camera scroll unclamped for GBC exports: SCX/SCY get raw -scroll low byte.
 		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
-		emit(0xFE, 0x80)  # cp 128
-		jr_hi_zero_in_range = jr(0x38)  # jr c, in_range
-		ld_a_imm(0x81)  # +overflow => clamp +127
-		ldh_imm_a(_hw_reg)
-		jr_done_hi_zero_sat = jr(0x18)  # jr done
-		hi_zero_in_range_addr = len(code)
-		patch_jr(jr_hi_zero_in_range, hi_zero_in_range_addr)
 		emit(0x2F)  # cpl
 		emit(0x3C)  # inc a
 		ldh_imm_a(_hw_reg)
-		jr_done_hi_zero_ok = jr(0x18)  # jr done
-		hi_ff_addr = len(code)
-		patch_jr(jr_hi_ff, hi_ff_addr)
-		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
-		emit(0xFE, 0x80)  # cp 128
-		jr_hi_ff_in_range = jr(0x30)  # jr nc, in_range
-		ld_a_imm(0x80)  # -overflow => clamp -128
-		ldh_imm_a(_hw_reg)
-		jr_done_hi_ff_sat = jr(0x18)  # jr done
-		hi_ff_in_range_addr = len(code)
-		patch_jr(jr_hi_ff_in_range, hi_ff_in_range_addr)
-		emit(0x2F)  # cpl
-		emit(0x3C)  # inc a
-		ldh_imm_a(_hw_reg)
-		done_addr = len(code)
-		patch_jr(jr_done_pos_sat, done_addr)
-		patch_jr(jr_done_neg_sat, done_addr)
-		patch_jr(jr_done_hi_zero_sat, done_addr)
-		patch_jr(jr_done_hi_zero_ok, done_addr)
-		patch_jr(jr_done_hi_ff_sat, done_addr)
 	def _emit_clamp_scroll_i16_signed_byte (_scroll_addr, _scroll_hi_addr):
 		# Clamp runtime scroll state so projection stays in sync with SCX/SCY.
 		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)  # ld a,(scroll hi)
@@ -14377,10 +14354,10 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		_emit_scroll_axis_step(scroll_x_addr, scroll_x_hi_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
 		_emit_scroll_axis_step(scroll_y_addr, scroll_y_hi_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
 	# Keep runtime scroll as full 16-bit so projection never aliases every 256px.
-	# Only SCX/SCY writes are clamped because hardware scroll registers are 8-bit.
+	# SCX/SCY writes use raw low-byte negation (no camera-position clamp).
 	# Program hardware scroll registers from current scroll vars.
-	_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -clamped(scroll_x)
-	_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)  # SCY = -clamped(scroll_y)
+	_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -scroll_x (low byte)
+	_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)  # SCY = -scroll_y (low byte)
 	# Integrate gravity to velocity with a 1/60 accumulator every frame.
 	# Apply multiple velocity steps when |gravity| exceeds denominator.
 	emit_gravity_axis_step(gacc_x_addr, vx_addr, grav_step_x)
@@ -14389,6 +14366,8 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 		# Apply interpreted gbc-py velocity script each frame.
 		ld_a_imm(script_base_vx)
 		emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+		ld_a_imm(script_base_vy)
+		emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
 		if script_right_delta != 0:
 			ld_a_imm(0x20)  # P1: direction keys
 			ldh_imm_a(0x00)
@@ -14413,6 +14392,30 @@ def _gbc_build_dynamic_physics_program (bg_data_addr : int, bg_tile_data_len : i
 			emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 			left_skip_addr = len(code)
 			patch_jr(jr_left_skip, left_skip_addr)
+		if script_up_delta != 0:
+			ld_a_imm(0x20)  # P1: direction keys
+			ldh_imm_a(0x00)
+			emit(0xF0, 0x00)  # ldh a,(rP1)
+			emit(0xE6, 0x04)  # and $04 (up; active low)
+			emit(0xFE, 0x00)  # cp $00 (pressed)
+			jr_up_skip = jr(0x20)  # jr nz, skip_up
+			emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+			emit(0xC6, int(script_up_delta) & 0xFF)  # add a,delta (byte-wrapped)
+			emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+			up_skip_addr = len(code)
+			patch_jr(jr_up_skip, up_skip_addr)
+		if script_down_delta != 0:
+			ld_a_imm(0x20)  # P1: direction keys
+			ldh_imm_a(0x00)
+			emit(0xF0, 0x00)  # ldh a,(rP1)
+			emit(0xE6, 0x08)  # and $08 (down; active low)
+			emit(0xFE, 0x00)  # cp $00 (pressed)
+			jr_down_skip = jr(0x20)  # jr nz, skip_down
+			emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+			emit(0xC6, int(script_down_delta) & 0xFF)  # add a,delta (byte-wrapped)
+			emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+			down_skip_addr = len(code)
+			patch_jr(jr_down_skip, down_skip_addr)
 		if script_jump_y is not None:
 			ld_a_imm(0x10)  # P1: action keys
 			ldh_imm_a(0x00)
@@ -14792,8 +14795,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 			aot_body_sources[int(body_idx)] = src
 	aot_init_call_patches = []
 	aot_update_call_patches = []
-	init_scx_u8 = (-_gbc_clamp_signed_byte(int(init_scroll_x))) & 0xFF
-	init_scy_u8 = (-_gbc_clamp_signed_byte(int(init_scroll_y))) & 0xFF
+	init_scx_u8 = (-int(init_scroll_x)) & 0xFF
+	init_scy_u8 = (-int(init_scroll_y)) & 0xFF
 	scroll_x_addr = 0xC0F0
 	scroll_y_addr = 0xC0F1
 	scroll_acc_x_addr = 0xC0F6
@@ -15130,55 +15133,11 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		frac_done_addr = len(code)
 		patch_jr(jr_frac_done, frac_done_addr)
 	def _emit_hw_scroll_from_i16_clamped (_scroll_addr, _scroll_hi_addr, _hw_reg):
-		# SCX/SCY are byte registers; clamp signed scroll to avoid 256px wrap.
-		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)  # ld a,(scroll hi)
-		emit(0xFE, 0x00)  # cp 0
-		jr_hi_zero = jr(0x28)  # jr z, hi_zero
-		emit(0xFE, 0xFF)  # cp $FF
-		jr_hi_ff = jr(0x28)  # jr z, hi_ff
-		emit(0xCB, 0x7F)  # bit 7,a
-		jr_sat_neg = jr(0x20)  # jr nz, sat_neg
-		ld_a_imm(0x81)  # -(+127) => 129
-		ldh_imm_a(_hw_reg)
-		jr_done_pos_sat = jr(0x18)
-		sat_neg_addr = len(code)
-		patch_jr(jr_sat_neg, sat_neg_addr)
-		ld_a_imm(0x80)  # -(-128) => 128
-		ldh_imm_a(_hw_reg)
-		jr_done_neg_sat = jr(0x18)
-		hi_zero_addr = len(code)
-		patch_jr(jr_hi_zero, hi_zero_addr)
+		# Keep camera scroll unclamped for GBC exports: SCX/SCY get raw -scroll low byte.
 		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
-		emit(0xFE, 0x80)  # cp 128
-		jr_hi_zero_in_range = jr(0x38)  # jr c, in_range
-		ld_a_imm(0x81)
-		ldh_imm_a(_hw_reg)
-		jr_done_hi_zero_sat = jr(0x18)
-		hi_zero_in_range_addr = len(code)
-		patch_jr(jr_hi_zero_in_range, hi_zero_in_range_addr)
 		emit(0x2F)  # cpl
 		emit(0x3C)  # inc a
 		ldh_imm_a(_hw_reg)
-		jr_done_hi_zero_ok = jr(0x18)
-		hi_ff_addr = len(code)
-		patch_jr(jr_hi_ff, hi_ff_addr)
-		emit(0xFA, _scroll_addr & 0xFF, (_scroll_addr >> 8) & 0xFF)  # ld a,(scroll lo)
-		emit(0xFE, 0x80)  # cp 128
-		jr_hi_ff_in_range = jr(0x30)  # jr nc, in_range
-		ld_a_imm(0x80)
-		ldh_imm_a(_hw_reg)
-		jr_done_hi_ff_sat = jr(0x18)
-		hi_ff_in_range_addr = len(code)
-		patch_jr(jr_hi_ff_in_range, hi_ff_in_range_addr)
-		emit(0x2F)  # cpl
-		emit(0x3C)  # inc a
-		ldh_imm_a(_hw_reg)
-		done_addr = len(code)
-		patch_jr(jr_done_pos_sat, done_addr)
-		patch_jr(jr_done_neg_sat, done_addr)
-		patch_jr(jr_done_hi_zero_sat, done_addr)
-		patch_jr(jr_done_hi_zero_ok, done_addr)
-		patch_jr(jr_done_hi_ff_sat, done_addr)
 	def _emit_clamp_scroll_i16_signed_byte (_scroll_addr, _scroll_hi_addr):
 		emit(0xFA, _scroll_hi_addr & 0xFF, (_scroll_hi_addr >> 8) & 0xFF)  # ld a,(scroll hi)
 		emit(0xFE, 0x00)  # cp 0
@@ -15227,9 +15186,9 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 	# Runtime display scroll shared across all bodies.
 	_emit_scroll_axis_step(scroll_x_addr, scroll_x_hi_addr, scroll_acc_x_addr, scroll_step_x, scroll_step_den_x)
 	_emit_scroll_axis_step(scroll_y_addr, scroll_y_hi_addr, scroll_acc_y_addr, scroll_step_y, scroll_step_den_y)
-	# Preserve full 16-bit scroll for projection; clamp only for SCX/SCY output.
-	_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -clamped(scroll_x)
-	_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)  # SCY = -clamped(scroll_y)
+	# Preserve full 16-bit scroll for projection; no camera-position clamp on SCX/SCY.
+	_emit_hw_scroll_from_i16_clamped(scroll_x_addr, scroll_x_hi_addr, 0x43)  # SCX = -scroll_x (low byte)
+	_emit_hw_scroll_from_i16_clamped(scroll_y_addr, scroll_y_hi_addr, 0x42)  # SCY = -scroll_y (low byte)
 	for body_idx, body in enumerate(bodies):
 		base = 0xC100 + body_idx * 8
 		y_addr = base + 0
@@ -15254,8 +15213,11 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		grav_step_y = int(body.get('grav_step_y', 1))
 		script_spec = body.get('velocity_script') if isinstance(body.get('velocity_script'), dict) else None
 		script_base_vx = 0
+		script_base_vy = 0
 		script_left_delta = 0
 		script_right_delta = 0
+		script_up_delta = 0
+		script_down_delta = 0
 		script_jump_y = None
 		script_jump_vy_max = None
 		script_jump_release_cut = False
@@ -15263,8 +15225,12 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		if script_spec is not None:
 			# Script-space X is opposite phase1 internal X (step uses invert_dir = True).
 			script_base_vx = _gbc_clamp_signed_byte(-int(script_spec.get('base_vx', 0)))
+			# Script-space Y is up, internal phase1 velocity is down.
+			script_base_vy = _gbc_clamp_signed_byte(-int(script_spec.get('base_vy', 0)))
 			script_left_delta = _gbc_clamp_signed_byte(-int(script_spec.get('left_delta', 0)))
 			script_right_delta = _gbc_clamp_signed_byte(-int(script_spec.get('right_delta', 0)))
+			script_up_delta = _gbc_clamp_signed_byte(-int(script_spec.get('up_delta', 0)))
+			script_down_delta = _gbc_clamp_signed_byte(-int(script_spec.get('down_delta', 0)))
 			if script_spec.get('jump_y', None) is not None:
 				script_jump_y = _gbc_clamp_signed_byte(int(script_spec.get('jump_y', 0)))
 			if script_spec.get('jump_vy_max', None) is not None:
@@ -15282,6 +15248,8 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 		if script_spec is not None:
 			ld_a_imm(script_base_vx)
 			emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
+			ld_a_imm(script_base_vy)
+			emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
 			if script_right_delta != 0:
 				ld_a_imm(0x20)  # P1: direction keys
 				ldh_imm_a(0x00)
@@ -15306,6 +15274,30 @@ def _gbc_build_dynamic_physics_program_multi (bg_data_addr : int, bg_tile_data_l
 				emit(0xEA, vx_addr & 0xFF, (vx_addr >> 8) & 0xFF)
 				left_skip_addr = len(code)
 				patch_jr(jr_left_skip, left_skip_addr)
+			if script_up_delta != 0:
+				ld_a_imm(0x20)  # P1: direction keys
+				ldh_imm_a(0x00)
+				emit(0xF0, 0x00)  # ldh a,(rP1)
+				emit(0xE6, 0x04)  # and $04 (up; active low)
+				emit(0xFE, 0x00)  # cp $00 (pressed)
+				jr_up_skip = jr(0x20)  # jr nz, skip_up
+				emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+				emit(0xC6, int(script_up_delta) & 0xFF)  # add a,delta (byte-wrapped)
+				emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+				up_skip_addr = len(code)
+				patch_jr(jr_up_skip, up_skip_addr)
+			if script_down_delta != 0:
+				ld_a_imm(0x20)  # P1: direction keys
+				ldh_imm_a(0x00)
+				emit(0xF0, 0x00)  # ldh a,(rP1)
+				emit(0xE6, 0x08)  # and $08 (down; active low)
+				emit(0xFE, 0x00)  # cp $00 (pressed)
+				jr_down_skip = jr(0x20)  # jr nz, skip_down
+				emit(0xFA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+				emit(0xC6, int(script_down_delta) & 0xFF)  # add a,delta (byte-wrapped)
+				emit(0xEA, vy_addr & 0xFF, (vy_addr >> 8) & 0xFF)
+				down_skip_addr = len(code)
+				patch_jr(jr_down_skip, down_skip_addr)
 			if script_jump_y is not None:
 				ld_a_imm(0x10)  # P1: action keys
 				ldh_imm_a(0x00)
@@ -16668,13 +16660,22 @@ class _GbcPhase1MirrorSim:
 			a_pressed = bool(len(keys) > _RUNTIME_KEY_INDEX['A'] and keys[_RUNTIME_KEY_INDEX['A']])
 			# Script-space X is opposite phase1 internal X (step uses invert_dir = True).
 			vx = _gbc_clamp_signed_byte(-int(self.velocity_script.get('base_vx', 0)))
+			# Script-space Y is up; internal phase1 velocity is down.
+			vy = _gbc_clamp_signed_byte(-int(self.velocity_script.get('base_vy', 0)))
 			right_delta = _gbc_clamp_signed_byte(-int(self.velocity_script.get('right_delta', 0)))
 			left_delta = _gbc_clamp_signed_byte(-int(self.velocity_script.get('left_delta', 0)))
+			up_delta = _gbc_clamp_signed_byte(-int(self.velocity_script.get('up_delta', 0)))
+			down_delta = _gbc_clamp_signed_byte(-int(self.velocity_script.get('down_delta', 0)))
 			if bool(len(keys) > _RUNTIME_KEY_INDEX['RIGHT'] and keys[_RUNTIME_KEY_INDEX['RIGHT']]):
 				vx = _gbc_clamp_signed_byte(vx + right_delta)
 			if bool(len(keys) > _RUNTIME_KEY_INDEX['LEFT'] and keys[_RUNTIME_KEY_INDEX['LEFT']]):
 				vx = _gbc_clamp_signed_byte(vx + left_delta)
+			if bool(len(keys) > _RUNTIME_KEY_INDEX['UP'] and keys[_RUNTIME_KEY_INDEX['UP']]):
+				vy = _gbc_clamp_signed_byte(vy + up_delta)
+			if bool(len(keys) > _RUNTIME_KEY_INDEX['DOWN'] and keys[_RUNTIME_KEY_INDEX['DOWN']]):
+				vy = _gbc_clamp_signed_byte(vy + down_delta)
 			self.vx = int(vx)
+			self.vy = int(vy)
 			jump_y = self.velocity_script.get('jump_y', None)
 			jump_release_cut = bool(self.velocity_script.get('jump_release_cut', False))
 			jump_edge_trigger = bool(self.velocity_script.get('jump_edge_trigger', False))
@@ -16738,7 +16739,7 @@ class _GbcPhase1MirrorSim:
 						+ ',act=' + str(_action)
 						+ ',vs=' + repr({
 							k : self.velocity_script.get(k)
-							for k in ('base_vx', 'base_vy', 'left_delta', 'right_delta', 'jump_y', 'jump_vy_max', 'jump_release_cut', 'jump_edge_trigger')
+							for k in ('base_vx', 'base_vy', 'left_delta', 'right_delta', 'up_delta', 'down_delta', 'jump_y', 'jump_vy_max', 'jump_release_cut', 'jump_edge_trigger')
 							if k in self.velocity_script
 						}),
 					])
@@ -17776,7 +17777,7 @@ def _gbc_transpile_phase1_motion (world, sprite_ob):
 		if not isinstance(getattr(result, 'velocity_script', None), dict):
 			continue
 		vs = dict(result.velocity_script)
-		for key in ('base_vx', 'base_vy', 'left_delta', 'right_delta'):
+		for key in ('base_vx', 'base_vy', 'left_delta', 'right_delta', 'up_delta', 'down_delta'):
 			vs[key] = _gbc_clamp_signed_byte(int(vs.get(key, 0)))
 		for key in ('jump_y', 'jump_vy_max'):
 			if vs.get(key, None) is None:

@@ -271,6 +271,31 @@ sim.set_rigid_body_velocity(this.rb, vel)
 		self.assertEqual(result.velocity_script.get('right_delta'), 12)
 		self.assertEqual(result.velocity_script.get('jump_y'), 33)
 
+	def test_vertical_directional_deltas_are_extracted(self):
+		code = """
+vel = [0, 0]
+keys = pygame.key.get_pressed()
+if keys[pygame.K_LEFT]:
+    vel[0] -= 70
+if keys[pygame.K_RIGHT]:
+    vel[0] += 70
+if keys[pygame.K_DOWN]:
+    vel[1] -= 70
+if keys[pygame.K_UP]:
+    vel[1] += 70
+sim.set_linear_velocity(this.rb, vel)
+"""
+		result = compile_velocity_script(
+			code,
+			target_keys = ['Player'],
+			allow_this_id = True,
+		)
+		self.assertIsInstance(result.velocity_script, dict)
+		self.assertEqual(result.velocity_script.get('left_delta'), -70)
+		self.assertEqual(result.velocity_script.get('right_delta'), 70)
+		self.assertEqual(result.velocity_script.get('down_delta'), -70)
+		self.assertEqual(result.velocity_script.get('up_delta'), 70)
+
 
 if __name__ == '__main__':
 	unittest.main()
