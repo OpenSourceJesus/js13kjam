@@ -27,6 +27,18 @@ class CompilerSemanticsSpec:
 
 COMPILER_SEMANTICS_SPEC = CompilerSemanticsSpec()
 
+_JOY_TO_PYGAME_KEY = {
+	'J_LEFT': 'K_LEFT',
+	'J_RIGHT': 'K_RIGHT',
+	'J_UP': 'K_UP',
+	'J_DOWN': 'K_DOWN',
+	'J_A': 'K_A',
+	'J_B': 'K_B',
+	'J_START': 'K_START',
+	'J_SELECT': 'K_SELECT',
+}
+_PYGAME_TO_JOY_KEY = dict([(v, k) for k, v in _JOY_TO_PYGAME_KEY.items()])
+
 
 @dataclass
 class IrExpr:
@@ -286,6 +298,10 @@ def _to_ir_expr (node, strict_compiler_mode: bool = False) -> IrExpr:
 			op_name = '//'
 		elif isinstance(node.op, ast.Mod):
 			op_name = '%'
+		elif isinstance(node.op, ast.BitAnd):
+			op_name = '&'
+		elif isinstance(node.op, ast.BitOr):
+			op_name = '|'
 		if op_name is not None:
 			return IrBinOp(
 				_to_ir_expr(node.left, strict_compiler_mode = strict_compiler_mode),
@@ -430,6 +446,10 @@ def _small_int (expr: IrExpr, consts: Dict[str, int]) -> Optional[int]:
 				return int(lv // rv) if rv != 0 else None
 			if expr.op == '%':
 				return int(lv % rv) if rv != 0 else None
+			if expr.op == '&':
+				return int(lv & rv)
+			if expr.op == '|':
+				return int(lv | rv)
 		except Exception:
 			return None
 	return None
@@ -447,6 +467,28 @@ def _subscript_key_name (expr: IrExpr) -> Optional[str]:
 	idx = expr.index
 	if isinstance(idx, IrAttr) and isinstance(idx.base, IrName) and idx.base.name == 'pygame':
 		return idx.attr
+	if isinstance(idx, IrName):
+		return _JOY_TO_PYGAME_KEY.get(str(idx.name), None)
+	return None
+
+
+def _mask_key_name (expr: IrExpr, keys_aliases: set) -> Optional[str]:
+	parts = [expr]
+	if isinstance(expr, IrCompare):
+		parts = [expr.left, expr.right]
+	for part in parts:
+		if not (isinstance(part, IrBinOp) and part.op == '&'):
+			continue
+		lhs = part.left
+		rhs = part.right
+		if isinstance(lhs, IrCall) and isinstance(lhs.func, IrName) and lhs.func.name == 'joypad' and isinstance(rhs, IrName):
+			return _JOY_TO_PYGAME_KEY.get(str(rhs.name), None)
+		if isinstance(rhs, IrCall) and isinstance(rhs.func, IrName) and rhs.func.name == 'joypad' and isinstance(lhs, IrName):
+			return _JOY_TO_PYGAME_KEY.get(str(lhs.name), None)
+		if isinstance(lhs, IrName) and lhs.name in keys_aliases and isinstance(rhs, IrName):
+			return _JOY_TO_PYGAME_KEY.get(str(rhs.name), None)
+		if isinstance(rhs, IrName) and rhs.name in keys_aliases and isinstance(lhs, IrName):
+			return _JOY_TO_PYGAME_KEY.get(str(lhs.name), None)
 	return None
 
 
@@ -504,6 +546,9 @@ def _extract_jump_guard (test_expr: IrExpr, keys_aliases: set, vel_alias_name: O
 		parts = [test_expr]
 	key_name = None
 	jump_vy_max = None
+	mask_key = _mask_key_name(test_expr, keys_aliases)
+	if isinstance(mask_key, str):
+		key_name = mask_key
 	for part in parts:
 		part_key = _subscript_key_name(part)
 		if part_key is not None:
@@ -680,6 +725,8 @@ def compile_velocity_script (
 					f = stmt.value.func
 					if isinstance(f.base, IrAttr) and isinstance(f.base.base, IrName) and f.base.base.name == 'pygame' and f.base.attr == 'key' and f.attr == 'get_pressed':
 						keys_aliases.add(name)
+				if isinstance(stmt.value, IrCall) and isinstance(stmt.value.func, IrName) and stmt.value.func.name == 'joypad':
+					keys_aliases.add(name)
 				if isinstance(stmt.value, IrList) and len(stmt.value.items) >= 2:
 					vel_alias_name = name
 					vx_candidate = _small_int(stmt.value.items[0], consts)
@@ -703,6 +750,12 @@ def compile_velocity_script (
 				if isinstance(stmt.value, IrSubscript):
 					k = _subscript_key_name(stmt.value)
 					if k is not None and isinstance(stmt.value.base, IrName) and stmt.value.base.name in keys_aliases:
+						key_bool_alias[name] = k
+					else:
+						key_bool_alias.pop(name, None)
+				elif isinstance(stmt.value, IrBinOp):
+					k = _mask_key_name(stmt.value, keys_aliases)
+					if k is not None:
 						key_bool_alias[name] = k
 					else:
 						key_bool_alias.pop(name, None)
@@ -766,6 +819,8 @@ def compile_velocity_script (
 			key_name, guard_max = _extract_jump_guard(stmt.test, keys_aliases, vel_alias_name, consts)
 			if key_name is None and isinstance(stmt.test, IrName):
 				key_name = key_bool_alias.get(stmt.test.name)
+			if key_name is None:
+				key_name = _mask_key_name(stmt.test, keys_aliases)
 			if key_name is None:
 				continue
 			for inner in list(stmt.body):
@@ -1778,6 +1833,15 @@ class _GeneralCFunctionTranspiler:
 		s = s.replace('\t', '\\t')
 		return '"' + s + '"'
 
+	def _joy_key_expr (self, expr) -> Optional[str]:
+		if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name) and expr.value.id == 'pygame':
+			return _PYGAME_TO_JOY_KEY.get(str(expr.attr), None)
+		if isinstance(expr, ast.Name):
+			name = str(expr.id)
+			if name in _JOY_TO_PYGAME_KEY:
+				return name
+		return None
+
 	def _expr_to_c (self, expr) -> str:
 		if isinstance(expr, ast.Constant):
 			if isinstance(expr.value, bool):
@@ -1794,6 +1858,8 @@ class _GeneralCFunctionTranspiler:
 				return self.this_var_name
 			return self._safe_ident(expr.id)
 		if isinstance(expr, ast.Attribute):
+			if isinstance(expr.value, ast.Name) and expr.value.id == 'pygame' and str(expr.attr).startswith('K_'):
+				return _PYGAME_TO_JOY_KEY.get(str(expr.attr), self._safe_ident(str(expr.attr)))
 			if isinstance(expr.value, ast.Name) and expr.value.id == 'this':
 				return self.this_var_name + '->' + self._safe_ident(expr.attr)
 			base = self._expr_to_c(expr.value)
@@ -1803,6 +1869,9 @@ class _GeneralCFunctionTranspiler:
 			idx = expr.slice
 			if hasattr(ast, 'Index') and isinstance(idx, ast.Index):
 				idx = idx.value
+			joy_key = self._joy_key_expr(idx)
+			if isinstance(joy_key, str):
+				return '(((' + base + ') & ' + joy_key + ') ? 1 : 0)'
 			return '(' + base + '[' + self._expr_to_c(idx) + '])'
 		if isinstance(expr, ast.List):
 			items = [self._expr_to_c(x) for x in list(expr.elts or [])]
@@ -1838,6 +1907,10 @@ class _GeneralCFunctionTranspiler:
 				return '((' + l + ') / (' + r + '))'
 			if isinstance(expr.op, ast.Mod):
 				return '((' + l + ') % (' + r + '))'
+			if isinstance(expr.op, ast.BitAnd):
+				return '((' + l + ') & (' + r + '))'
+			if isinstance(expr.op, ast.BitOr):
+				return '((' + l + ') | (' + r + '))'
 			self._disallow_node(expr, type(expr.op).__name__)
 		if isinstance(expr, ast.Compare) and len(list(expr.ops or [])) == 1 and len(list(expr.comparators or [])) == 1:
 			op = expr.ops[0]
@@ -1858,6 +1931,15 @@ class _GeneralCFunctionTranspiler:
 			self._disallow_node(expr, type(op).__name__)
 		if isinstance(expr, ast.Call):
 			fn = expr.func
+			if (
+				isinstance(fn, ast.Attribute)
+				and isinstance(fn.value, ast.Attribute)
+				and isinstance(fn.value.value, ast.Name)
+				and fn.value.value.id == 'pygame'
+				and fn.value.attr == 'key'
+				and fn.attr == 'get_pressed'
+			):
+				return 'joypad()'
 			if isinstance(fn, ast.Name):
 				fn_name = self._safe_ident(fn.id)
 			elif isinstance(fn, ast.Attribute):
