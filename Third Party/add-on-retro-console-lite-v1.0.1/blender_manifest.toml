@@ -1,0 +1,94 @@
+schema_version = "1.0.0"
+
+# Basic addon information
+id = "retro_console_lite"
+name = "Retro Console Lite"
+tagline = "Simple Game Boy Color texture conversion with fast processing"
+version = "1.0.1"
+type = "add-on"
+
+# Maintainer information
+maintainer = "Tarkan Karakus <ogprinceeagle@gmail.com>"
+license = ["SPDX:GPL-3.0-or-later"]
+
+# Blender compatibility
+blender_version_min = "4.4.3"
+blender_version_max = "5.0.0"
+
+# Categories and tags
+tags = ["Material", "Game Engine"]
+website = "https://blendermarket.com/products/retroconsole"
+
+# Dependencies
+[dependencies]
+# NumPy is included with Blender, but we specify it for documentation
+# numpy = ">=1.20.0"  # Usually included with Blender
+
+# Detailed description
+[description]
+content = """
+Transform your modern textures into authentic Game Boy Color style with lightning speed!
+
+This streamlined addon recreates the distinctive pixelated look of the classic Game Boy Color handheld system:
+
+🎮 Game Boy Color Features:
+• Fixed 64x64 pixel resolution for authentic retro feel
+• 4 colors per channel color reduction
+• Floyd-Steinberg dithering for smooth gradients
+• Saturated color palette matching original GBC characteristics
+• Pixel-perfect nearest neighbor scaling
+
+🚀 Lightning Fast Performance:
+• Optimized numpy-based image processing
+• Vectorized color reduction algorithms
+• Batch convert multiple materials at once
+• Processes textures in seconds
+• Smart backup system preserves originals
+
+🎨 Authentic Visual Effects:
+• Automatic color quantization to GBC palette
+• Advanced dithering techniques for gradient smoothness
+• Saturated color shifts for that classic handheld look
+• Principled BSDF optimization for retro materials
+
+🛠️ Easy to Use:
+• Simple one-click conversion
+• Automatic backup creation
+• Easy reset to original textures
+• Works with existing Blender materials
+• Clean sidebar interface in 3D viewport
+
+Perfect for:
+• Indie game developers targeting retro aesthetics
+• Pixel art enthusiasts
+• Low-poly modeling projects
+• Nostalgic art styles and animations
+• Game Boy Color tribute projects
+
+Simply select your textured objects and click convert - your textures will instantly transform into authentic Game Boy Color style!
+"""
+
+# Permissions (what the addon can do)
+[permissions]
+network = "none"
+clipboard = "none" 
+camera = "none"
+microphone = "none"
+files = "blend"
+
+# Build information
+[build]
+paths_exclude_pattern = [
+    "__pycache__/",
+    "*.pyc",
+    ".git/",
+    ".gitignore", 
+    "*.blend1",
+    "*.blend2",
+    ".DS_Store",
+    "Thumbs.db"
+]
+
+# Wheels (Python packages) - if any external dependencies were needed
+# [wheels]
+# No external wheels needed - uses built-in NumPy

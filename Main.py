@@ -1,7 +1,11 @@
-import os, re, io, ast, sys, json, math, time, string, atexit, struct, shutil, ctypes, inspect, keyword, threading, traceback, subprocess, contextlib, webbrowser, ctypes.util
+import os, re, io, ast, sys, json, math, time, string, atexit, struct, shutil, ctypes, inspect, keyword, threading, traceback, subprocess, contextlib, webbrowser, ctypes.util, shlex
 from zipfile import *
 _thisDir = os.path.split(os.path.abspath(__file__))[0]
 sys.path.append(_thisDir)
+try:
+	from ngdevkit_prefix_fixup import finalize_installed_toolchain_roots as _NeoGeoFinalizeInstallPrefix
+except ImportError:
+	_NeoGeoFinalizeInstallPrefix = None
 Util_SCRIPTS_PATH = os.path.join(_thisDir, 'Util')
 sys.path.append(Util_SCRIPTS_PATH)
 PY2GB_PATH = os.path.join(_thisDir, 'Py2Gb')
@@ -48,6 +52,16 @@ except Exception:
 	_gbc_transpiler_compile_script_to_c_function = None
 	_GBC_AOT_ABI_SPEC = None
 	_GbcTranspileError = Exception
+
+def _py2gb_cli_module_available ():
+	"""Return True when at least one py2gb/py2gba CLI module is importable."""
+	for mod in ('py2gb.__main__', 'py2gba.__main__'):
+		try:
+			__import__(mod)
+			return True
+		except Exception:
+			continue
+	return False
 # Phase1 runtime movement depends on transpiled motion extraction.
 _GBC_ENABLE_PHASE1_TRANSPILE = True
 _GBC_STRICT_COMPILER_MODE = True
@@ -69,6 +83,8 @@ _GBC_PURE_ZGB_RUNTIME = str(
 
 isLinux = False
 POTRACE_PATH = os.path.join(_thisDir, 'Third Party', 'potrace-1.16.')
+NEOGEO_TOOLCHAIN_DIR = os.path.join(_thisDir, 'Third Party', 'ngdevkit')
+NEOGEO_TOOLCHAIN_EXAMPLES_DIR = os.path.join(_thisDir, 'Third Party', 'ngdevkit-examples')
 UNITY_SCRIPTS_PATH = os.path.join(_thisDir, 'Unity Scripts')
 DONT_MANGLE_INDCTR = '-no_mangle=['
 NO_PHYSICS_INDCTR = '-no_physics'
@@ -254,6 +270,41 @@ if not bpy:
 	else:
 		print('Download blender 4.5 from: https://blender.org')
 	sys.exit()
+
+def _js13k_ensure_retro_console_lite_enabled ():
+	"""Install vendored Retro Console Lite under a valid module name and enable it.
+
+	The Blendermarket zip uses a hyphenated folder name that Python cannot import;
+	repo ships ``Third Party/retro_console_lite`` -> ``add-on-retro-console-lite-v1.0.1``.
+	"""
+	try:
+		import addon_utils
+		src = os.path.join(_thisDir, 'Third Party', 'retro_console_lite')
+		if not os.path.isdir(src):
+			return
+		addons_dir = bpy.utils.user_resource('SCRIPTS', path = 'addons')
+		dst = os.path.join(addons_dir, 'retro_console_lite')
+		if not os.path.lexists(dst):
+			try:
+				os.makedirs(addons_dir, exist_ok = True)
+			except Exception:
+				pass
+			try:
+				os.symlink(
+					os.path.abspath(src),
+					dst,
+					target_is_directory = True,
+				)
+			except (OSError, NotImplementedError):
+				return
+		addon_utils.modules_refresh()
+		_default_on, loaded = addon_utils.check('retro_console_lite')
+		if not loaded:
+			addon_utils.enable('retro_console_lite', default_set = True)
+	except Exception:
+		pass
+
+_js13k_ensure_retro_console_lite_enabled()
 
 MAX_SCRIPTS_PER_OBJECT = 16
 MAX_SHAPE_PNTS = 32
@@ -5241,11 +5292,901 @@ def _normalize_gb_script_code (code : str, is_init : bool, script_type : str = '
 			pass
 	return out
 
-def ExportGbaPyAssembly (world, gba_out_path : str):
-	'''Collect gba-py scripts from world and exported objects; write Thumb assembly next to the .gba.'''
+def _neogeo_safe_c_identifier (_value, _fallback = 'symbol'):
+	txt = str(_value or '')
+	out = ''.join([ch if (ch.isalnum() or ch == '_') else '_' for ch in txt])
+	out = re.sub(r'_+', '_', out).strip('_')
+	if out == '':
+		out = str(_fallback or 'symbol')
+	if out[0].isdigit():
+		out = '_' + out
+	return out
+
+def _write_neogeo_py_c (_script_entries, _out_path):
+	if not callable(_gbc_transpiler_compile_script_to_c_function):
+		raise RuntimeError('C transpiler backend unavailable for neogeo-py export.')
+	def _relax_neogeo_c_compat (_c_src):
+		"""Apply narrow compatibility rewrites for vector-like temporaries."""
+		txt = str(_c_src or '')
+		indexed_names = set(re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\[', txt))
+		for name in sorted(indexed_names):
+			if name in ('js13k_key_state', 'SCREEN_SIZE'):
+				continue
+			txt = re.sub(
+				r'\bint32_t\s+' + re.escape(name) + r'\s*=\s*0\s*;',
+				'int32_t *' + str(name) + ' = 0;',
+				txt,
+			)
+			txt = re.sub(
+				r'\bint32_t\s+' + re.escape(name) + r'\s*;',
+				'int32_t *' + str(name) + ' = 0;',
+				txt,
+			)
+		return txt
+	base_no_ext = os.path.splitext(str(_out_path or ''))[0]
+	if base_no_ext == '':
+		base_no_ext = os.path.join(TMP_DIR, 'export')
+	c_path = base_no_ext + '_scripts_neogeo.c'
+	owner_fields = {}
+	for entry in list(_script_entries or []):
+		if not isinstance(entry, dict):
+			continue
+		owner_name = str(entry.get('owner_name', '__world__') or '__world__')
+		fields = owner_fields.setdefault(owner_name, set())
+		owner_attr_types = entry.get('owner_attribute_types', {})
+		if isinstance(owner_attr_types, dict):
+			for attr_name in owner_attr_types.keys():
+				if isinstance(attr_name, str) and attr_name.isidentifier():
+					fields.add(attr_name)
+		src = str(entry.get('source_code', entry.get('raw_code', entry.get('code', ''))) or '')
+		try:
+			tree = ast.parse(src)
+			for node in ast.walk(tree):
+				if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == 'this':
+					attr_name = str(node.attr or '')
+					if attr_name.isidentifier():
+						fields.add(attr_name)
+		except Exception:
+			pass
+	lines = [
+		'/* Auto-generated by ExportGbaPyAssembly (neogeo-py -> C). */',
+		'#include <stdint.h>',
+		'#include <stddef.h>',
+		'',
+		'/*',
+		' * This file is intended for an external Neo Geo C toolchain.',
+		' * Configure JS13K_NEOGEO_C_TOOLCHAIN_CMD to compile/link it.',
+		' */',
+		'',
+		'#ifndef J_LEFT',
+		'#define J_LEFT (1u << 0)',
+		'#define J_RIGHT (1u << 1)',
+		'#define J_UP (1u << 2)',
+		'#define J_DOWN (1u << 3)',
+		'#define J_A (1u << 4)',
+		'#define J_B (1u << 5)',
+		'#define J_START (1u << 6)',
+		'#define J_SELECT (1u << 7)',
+		'#endif',
+		'',
+		'#ifndef js13k_print',
+		'#define js13k_print(...) ((int32_t)0)',
+		'#endif',
+		'__attribute__((weak)) uint16_t joypad (void) { return 0; }',
+		'static int32_t dt = 1;',
+		'static int32_t SCREEN_SIZE[2] = {320, 224};',
+		'__attribute__((weak)) int32_t *sim_get_rigid_body_position (int32_t rb) { static int32_t v[2] = {0, 0}; (void)rb; return v; }',
+		'__attribute__((weak)) int32_t *sim_get_linear_velocity (int32_t rb) { static int32_t v[2] = {0, 0}; (void)rb; return v; }',
+		'__attribute__((weak)) int32_t sim_cast_collider (int32_t col, int32_t *dir, int32_t *origin, int32_t flags) { (void)col; (void)dir; (void)origin; (void)flags; return 0; }',
+		'__attribute__((weak)) void sim_set_linear_velocity (int32_t rb, int32_t *vel) { (void)rb; (void)vel; }',
+		'__attribute__((weak)) void set_camera_position (int32_t x, int32_t y) { (void)x; (void)y; }',
+		'',
+		'enum {',
+		'\tpygame_K_LEFT = 0,',
+		'\tpygame_K_RIGHT = 1,',
+		'\tpygame_K_UP = 2,',
+		'\tpygame_K_DOWN = 3,',
+		'\tpygame_K_A = 4,',
+		'\tpygame_K_B = 5,',
+		'\tpygame_K_START = 6,',
+		'\tpygame_K_SELECT = 7',
+		'};',
+		'static int32_t js13k_key_state[8] = {0,0,0,0,0,0,0,0};',
+		'static void js13k_neogeo_update_key_state (void) {',
+		'\tuint16_t keys = joypad();',
+		'\tjs13k_key_state[pygame_K_LEFT] = (keys & J_LEFT) ? 1 : 0;',
+		'\tjs13k_key_state[pygame_K_RIGHT] = (keys & J_RIGHT) ? 1 : 0;',
+		'\tjs13k_key_state[pygame_K_UP] = (keys & J_UP) ? 1 : 0;',
+		'\tjs13k_key_state[pygame_K_DOWN] = (keys & J_DOWN) ? 1 : 0;',
+		'\tjs13k_key_state[pygame_K_A] = (keys & J_A) ? 1 : 0;',
+		'\tjs13k_key_state[pygame_K_B] = (keys & J_B) ? 1 : 0;',
+		'\tjs13k_key_state[pygame_K_START] = (keys & J_START) ? 1 : 0;',
+		'\tjs13k_key_state[pygame_K_SELECT] = (keys & J_SELECT) ? 1 : 0;',
+		'}',
+		'int32_t *pygame_key_get_pressed (void) { return js13k_key_state; }',
+		'',
+	]
+	def _owner_sym (_name):
+		return _neogeo_safe_c_identifier(_name, 'owner')
+	for owner_name in sorted(owner_fields.keys()):
+		fields = sorted(list(owner_fields.get(owner_name) or []))
+		owner_struct = 'js13k_neogeo_owner_' + _owner_sym(owner_name) + '_t'
+		owner_inst = 'js13k_neogeo_owner_' + _owner_sym(owner_name)
+		this_ptr = 'js13k_this_' + _owner_sym(owner_name)
+		lines.append('typedef struct ' + owner_struct + ' {')
+		if fields == []:
+			lines.append('\tint32_t __dummy;')
+		else:
+			for field_name in fields:
+				lines.append('\tint32_t ' + field_name + ';')
+		lines.append('} ' + owner_struct + ';')
+		lines.append('static ' + owner_struct + ' ' + owner_inst + ' = {0};')
+		lines.append('static ' + owner_struct + ' *' + this_ptr + ' = &' + owner_inst + ';')
+		lines.append('')
+	fn_rows = []
+	for idx, entry in enumerate(list(_script_entries or [])):
+		if not isinstance(entry, dict):
+			continue
+		is_init = bool(entry.get('is_init', False))
+		owner_name = str(entry.get('owner_name', '__world__') or '__world__')
+		this_var_name = 'js13k_this_' + _owner_sym(owner_name)
+		fn_name = 'js13k_neogeo_%s_%s_%03i' %(
+			_neogeo_safe_c_identifier(entry.get('symbol_hint', 'script'), 'script'),
+			('init' if is_init else 'update'),
+			int(idx),
+		)
+		source_code = str(entry.get('source_code', entry.get('raw_code', entry.get('code', ''))) or '')
+		compiled_c = _gbc_transpiler_compile_script_to_c_function(
+			source_code,
+			function_name = fn_name,
+			this_var_name = this_var_name,
+		)
+		c_src = str(getattr(compiled_c, 'c_source', '') or '')
+		c_src = _relax_neogeo_c_compat(c_src)
+		if c_src.strip() == '':
+			raise RuntimeError('C transpiler produced empty output for script function: ' + str(fn_name))
+		for row in c_src.rstrip().splitlines():
+			lines.append(str(row))
+		lines.append('')
+		fn_rows.append({
+			'is_init' : bool(is_init),
+			'fn_name' : fn_name,
+		})
+	init_fn_names = [str(row['fn_name']) for row in fn_rows if bool(row.get('is_init', False))]
+	update_fn_names = [str(row['fn_name']) for row in fn_rows if not bool(row.get('is_init', False))]
+	lines.extend([
+		'void js13k_neogeo_run_init_scripts (void) {',
+		'\tint i;',
+		'\tjs13k_neogeo_update_key_state();',
+		'\tfor (i = 0; i < ' + str(int(len(init_fn_names))) + '; ++i) {',
+		'\t\tswitch (i) {',
+	])
+	for idx, fn_name in enumerate(init_fn_names):
+		lines.append('\t\tcase ' + str(int(idx)) + ': ' + str(fn_name) + '(); break;')
+	lines.extend([
+		'\t\tdefault: break;',
+		'\t\t}',
+		'\t}',
+		'}',
+		'',
+		'void js13k_neogeo_run_update_scripts (void) {',
+		'\tint i;',
+		'\tjs13k_neogeo_update_key_state();',
+		'\tfor (i = 0; i < ' + str(int(len(update_fn_names))) + '; ++i) {',
+		'\t\tswitch (i) {',
+	])
+	for idx, fn_name in enumerate(update_fn_names):
+		lines.append('\t\tcase ' + str(int(idx)) + ': ' + str(fn_name) + '(); break;')
+	lines.extend([
+		'\t\tdefault: break;',
+		'\t\t}',
+		'\t}',
+		'}',
+		'',
+	])
+	with open(c_path, 'w', encoding = 'utf-8') as f:
+		f.write('\n'.join(lines) + '\n')
+	return c_path
+
+def _run_neogeo_c_toolchain (c_path, out_path):
+	cmd_tpl = str(os.environ.get('JS13K_NEOGEO_C_TOOLCHAIN_CMD', '') or '').strip()
+	if cmd_tpl == '':
+		legacy_cmd_tpl = str(os.environ.get('S13K_NEOGEO_C_TOOLCHAIN_CMD', '') or '').strip()
+		if legacy_cmd_tpl != '':
+			print('Neo Geo export: using legacy env var S13K_NEOGEO_C_TOOLCHAIN_CMD; prefer JS13K_NEOGEO_C_TOOLCHAIN_CMD.')
+			cmd_tpl = legacy_cmd_tpl
+	if cmd_tpl == '':
+		if os.path.isdir(NEOGEO_TOOLCHAIN_DIR):
+			return False, 'No explicit Neo Geo toolchain command configured; vendored ngdevkit detected, using fallback renderer.'
+		return False, 'No explicit Neo Geo toolchain command configured; using fallback renderer.'
+	if not os.path.isfile(str(c_path or '')):
+		return False, 'Missing generated C source: ' + str(c_path)
+	out_dir = os.path.dirname(os.path.abspath(str(out_path or '')))
+	if out_dir != '':
+		try:
+			os.makedirs(out_dir, exist_ok = True)
+		except Exception:
+			pass
+	replacements = {
+		'{src}' : shlex.quote(str(c_path)),
+		'{out}' : shlex.quote(str(out_path)),
+		'{tmp}' : shlex.quote(str(TMP_DIR)),
+		'{repo}' : shlex.quote(str(_thisDir)),
+	}
+	cmd = cmd_tpl
+	for key, value in replacements.items():
+		cmd = cmd.replace(key, value)
+	try:
+		result = subprocess.run(cmd, shell = True, capture_output = True, text = True)
+	except Exception as err:
+		return False, 'Failed to run Neo Geo toolchain command: ' + str(err)
+	if str(result.stdout or '').strip() != '':
+		print('[neogeo-toolchain]', str(result.stdout).rstrip())
+	if str(result.stderr or '').strip() != '':
+		print('[neogeo-toolchain]', str(result.stderr).rstrip())
+	if int(result.returncode) != 0:
+		if int(result.returncode) == 126:
+			return False, (
+				'Neo Geo toolchain exited with code 126 (command found but not executable). '
+				'Set JS13K_NEOGEO_C_TOOLCHAIN_CMD to an actual executable command, not an output file path. '
+				'Resolved command: ' + str(cmd)
+			)
+		return False, 'Neo Geo toolchain exited with code ' + str(int(result.returncode)) + '; command=' + str(cmd)
+	if not os.path.isfile(str(out_path or '')):
+		return False, 'Toolchain command completed but output was not created: ' + str(out_path)
+	return True, 'ok'
+
+_NEOGEO_USER_SPRITE_GIF_BASE = 'js13k_neo_user'
+
+def _neo_geo_rgb444_pack_u16 (r, g, b):
+	r = max(0, min(255, int(r))) >> 4
+	g = max(0, min(255, int(g))) >> 4
+	b = max(0, min(255, int(b))) >> 4
+	return int(0x0000 | (r << 8) | (g << 4) | b)
+
+
+def _neo_geo_clut32_lit_for_main_c (sprite_pal_rgb16):
+	"""First 16 words: ngdevkit 02-sprite fix half; entries 16-31 from quantized sprite palette."""
+	fix_half = [
+		0x8000,
+		0x0fa0,
+		0x0533,
+		0x0000,
+		0x0000,
+		0x0000,
+		0x0000,
+		0x0000,
+		0x0000,
+		0x0000,
+		0x0000,
+		0x0000,
+		0x0000,
+		0x0000,
+		0x0000,
+		0x0000,
+	]
+	clut32 = []
+	clut32.extend(fix_half[:16])
+	for i in range(16):
+		if i < len(sprite_pal_rgb16):
+			tp = sprite_pal_rgb16[i]
+			rgb = tp[:3] if tp is not None else (0, 0, 0)
+			clut32.append(_neo_geo_rgb444_pack_u16(rgb[0], rgb[1], rgb[2]))
+		else:
+			clut32.append(0x0000)
+	if len(clut32) != 32:
+		return None
+	parts = ['0x%04x' % (int(w) & 0xffff) for w in clut32]
+	return ', '.join(parts)
+
+
+def _neo_geo_upscale_canvas_to_sprite_rgba_np (canvas_f32_np):
+	"""Nearest-neighbour scale the GBA-shaped float canvas to Neo Geo sprite bounds (multiples of 16, max 288x208)."""
+	try:
+		import numpy as np
+	except ImportError:
+		return None
+	if canvas_f32_np is None:
+		return None
+	arr = np.asarray(canvas_f32_np, dtype = np.float32)
+	if arr.ndim != 3 or int(arr.shape[2]) != 4:
+		return None
+	cur_h, cur_w = int(arr.shape[0]), int(arr.shape[1])
+	neo_max_w, neo_max_h = 288, 208
+	scale = min(float(neo_max_w) / float(max(1, cur_w)), float(neo_max_h) / float(max(1, cur_h)))
+	sw = int(round(float(cur_w) * scale))
+	sh_scaled = int(round(float(cur_h) * scale))
+	sw = max(16, min(neo_max_w, sw))
+	sh_scaled = max(16, min(neo_max_h, sh_scaled))
+	sw &= ~15
+	sh_scaled &= ~15
+	idx_y = np.clip(np.round(np.linspace(0, cur_h - 1, sh_scaled)), 0, cur_h - 1).astype(np.int64)
+	idx_x = np.clip(np.round(np.linspace(0, cur_w - 1, sw)), 0, cur_w - 1).astype(np.int64)
+	sampled = arr[idx_y[:, None], idx_x[None, :], :].clip(0.0, 1.0)
+	out = np.round(sampled * 255.0).astype(np.uint8)
+	full_a = out[:, :, 3]
+	full_rgb0 = (out[:, :, 0] | out[:, :, 1] | out[:, :, 2]) == 0
+	out[full_rgb0 & (full_a == 0), 3] = 255
+	return out
+
+
+def _neo_geo_save_sprite_quantized_gif (rgba_uint8_np, gif_path):
+	try:
+		from PIL import Image as PILImage
+	except ImportError:
+		return False, None
+	try:
+		im = PILImage.fromarray(rgba_uint8_np, mode = 'RGBA')
+		rgb_im = PILImage.new('RGB', im.size, (0, 0, 0))
+		rgb_im.paste(im, mask = im.split()[3] if len(im.split()) >= 4 else None)
+		q = rgb_im.quantize(colors = 16, dither = PILImage.Dither.NONE)
+	except Exception:
+		return False, None
+	sp = []
+	try:
+		pl = q.getpalette()
+	except Exception:
+		pl = None
+	if isinstance(pl, (list, bytes)):
+		pl = list(pl[:16 * 3])
+	else:
+		pl = []
+	for ci in range(16):
+		if len(pl) >= (ci + 1) * 3:
+			r, g, b = pl[ci * 3], pl[ci * 3 + 1], pl[ci * 3 + 2]
+			sp.append((int(r), int(g), int(b)))
+	if len(sp) < 16:
+		while len(sp) < 16:
+			sp.append((0, 0, 0))
+	try:
+		MakeFolderForFile(gif_path)
+		q.save(gif_path, format = 'GIF')
+	except Exception:
+		return False, None
+	clut_lit = _neo_geo_clut32_lit_for_main_c(sp)
+	if clut_lit is None:
+		return False, None
+	return True, clut_lit
+
+
+def _neo_geo_prepare_user_sprite_gif_assets (assets_dir, canvas_f32_np):
+	flat = _neo_geo_upscale_canvas_to_sprite_rgba_np(canvas_f32_np)
+	if flat is None:
+		return None
+	stem = os.path.join(assets_dir, _NEOGEO_USER_SPRITE_GIF_BASE + '.gif')
+	ok, lit = _neo_geo_save_sprite_quantized_gif(flat, stem)
+	if (not ok) or not lit:
+		return None
+	ncols = int(flat.shape[1]) >> 4
+	nrows = int(flat.shape[0]) >> 4
+	return (stem, max(1, ncols), max(1, nrows), lit)
+
+
+def _neo_geo_patch_makefile_crom_user_deps (project_make_path, use_user_crom):
+	if not use_user_crom:
+		return True
+	if not os.path.isfile(project_make_path):
+		return False
+	try:
+		with open(project_make_path, 'r', encoding = 'utf-8') as mf:
+			lines = mf.readlines()
+	except Exception:
+		return False
+	if not lines:
+		return False
+	dst1 = '$(CROM1): $(BUILDDIR)/assets/' + _NEOGEO_USER_SPRITE_GIF_BASE + '.c1\n'
+	dst2 = '$(CROM2): $(BUILDDIR)/assets/' + _NEOGEO_USER_SPRITE_GIF_BASE + '.c2\n'
+	c1_hit = False
+	c2_hit = False
+	out_lines = []
+	for raw in lines:
+		ls = str(raw).rstrip('\r\n')
+		if ls.startswith('$(CROM1):'):
+			out_lines.append(dst1)
+			c1_hit = True
+			continue
+		if ls.startswith('$(CROM2):'):
+			out_lines.append(dst2)
+			c2_hit = True
+			continue
+		out_lines.append(raw)
+	try:
+		with open(project_make_path, 'w', encoding = 'utf-8') as wf:
+			wf.writelines(out_lines)
+	except Exception:
+		return False
+	return c1_hit and c2_hit
+
+
+def _neo_geo_user_art_helpers_c (start_tile_u16 : int, ncols : int, nrows : int, clut32_lit : str):
+	nc = max(1, min(127, int(ncols)))
+	nr = max(1, min(127, int(nrows)))
+	st = int(start_tile_u16) & 0xffff
+	aw = nc * 16
+	ah = nr * 16
+	return '\n'.join([
+		'#define JS13K_ADDR_SCB1\t0',
+		'#define JS13K_ADDR_SCB2\t0x8000',
+		'#define JS13K_ADDR_SCB3\t0x8200',
+		'#define JS13K_ADDR_SCB4\t0x8400',
+		'',
+		'static void js13k_neo_user_art_palette(void)',
+		'{',
+		'\tstatic const u16 clut_js13k_art[32] = { ' + clut32_lit + ' };',
+		'\tu16 ix;',
+		'\t*REG_PALBANK0 = 1;',
+		'\tfor (ix = 0; ix < 32; ix++)',
+		'\t\tMMAP_PALBANK1[ix] = clut_js13k_art[ix];',
+		'\t*REG_PALBANK1 = 1;',
+		'\tfor (ix = 0; ix < 32; ix++)',
+		'\t\tMMAP_PALBANK1[ix] = clut_js13k_art[ix];',
+		'}',
+		'',
+		'static void js13k_neo_user_art_sprites(void)',
+		'{',
+		'\tu16 sprite_w_px = ' + str(aw) + 'u;',
+		'\tu16 sprite_h_px = ' + str(ah) + 'u;',
+		'\tu16 px = (320u > sprite_w_px) ? (320u - sprite_w_px) / 2u : 8u;',
+		'\tu16 py = (224u > sprite_h_px) ? (224u - sprite_h_px) / 2u : 16u;',
+		'\tu16 cols = ' + str(nc) + 'u;',
+		'\tu16 rows = ' + str(nr) + 'u;',
+		'\tu16 start_t = ' + str(st) + 'u;',
+		'\tu16 i;',
+		'\tu16 j;',
+		'\t*REG_VRAMMOD = 1;',
+		'\tfor (i = 0u; i < cols; i++) {',
+		'\t\t*REG_VRAMADDR = JS13K_ADDR_SCB1 + (i * 64u);',
+		'\t\tfor (j = 0u; j < rows; j++) {',
+		'\t\t\tu16 t = start_t + i + j * cols;',
+		'\t\t\t*REG_VRAMRW = t;',
+		'\t\t\t*REG_VRAMRW = ((u16)1u << 8);',
+		'\t\t}',
+		'\t}',
+		'\t*REG_VRAMMOD = 0x200;',
+		'\t*REG_VRAMADDR = JS13K_ADDR_SCB2;',
+		'\t*REG_VRAMRW = 0xFFF;',
+		'\t*REG_VRAMADDR = JS13K_ADDR_SCB3;',
+		'\t*REG_VRAMRW = (py << 7) + rows;',
+		'\t*REG_VRAMADDR = JS13K_ADDR_SCB4;',
+		'\t*REG_VRAMRW = (px << 7);',
+		'\t{',
+		'\t\tu16 k;',
+		'\t\tfor (k = 1u; k < cols; k++) {',
+		'\t\t\t*REG_VRAMADDR = JS13K_ADDR_SCB2 + k;',
+		'\t\t\t*REG_VRAMRW = 0xFFF;',
+		'\t\t\t*REG_VRAMRW = ((u16)1u << 6);',
+		'\t\t}',
+		'\t}',
+		'}',
+		'',
+	])
+
+
+def _build_native_neogeo_romset_from_c (c_path, out_path, user_art_canvas_np = None):
+	def _prepend_system_path_bins (_base_env):
+		"""/gui apps like Blender sometimes launch with PATH missing /usr/bin (ImageMagick/gcc)."""
+		env = dict(_base_env or os.environ.copy())
+		extra_bins = ['/usr/local/bin', '/usr/bin', '/bin']
+		parts = [p for p in str(env.get('PATH', '') or '').split(os.pathsep) if p]
+		for d in reversed(extra_bins):
+			if os.path.isdir(d) and d not in parts:
+				parts.insert(0, d)
+		env['PATH'] = os.pathsep.join(parts)
+		return env
+	def _format_make_failure_log (_proc, max_chars = 9000):
+		stdout_txt = str(getattr(_proc, 'stdout', None) or '')
+		stderr_txt = str(getattr(_proc, 'stderr', None) or '')
+		combined = (stdout_txt + '\n' + stderr_txt).strip()
+		if combined == '':
+			return ''
+		if len(combined) <= int(max_chars):
+			return combined
+		head_len = max(512, int(max_chars) // 2)
+		tail_len = max(512, int(max_chars) - head_len - 80)
+		return (
+			combined[:head_len]
+			+ '\n...[log truncated '
+			+ str(len(combined) - head_len - tail_len)
+			+ ' chars]...\n'
+			+ combined[-tail_len:]
+		)
+	def _with_ngdevkit_prefix_env (_base_env, _prefix):
+		env = dict(_base_env or os.environ.copy())
+		prefix = str(_prefix or '').strip()
+		if prefix == '':
+			return env
+		bin_dir = os.path.join(prefix, 'bin')
+		pkg_dirs = [
+			os.path.join(prefix, 'share', 'pkgconfig'),
+			os.path.join(prefix, 'lib', 'pkgconfig'),
+		]
+		if os.path.isdir(bin_dir):
+			env['PATH'] = bin_dir + os.pathsep + str(env.get('PATH', ''))
+		existing_pkg = str(env.get('PKG_CONFIG_PATH', '') or '')
+		pkg_parts = [p for p in existing_pkg.split(os.pathsep) if p]
+		for p in reversed(pkg_dirs):
+			if os.path.isdir(p) and p not in pkg_parts:
+				pkg_parts.insert(0, p)
+		env['PKG_CONFIG_PATH'] = os.pathsep.join(pkg_parts)
+		return env
+	def _pkg_has_ngdevkit (_env):
+		probe = subprocess.run('pkg-config --exists ngdevkit', shell = True, env = _env, capture_output = True, text = True)
+		return int(probe.returncode) == 0
+	def _examples_config_mk_tool_bins_missing (_cfg_path):
+		"""Detect stale ngdevkit-examples config.mk (e.g. TILETOOL pointing at erased /tmp bootstrap prefix)."""
+		if not os.path.isfile(_cfg_path):
+			return True
+		probe_keys = frozenset({
+			'M68KGCC',
+			'M68KOBJCOPY',
+			'TILETOOL',
+			'PALTOOL',
+			'Z80SDCC',
+		})
+		try:
+			with open(_cfg_path, 'r', encoding = 'utf-8') as cf:
+				lines = cf.readlines()
+		except Exception:
+			return True
+		for raw in lines:
+			ls = str(raw).strip()
+			if ls == '' or ls.startswith('#'):
+				continue
+			if '`' in ls or '$(' in ls:
+				continue
+			if '=' not in ls:
+				continue
+			k, _, v = ls.partition('=')
+			k = k.strip()
+			v = v.strip()
+			if k not in probe_keys:
+				continue
+			if (not v.startswith('/')):
+				continue
+			if ('js13k_ngdevkit_bootstrap' in v) or (not os.path.isfile(v)):
+				return True
+		return False
+	if not os.path.isfile(str(c_path or '')):
+		return (False, 'Missing generated C source: ' + str(c_path), None, None, None)
+	template_dir = os.path.join(NEOGEO_TOOLCHAIN_EXAMPLES_DIR, '00-template')
+	if not os.path.isdir(template_dir):
+		return (False, 'Missing ngdevkit template at ' + str(template_dir) + '. Run Install.py.', None, None, None)
+	make_prefix_fallback = os.path.abspath(os.path.join(NEOGEO_TOOLCHAIN_DIR, 'local'))
+	neo_make_prefix = make_prefix_fallback
+	if _NeoGeoFinalizeInstallPrefix is not None:
+		try:
+			fixed_prefix = _NeoGeoFinalizeInstallPrefix(_thisDir, NEOGEO_TOOLCHAIN_DIR, None, sys.platform == 'win32')
+			if str(fixed_prefix or '').strip() != '':
+				neo_make_prefix = os.path.abspath(str(fixed_prefix).strip())
+		except Exception as neo_pref_err:
+			print('Neo Geo export: toolchain prefix repair failed:', neo_pref_err)
+			neo_make_prefix = make_prefix_fallback
+	env = _with_ngdevkit_prefix_env(os.environ.copy(), neo_make_prefix)
+	custom_prefix = str(os.environ.get('JS13K_NEOGEO_NGDEVKIT_PREFIX', '') or '').strip()
+	if custom_prefix != '':
+		env = _with_ngdevkit_prefix_env(env, custom_prefix)
+	env = _prepend_system_path_bins(env)
+	if not _pkg_has_ngdevkit(env):
+		return (
+			False,
+			'Package \'ngdevkit\' not found for pkg-config. Run Install.py first so required Neo Geo downloads '
+			'and local toolchain bootstrap complete, or install prebuilt ngdevkit/ngdevkit-gngeo and ensure '
+			'PATH/PKG_CONFIG_PATH are visible to Blender. Optional: set JS13K_NEOGEO_NGDEVKIT_PREFIX=<prefix> '
+			'if ngdevkit is installed in a custom prefix.',
+			None,
+			None,
+			None,
+		)
+	config_mk_root = os.path.join(NEOGEO_TOOLCHAIN_EXAMPLES_DIR, 'config.mk')
+	if not os.path.isdir(NEOGEO_TOOLCHAIN_EXAMPLES_DIR):
+		return (False, 'Missing ngdevkit examples dir: ' + str(NEOGEO_TOOLCHAIN_EXAMPLES_DIR), None, None, None)
+	if (not os.path.isfile(config_mk_root)) or _examples_config_mk_tool_bins_missing(config_mk_root):
+		bootstrap_cmd = 'autoreconf -iv && ./configure'
+		boot = subprocess.run(
+			bootstrap_cmd,
+			shell = True,
+			cwd = NEOGEO_TOOLCHAIN_EXAMPLES_DIR,
+			env = env,
+			capture_output = True,
+			text = True,
+		)
+		if int(boot.returncode) != 0:
+			msg = 'ngdevkit-examples configure failed (code ' + str(int(boot.returncode)) + ').'
+			if str(boot.stdout or '').strip() != '':
+				msg += ' stdout=' + str(boot.stdout).strip()
+			if str(boot.stderr or '').strip() != '':
+				msg += ' stderr=' + str(boot.stderr).strip()
+			return (False, msg, None, None, None)
+		if not os.path.isfile(config_mk_root):
+			return (False, 'ngdevkit-examples configure did not generate config.mk in ' + str(NEOGEO_TOOLCHAIN_EXAMPLES_DIR), None, None, None)
+		if _examples_config_mk_tool_bins_missing(config_mk_root):
+			return (
+				False,
+				'ngdevkit-examples config.mk still points at a missing toolchain (check Third Party/ngdevkit/local or JS13K_NEOGEO_NGDEVKIT_PREFIX).',
+				None,
+				None,
+				None,
+			)
+	project_dir = os.path.join(TMP_DIR, 'js13k_neogeo_native_project')
+	if os.path.isdir(project_dir):
+		try:
+			shutil.rmtree(project_dir)
+		except Exception:
+			pass
+	os.makedirs(project_dir, exist_ok = True)
+	aux_source_dir = template_dir
+	if not os.path.isfile(os.path.join(aux_source_dir, 'build.mk')):
+		fallback_dir = os.path.join(NEOGEO_TOOLCHAIN_EXAMPLES_DIR, '01-helloworld')
+		if os.path.isdir(fallback_dir):
+			aux_source_dir = fallback_dir
+	for item in ('Makefile', 'rom.mk', 'build.mk', 'emu.mk'):
+		src = os.path.join(template_dir, item)
+		if item in ('build.mk', 'emu.mk'):
+			src = os.path.join(aux_source_dir, item)
+		dst = os.path.join(project_dir, item)
+		if os.path.isfile(src):
+			shutil.copyfile(src, dst)
+	config_dst = os.path.join(project_dir, 'config.mk')
+	if os.path.isfile(config_mk_root):
+		shutil.copyfile(config_mk_root, config_dst)
+	else:
+		return (False, 'Missing ngdevkit examples config.mk at ' + str(config_mk_root), None, None, None)
+	assets_src = os.path.join(template_dir, 'assets')
+	assets_dst = os.path.join(project_dir, 'assets')
+	if os.path.isdir(assets_src):
+		shutil.copytree(assets_src, assets_dst, dirs_exist_ok = True)
+	setup_src = os.path.join(template_dir, 'setup')
+	setup_dst = os.path.join(project_dir, 'setup')
+	if os.path.isdir(setup_src):
+		shutil.copytree(setup_src, setup_dst, dirs_exist_ok = True)
+	shutil.copyfile(str(c_path), os.path.join(project_dir, 'js13k_neogeo_scripts.c'))
+	_vb_ev = str(os.environ.get('JS13K_NEOGEO_NG_WAIT_VBLANK', '') or '').strip().lower()
+	_native_neo_wait_vblank = _vb_ev in ('1', 'true', 'yes', 'y')
+	_min_diag_ev = str(os.environ.get('JS13K_NEOGEO_MINIMAL_DIAG_MAIN', '') or '').strip().lower()
+	_native_neo_minimal_diag_main = _min_diag_ev in ('1', 'true', 'yes', 'y')
+	_agg_vid_ev = str(os.environ.get('JS13K_NEOGEO_AGGRESSIVE_VIDEO_INIT', '') or '').strip().lower()
+	_native_neo_aggressive_video_init = _agg_vid_ev in ('1', 'true', 'yes', 'y')
+	_append_gbc_trace_lines([
+		'[neo-trace] neo_native:minimal_diag_main=' + ('1' if _native_neo_minimal_diag_main else '0'),
+		'[neo-trace] neo_native:aggressive_video_init=' + ('1' if _native_neo_aggressive_video_init else '0'),
+		'[neo-trace] neo_native:ng_wait_vblank_in_main_loop=' + ('1' if _native_neo_wait_vblank else '0'),
+	])
+	_neo_art = None
+	_neo_sprite_start_tile = 0
+	_st_nt = str(os.environ.get('JS13K_NEOGEO_USER_SPRITE_START_TILE', '') or '').strip()
+	if _st_nt == '':
+		_st_nt = '0'
+	try:
+		_neo_sprite_start_tile = max(0, min(65535, int(_st_nt, 10)))
+	except Exception:
+		_neo_sprite_start_tile = 0
+	if (not _native_neo_minimal_diag_main) and (user_art_canvas_np is not None):
+		bundle_art = _neo_geo_prepare_user_sprite_gif_assets(assets_dst, user_art_canvas_np)
+		if bundle_art is None:
+			_pill_ok = True
+			try:
+				from PIL import Image as _NeoPilProbe  # noqa: F401
+			except ImportError:
+				_pill_ok = False
+			if not _pill_ok:
+				print(
+					'Neo Geo native: install Pillow in this Blender Python (pip install pillow) '
+					'to bake image empties into CROM sprites.'
+				)
+			else:
+				print(
+					'Neo Geo native: sprite GIF export failed; using template graphics only.'
+				)
+		elif not _neo_geo_patch_makefile_crom_user_deps(os.path.join(project_dir, 'Makefile'), True):
+			print('Neo Geo native: Makefile CROM lines not patched; using template sprite tiles only.')
+		else:
+			_neo_art = (int(bundle_art[1]), int(bundle_art[2]), str(bundle_art[3]))
+			_append_gbc_trace_lines([
+				'[neo-trace] neo_native:user_sprite_sheet=' + str(int(bundle_art[1])) + 'x' + str(int(bundle_art[2])) + '_tiles',
+				'[neo-trace] neo_native:user_sprite_start_tile=' + str(int(_neo_sprite_start_tile)),
+			])
+	# verbatim-shaped main from ngdevkit-examples 00-template; no Blender scripts — isolates emu/bios/asset issues.
+	if _native_neo_minimal_diag_main:
+		main_c = '\n'.join([
+			'#include <ngdevkit/neogeo.h>',
+			'#include <ngdevkit/ng-fix.h>',
+			'',
+			'int main(void) {',
+			'\tbios_fix_clear();',
+			'\t{',
+			'\t\tconst u16 palette[] = {0x8000, 0x0fff, 0x0555};',
+			'\t\tu16 i;',
+			'\t\tfor (i = 0; i < 3; i++)',
+			'\t\t\tMMAP_PALBANK1[i] = palette[i];',
+			'\t}',
+			'\tng_center_text(15, 0, "NGDEVKIT / JS13K DIAG");',
+			'\tfor (;;) {',
+			'\t}',
+			'\treturn 0;',
+			'}',
+			'',
+		])
+	else:
+		_keep_neo_banner = str(os.environ.get('JS13K_NEOGEO_KEEP_BANNER', '') or '0').strip().lower() in ('1', 'true', 'yes', 'y')
+		main_lines = [
+			'#include <ngdevkit/neogeo.h>',
+			'#include <ngdevkit/ng-fix.h>',
+		]
+		if _native_neo_wait_vblank:
+			main_lines.append('#include <ngdevkit/ng-video.h>')
+		main_lines.append('#include "js13k_neogeo_scripts.c"')
+		if _neo_art is not None:
+			main_lines.append('')
+			main_lines.extend(_neo_geo_user_art_helpers_c(_neo_sprite_start_tile, _neo_art[0], _neo_art[1], _neo_art[2]).rstrip('\n').split('\n'))
+			main_lines.append('')
+		main_lines.extend([
+			'int main(void) {',
+			'\tbios_fix_clear();',
+		])
+		if (_neo_art is not None) and (not _native_neo_aggressive_video_init):
+			main_lines.append('\tbios_lsp_1st();')
+		if _native_neo_aggressive_video_init:
+			if _neo_art is not None:
+				main_lines.extend([
+					'\tbios_lsp_1st();',
+					'\t{',
+					'\t\tstatic const u16 __ng_js13k_pf[] = { ' + str(_neo_art[2]).strip() + ' };',
+					'\t\tu16 __ipi;',
+					'\t\t*REG_PALBANK0 = 1;',
+					'\t\tfor (__ipi = 0; __ipi < 32; __ipi++)',
+					'\t\t\tMMAP_PALBANK1[__ipi] = __ng_js13k_pf[__ipi];',
+					'\t\t*REG_PALBANK1 = 1;',
+					'\t\tfor (__ipi = 0; __ipi < 32; __ipi++)',
+					'\t\t\tMMAP_PALBANK1[__ipi] = __ng_js13k_pf[__ipi];',
+					'\t}',
+				])
+			else:
+				main_lines.extend([
+					'\tbios_lsp_1st();',
+					'\t{',
+					'\t\tstatic const u16 __ng_js13k_pf[] = {0x8000, 0x0fff, 0x0555};',
+					'\t\tu16 __ipi;',
+					'\t\t*REG_PALBANK0 = 1;',
+					'\t\tfor (__ipi = 0; __ipi < 3; __ipi++)',
+					'\t\t\tMMAP_PALBANK1[__ipi] = __ng_js13k_pf[__ipi];',
+					'\t\t*REG_PALBANK1 = 1;',
+					'\t\tfor (__ipi = 0; __ipi < 3; __ipi++)',
+					'\t\t\tMMAP_PALBANK1[__ipi] = __ng_js13k_pf[__ipi];',
+					'\t}',
+				])
+		else:
+			if _neo_art is not None:
+				main_lines.extend([
+					'\tjs13k_neo_user_art_palette();',
+				])
+			else:
+				main_lines.extend([
+					'\t/* Same triple as upstream 00-template (single latch/bank writes only). Extra sprite/palette tweaks can break some emulators; set JS13K_NEOGEO_AGGRESSIVE_VIDEO_INIT=1 to re-enable bios_lsp_1st + dual PAL latch. */',
+					'\t{',
+					'\t\tconst u16 palette[] = {0x8000, 0x0fff, 0x0555};',
+					'\t\tu16 i;',
+					'\t\tfor (i = 0; i < 3; i++)',
+					'\t\t\tMMAP_PALBANK1[i] = palette[i];',
+					'\t}',
+				])
+		if _neo_art is not None:
+			main_lines.append('\tjs13k_neo_user_art_sprites();')
+		if _keep_neo_banner or (_neo_art is None):
+			main_lines.append('\tng_center_text(15, 0, "JS13K NEO GEO BUILD");')
+		main_lines.extend([
+			'\tjs13k_neogeo_run_init_scripts();',
+			'\tfor (;;) {',
+			'\t\tjs13k_neogeo_run_update_scripts();',
+		])
+		if _native_neo_wait_vblank:
+			main_lines.append('\t\tng_wait_vblank();')
+		main_lines.extend([
+			'\t}',
+			'\treturn 0;',
+			'}',
+			'',
+		])
+		main_c = '\n'.join(main_lines)
+	if _native_neo_minimal_diag_main:
+		print(
+			'Neo Geo native: diagnostic main — JS13K_NEOGEO_MINIMAL_DIAG_MAIN=1 excludes neogeo-py from main.c '
+			'(matches upstream 00-template init only). Compare with gngeo/ngdevkit vs RetroArch+MAME.'
+		)
+	with open(os.path.join(project_dir, 'main.c'), 'w', encoding = 'utf-8') as f:
+		f.write(main_c)
+	make_proc = subprocess.run(
+		'make',
+		shell = True,
+		cwd = project_dir,
+		env = env,
+		capture_output = True,
+		text = True,
+	)
+	if str(make_proc.stdout or '').strip() != '':
+		print('[neogeo-native]', str(make_proc.stdout).rstrip())
+	if str(make_proc.stderr or '').strip() != '':
+		print('[neogeo-native]', str(make_proc.stderr).rstrip())
+	if int(make_proc.returncode) != 0:
+		detail_txt = _format_make_failure_log(make_proc)
+		msg = 'Native Neo Geo build failed (make exit ' + str(int(make_proc.returncode)) + ')'
+		if detail_txt != '':
+			msg += '. Build log follows:\n' + detail_txt
+		return (False, msg, None, None, None)
+	rom_dir = os.path.join(project_dir, 'build', 'rom')
+	if not os.path.isdir(rom_dir):
+		return (False, 'Native Neo Geo build did not produce rom directory: ' + str(rom_dir), None, None, None)
+	rom_parts = sorted([
+		p for p in [os.path.join(rom_dir, n) for n in os.listdir(rom_dir)]
+		if os.path.isfile(p)
+	])
+	if rom_parts == []:
+		return (False, 'Native Neo Geo build produced no rom files in: ' + str(rom_dir), None, None, None)
+	def _neo_geo_read_rom_mk_gamerom (_proj_dir):
+		rom_mk = os.path.join(_proj_dir, 'rom.mk')
+		try:
+			with open(rom_mk, 'r', encoding = 'utf-8') as rf:
+				for raw in rf:
+					line = str(raw or '').strip()
+					if line == '' or line.startswith('#'):
+						continue
+					if line.startswith('GAMEROM='):
+						val = line.split('=', 1)[1].strip().strip('"').strip("'")
+						if val != '' and re.fullmatch(r'[A-Za-z0-9_]+', val):
+							return val
+		except Exception:
+			pass
+		return 'puzzledp'
+	user_zip_candidate = str(out_path or '').strip()
+	if user_zip_candidate == '':
+		user_zip_candidate = os.path.join(TMP_DIR, 'native_neogeo.romset.zip')
+	elif os.path.splitext(user_zip_candidate)[1].lower() != '.zip':
+		user_zip_candidate = os.path.splitext(user_zip_candidate)[0] + '.zip'
+	out_dir_abs = os.path.dirname(os.path.abspath(user_zip_candidate))
+	if out_dir_abs == '':
+		out_dir_abs = os.path.abspath(TMP_DIR or '/tmp')
+	gamerom_slug = _neo_geo_read_rom_mk_gamerom(project_dir)
+	# Do not name the zip exactly GAMEROM.zip: MAME software lists expect commercial ROM fingerprints;
+	# ngdevkit homebrew replaces program ROM bytes and mismatches Puzzle De Pon (puzzledp) DAT.
+	native_out = os.path.join(out_dir_abs, gamerom_slug + '_js13kn.zip')
+	MakeFolderForFile(native_out)
+	mergedbios = False
+	with ZipFile(native_out, 'w') as zf:
+		for p in rom_parts:
+			basename_p = os.path.basename(p)
+			if basename_p.lower() == 'neogeo.zip':
+				try:
+					with ZipFile(p, 'r') as bio_zip:
+						for zi in bio_zip.infolist():
+							if zi.filename.endswith('/'):
+								continue
+							member_bn = os.path.basename(zi.filename)
+							if member_bn == '':
+								continue
+							with bio_zip.open(zi, 'r') as bsrc:
+								zf.writestr(member_bn, bsrc.read())
+					mergedbios = True
+				except Exception as neo_merge_err:
+					print('Neo Geo export: merging neogeo.zip failed, embedding whole archive:', neo_merge_err)
+					zf.write(p, arcname = basename_p)
+			else:
+				zf.write(p, arcname = basename_p)
+	has_neogeozip_blob = any(os.path.basename(x).lower() == 'neogeo.zip' for x in rom_parts)
+	if not has_neogeozip_blob:
+		print(
+			'Neo Geo export: warning: build/rom has no neogeo.zip — most emulators need Neo Geo BIOS. '
+			'Ensure Makefile ran the bios target (default `make`), or install ngdevkit BIOS files.'
+		)
+	elif not mergedbios:
+		print(
+			'Neo Geo export: warning: could not flatten neogeo.zip into romset archive; RetroArch/MAME may not see BIOS files.'
+		)
+	return (True, 'ok', native_out, rom_dir, gamerom_slug)
+
+def ExportGbaPyAssembly (world, gba_out_path : str, script_type : str = 'gba-py', export_prefix : str = 'gba'):
+	'''Collect gb-family scripts from world/objects; write Thumb assembly next to target output.'''
 	global exportType
 	prev_export = exportType
-	exportType = 'gba'
+	exportType = str(export_prefix or 'gba')
 	script_entries = []
 	if world:
 		for scriptInfo in GetScripts(world):
@@ -5253,12 +6194,14 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 			is_init = scriptInfo[1]
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
-			if _type == 'gba-py':
+			if _type == script_type:
 				raw_script_txt = scriptTxt
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, '__world__')
 				script_entries.append({
 					'code' : scriptTxt,
 					'raw_code' : raw_script_txt,
+					'source_code' : raw_script_txt,
+					'source_line_offset' : 0,
 					'is_init' : is_init,
 					'script_obj' : script,
 					'owner_name' : '__world__',
@@ -5272,21 +6215,45 @@ def ExportGbaPyAssembly (world, gba_out_path : str):
 			is_init = scriptInfo[1]
 			_type = scriptInfo[2]
 			script = scriptInfo[3]
-			if _type == 'gba-py':
+			if _type == script_type:
 				raw_script_txt = scriptTxt
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, ob.name)
 				script_entries.append({
 					'code' : scriptTxt,
 					'raw_code' : raw_script_txt,
+					'source_code' : raw_script_txt,
+					'source_line_offset' : 0,
 					'is_init' : is_init,
 					'script_obj' : script,
 					'owner_name' : ob.name,
 					'symbol_hint' : ob.name + '_' + getattr(script, 'name', 'script'),
 				})
 	exportType = prev_export
-	if _py2gb_export_gba_py_assembly:
+	if script_type == 'neogeo-py':
+		runtime = {
+			'script_count' : int(len(script_entries)),
+			'init_quit' : False,
+			'update_quit' : False,
+			'init_draw_circles' : [],
+			'update_draw_circles' : [],
+			'init_display_ops' : [],
+			'update_display_ops' : [],
+			'surface_ops' : [],
+			'builtin_only_quit' : True,
+		}
+		try:
+			c_path = _write_neogeo_py_c(script_entries, gba_out_path)
+			runtime['neogeo_c_path'] = str(c_path)
+			runtime['script_backend'] = 'neogeo_c'
+		except Exception as err:
+			print('Neo Geo export: failed to transpile neogeo-py scripts to C:', err)
+			runtime['script_backend'] = 'neogeo_c_missing'
+		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
+	if _py2gb_export_gba_py_assembly and _py2gb_cli_module_available():
 		runtime = _run_py2gb_export_with_resolved_logs(_py2gb_export_gba_py_assembly, script_entries, gba_out_path, strict_print_exprs = False)
 		return _augment_runtime_with_dynamic_circles(runtime, script_entries)
+	if _py2gb_export_gba_py_assembly:
+		print('py2gb/py2gba CLI module not available; skipping transpile backend for', str(script_type))
 	runtime = {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'init_display_ops' : [], 'update_display_ops' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
 	return _augment_runtime_with_dynamic_circles(runtime, script_entries)
 
@@ -5375,6 +6342,21 @@ def _build_fallback_gbc_script_runtime (world):
 def ExportGbcPyAssembly (world, gbc_out_path : str):
 	'''Collect gbc-py scripts and emit a ZGB C companion file.'''
 	global exportType
+	# Runtime script execution can accidentally shadow builtins (e.g. `str = "..."`)
+	# in module globals; pin the real builtin here so nested helpers remain stable.
+	_b = __import__('builtins')
+	str = _b.str
+	int = _b.int
+	bool = _b.bool
+	float = _b.float
+	list = _b.list
+	dict = _b.dict
+	set = _b.set
+	len = _b.len
+	min = _b.min
+	max = _b.max
+	sorted = _b.sorted
+	range = _b.range
 	_append_gbc_trace_lines([
 		'[gbc-trace] ExportGbcPyAssembly:start out=' + str(gbc_out_path),
 		'[gbc-trace] ExportGbcPyAssembly:blend=' + str(getattr(bpy.data, 'filepath', '')),
@@ -5667,12 +6649,17 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'#ifndef JS13K_ZGB_SPRITE_SPAWN_Y',
 			'#define JS13K_ZGB_SPRITE_SPAWN_Y 0',
 			'#endif',
+			'#ifndef GRAVITY',
+			'#define GRAVITY 1',
+			'#endif',
 			'',
 			'typedef struct js13k_runtime_sprite_slot_t {',
 			'\tSprite *sprite;',
 			'\tint32_t owner_id;',
 			'} js13k_runtime_sprite_slot_t;',
 			'static js13k_runtime_sprite_slot_t js13k_runtime_sprite_slots[' + str(max(1, int(len(sprite_owner_rows)))) + '] = {0};',
+			'static int32_t js13k_runtime_vel_x[' + str(max(1, int(len(sprite_owner_rows)))) + '] = {0};',
+			'static int32_t js13k_runtime_vel_y[' + str(max(1, int(len(sprite_owner_rows)))) + '] = {0};',
 			'static int32_t js13k_runtime_tmp_pos[2] = {0, 0};',
 			'static int32_t js13k_runtime_tmp_vel[2] = {0, 0};',
 			'static int32_t dt = 1;',
@@ -5699,17 +6686,15 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'\treturn js13k_runtime_tmp_pos;',
 			'}',
 			'int32_t *sim_get_linear_velocity (int32_t rigidBody) {',
-			'\tSprite *sp = js13k_owner_sprite_from_id(rigidBody);',
-			'\tif (sp == 0) { js13k_runtime_tmp_vel[0] = 0; js13k_runtime_tmp_vel[1] = 0; return js13k_runtime_tmp_vel; }',
-			'\tjs13k_runtime_tmp_vel[0] = (int32_t)sp->vel_x;',
-			'\tjs13k_runtime_tmp_vel[1] = (int32_t)sp->vel_y;',
+			'\tif (rigidBody < 0 || rigidBody >= ' + str(max(1, int(len(sprite_owner_rows)))) + ') { js13k_runtime_tmp_vel[0] = 0; js13k_runtime_tmp_vel[1] = 0; return js13k_runtime_tmp_vel; }',
+			'\tjs13k_runtime_tmp_vel[0] = js13k_runtime_vel_x[(uint16_t)rigidBody];',
+			'\tjs13k_runtime_tmp_vel[1] = js13k_runtime_vel_y[(uint16_t)rigidBody];',
 			'\treturn js13k_runtime_tmp_vel;',
 			'}',
 			'void sim_set_linear_velocity (int32_t rigidBody, int32_t *vel) {',
-			'\tSprite *sp = js13k_owner_sprite_from_id(rigidBody);',
-			'\tif (sp == 0 || vel == 0) return;',
-			'\tsp->vel_x = (int16_t)vel[0];',
-			'\tsp->vel_y = (int16_t)vel[1];',
+			'\tif (rigidBody < 0 || rigidBody >= ' + str(max(1, int(len(sprite_owner_rows)))) + ' || vel == 0) return;',
+			'\tjs13k_runtime_vel_x[(uint16_t)rigidBody] = (int32_t)vel[0];',
+			'\tjs13k_runtime_vel_y[(uint16_t)rigidBody] = (int32_t)vel[1];',
 			'}',
 			'int32_t sim_cast_collider (int32_t collider, int32_t *dir, int32_t *pos, int32_t mask) {',
 			'\t(void)collider; (void)dir; (void)pos; (void)mask;',
@@ -5733,9 +6718,26 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'\t\tSprite *sp = SpriteManagerAdd((SPRITES)owner_id, sx, sy);',
 			'\t\tjs13k_runtime_sprite_slots[(uint16_t)owner_id].sprite = sp;',
 			'\t\tjs13k_runtime_sprite_slots[(uint16_t)owner_id].owner_id = owner_id;',
-			'\t\tif (sp != 0) { sp->vel_x = 0; sp->vel_y = 0; }',
+			'\t\tjs13k_runtime_vel_x[(uint16_t)owner_id] = 0;',
+			'\t\tjs13k_runtime_vel_y[(uint16_t)owner_id] = 0;',
 			'\t}',
 			'\treturn owner_id;',
+			'}',
+			'',
+			'static void js13k_zgb_bind_owner_handles (void) {',
+		])
+		for row in sprite_owner_rows:
+			_owner = str(row.get('owner', ''))
+			_owner_sym_txt = str(row.get('owner_sym', 'owner'))
+			_owner_fields = owner_specs.get(_owner, {})
+			_idx = int(row.get('sprite_idx', 0))
+			if isinstance(_owner_fields, dict) and 'rb' in _owner_fields:
+				lines.append('\tjs13k_this_' + _owner_sym_txt + '->rb = ' + str(_idx) + ';')
+			if isinstance(_owner_fields, dict) and 'col' in _owner_fields:
+				lines.append('\tjs13k_this_' + _owner_sym_txt + '->col = ' + str(_idx) + ';')
+			if isinstance(_owner_fields, dict) and 'id' in _owner_fields:
+				lines.append('\tjs13k_this_' + _owner_sym_txt + '->id = ' + str(_idx) + ';')
+		lines.extend([
 			'}',
 			'',
 			'static void js13k_zgb_spawn_managed_sprites (void) {',
@@ -5743,10 +6745,8 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 		for row in sprite_owner_rows:
 			lines.append('\tjs13k_runtime_sprite_slots[' + str(int(row.get('sprite_idx', 0))) + '].sprite = SpriteManagerAdd(' + str(row.get('enum_name', 'SPRITE_OWNER')) + ', JS13K_ZGB_SPRITE_SPAWN_X, JS13K_ZGB_SPRITE_SPAWN_Y);')
 			lines.append('\tjs13k_runtime_sprite_slots[' + str(int(row.get('sprite_idx', 0))) + '].owner_id = ' + str(int(row.get('sprite_idx', 0))) + ';')
-			lines.append('\tif (js13k_runtime_sprite_slots[' + str(int(row.get('sprite_idx', 0))) + '].sprite != 0) {')
-			lines.append('\t\tjs13k_runtime_sprite_slots[' + str(int(row.get('sprite_idx', 0))) + '].sprite->vel_x = 0;')
-			lines.append('\t\tjs13k_runtime_sprite_slots[' + str(int(row.get('sprite_idx', 0))) + '].sprite->vel_y = 0;')
-			lines.append('\t}')
+			lines.append('\tjs13k_runtime_vel_x[' + str(int(row.get('sprite_idx', 0))) + '] = 0;')
+			lines.append('\tjs13k_runtime_vel_y[' + str(int(row.get('sprite_idx', 0))) + '] = 0;')
 		lines.extend([
 			'}',
 			'#else',
@@ -5754,6 +6754,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'\tSPRITE_COUNT = 0',
 			'} SPRITES;',
 			'static int32_t dt = 1;',
+			'static void js13k_zgb_bind_owner_handles (void) { }',
 			'static void js13k_zgb_spawn_managed_sprites (void) { }',
 			'#endif',
 			'',
@@ -5797,20 +6798,25 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'\tuint16_t i;',
 			'\tjs13k_update_key_state();',
 			'\tjs13k_zgb_spawn_managed_sprites();',
+			'\tjs13k_zgb_bind_owner_handles();',
 			'\tfor (i = 0; i < js13k_gbc_init_script_count; ++i) if (js13k_gbc_init_scripts[i] != 0) js13k_gbc_init_scripts[i]();',
 			'}',
 			'',
 			'void js13k_zgb_UPDATE (void) {',
 			'\tuint16_t i;',
 			'\tjs13k_update_key_state();',
+			'\tdt = (int32_t)delta_time;',
+			'\tif (dt <= 0) dt = 1;',
+			'\tfor (i = 0; i < js13k_gbc_update_script_count; ++i) if (js13k_gbc_update_scripts[i] != 0) js13k_gbc_update_scripts[i]();',
 			'#ifdef JS13K_ZGB_ENABLE_SPRITEMANAGER',
 			'\tfor (i = 0; i < ' + str(max(1, int(len(sprite_owner_rows)))) + '; ++i) {',
 			'\t\tif (js13k_runtime_sprite_slots[i].sprite != 0) {',
-			'\t\t\tjs13k_runtime_sprite_slots[i].sprite->vel_y = (int16_t)(js13k_runtime_sprite_slots[i].sprite->vel_y + GRAVITY);',
+			'\t\t\tjs13k_runtime_vel_y[i] = (int32_t)(js13k_runtime_vel_y[i] + (int32_t)GRAVITY);',
+			'\t\t\tjs13k_runtime_sprite_slots[i].sprite->x = (uint16_t)((int32_t)js13k_runtime_sprite_slots[i].sprite->x + (js13k_runtime_vel_x[i] * dt));',
+			'\t\t\tjs13k_runtime_sprite_slots[i].sprite->y = (uint16_t)((int32_t)js13k_runtime_sprite_slots[i].sprite->y + (js13k_runtime_vel_y[i] * dt));',
 			'\t\t}',
 			'\t}',
 			'#endif',
-			'\tfor (i = 0; i < js13k_gbc_update_script_count; ++i) if (js13k_gbc_update_scripts[i] != 0) js13k_gbc_update_scripts[i]();',
 			'}',
 			'',
 			'#ifdef JS13K_ZGB_BIND_STATE_HOOKS',
@@ -5888,6 +6894,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 	except Exception as err:
 		_append_gbc_trace_lines([
 			'[gbc-trace] ExportGbcPyAssembly:exception=' + str(err),
+			'[gbc-trace] ExportGbcPyAssembly:traceback=' + str(traceback.format_exc()),
 		])
 		raise
 	finally:
@@ -9984,7 +10991,80 @@ def _stop_active_emu_procs ():
 					proc.kill()
 			except Exception:
 				pass
+
+def _ensure_py2gba_cli_shim ():
+	"""Prefer a local py2gba wrapper when legacy entrypoints are broken."""
+	if os.name == 'nt':
+		return
+	shim_path = os.path.join(TMP_DIR, 'py2gba')
+	py2gb_path = str(PY2GB_PATH or '')
+	py2gb_build_lib = str(PY2GB_BUILD_LIB_PATH or '')
+	shim_src = '\n'.join([
+		'#!/usr/bin/env python3',
+		'import os, runpy, sys',
+		'roots = []',
+		"raw_env = str(os.environ.get('JS13K_PY2GB_PATHS', '') or '')",
+		"for _p in raw_env.split(os.pathsep):",
+		"\tif _p.strip() != '':",
+		"\t\troots.append(_p.strip())",
+		"for _p in (" + repr(py2gb_build_lib) + ", " + repr(py2gb_path) + "):",
+		"\tif str(_p).strip() != '':",
+		"\t\troots.append(str(_p).strip())",
+		'for _p in roots:',
+		"\tif os.path.isdir(_p) and (_p not in sys.path):",
+		"\t\tsys.path.insert(0, _p)",
+		"for mod in ('py2gb.__main__', 'py2gba.__main__'):",
+		'\ttry:',
+		"\t\trunpy.run_module(mod, run_name='__main__')",
+		'\t\traise SystemExit(0)',
+		'\texcept (ModuleNotFoundError, ImportError):',
+		'\t\tcontinue',
+		"\texcept SystemExit as e:",
+		"\t\traise SystemExit(0 if e.code is None else int(e.code))",
+		'\texcept Exception:',
+		'\t\tcontinue',
+		"sys.stderr.write('py2gba shim error: no py2gb/py2gba CLI module found\\n')",
+		'raise SystemExit(1)',
+	]) + '\n'
+	try:
+		prev = ''
+		if os.path.isfile(shim_path):
+			try:
+				with open(shim_path, 'r') as f:
+					prev = f.read()
+			except Exception:
+				prev = ''
+		if prev != shim_src:
+			with open(shim_path, 'w') as f:
+				f.write(shim_src)
+		try:
+			curr_mode = os.stat(shim_path).st_mode
+			os.chmod(shim_path, curr_mode | 0o111)
+		except Exception:
+			pass
+		path_parts = os.environ.get('PATH', '').split(os.pathsep)
+		if TMP_DIR not in path_parts:
+			os.environ['PATH'] = TMP_DIR + os.pathsep + os.environ.get('PATH', '')
+	except Exception:
+		pass
+
 def _run_py2gb_export_with_resolved_logs (export_fn, script_entries, out_path, strict_print_exprs : bool = False):
+	_ensure_py2gba_cli_shim()
+	try:
+		py2gb_paths = []
+		for p in (PY2GB_BUILD_LIB_PATH, PY2GB_PATH):
+			if p and os.path.isdir(p):
+				py2gb_paths.append(str(p))
+		os.environ['JS13K_PY2GB_PATHS'] = os.pathsep.join(py2gb_paths)
+		if py2gb_paths:
+			existing_pp = str(os.environ.get('PYTHONPATH', '') or '')
+			parts = [p for p in existing_pp.split(os.pathsep) if p]
+			for p in reversed(py2gb_paths):
+				if p not in parts:
+					parts.insert(0, p)
+			os.environ['PYTHONPATH'] = os.pathsep.join(parts)
+	except Exception:
+		pass
 	start_time = time.time()
 	stdout_buf = io.StringIO()
 	stderr_buf = io.StringIO()
@@ -10010,6 +11090,44 @@ def _run_py2gb_export_with_resolved_logs (export_fn, script_entries, out_path, s
 		line = raw.rstrip('\n')
 		if line:
 			print(_resolve_runtime_print_exprs(line, start_time = start_time, const_env = const_env, strict = strict_print_exprs))
+	if isinstance(result, dict):
+		runtime = dict(result)
+		asm_path = str(runtime.get('assembly_path') or '')
+		if asm_path == '':
+			try:
+				candidate = os.path.splitext(os.path.abspath(str(out_path or '')))[0] + '_gba_py.s'
+			except Exception:
+				candidate = ''
+			if candidate and os.path.isfile(candidate):
+				asm_path = candidate
+				runtime['assembly_path'] = asm_path
+		if asm_path and os.path.isfile(asm_path):
+			try:
+				asm_txt = open(asm_path, 'r', encoding = 'utf-8').read()
+			except Exception:
+				asm_txt = ''
+			def _collect_symbols (_kind):
+				out = []
+				seen = set()
+				if not isinstance(asm_txt, str) or asm_txt == '':
+					return out
+				pat_global = re.compile(r'^\s*\.global\s+([A-Za-z_]\w*)\s*$', flags = re.MULTILINE)
+				pat_label = re.compile(r'^\s*([A-Za-z_]\w*)\s*:\s*$', flags = re.MULTILINE)
+				for pat in (pat_global, pat_label):
+					for _m in pat.finditer(asm_txt):
+						sym = str(_m.group(1) or '')
+						if not sym.endswith('_' + _kind):
+							continue
+						if sym in seen:
+							continue
+						seen.add(sym)
+						out.append(sym)
+				return out
+			if not list(runtime.get('init_symbols') or []):
+				runtime['init_symbols'] = _collect_symbols('init')
+			if not list(runtime.get('update_symbols') or []):
+				runtime['update_symbols'] = _collect_symbols('update')
+		return runtime
 	return result
 
 def _resolve_runtime_print_exprs (text : str, frame : int = None, start_time : float = None, const_env : dict = None, extra_env : dict = None, strict : bool = False):
@@ -10556,6 +11674,254 @@ def _pipe_process_output_to_terminal (proc, prefix = 'mGBA'):
 	thread = threading.Thread(target = _reader, daemon = True)
 	thread.start()
 	_GBA_EMU_PROCS.append((proc, thread))
+
+def _neogeo_loose_rom_dir_has_files (_dir_abs):
+	try:
+		if not os.path.isdir(str(_dir_abs or '')):
+			return False
+		for fn in os.listdir(_dir_abs):
+			if os.path.isfile(os.path.join(_dir_abs, fn)):
+				return True
+	except Exception:
+		return False
+	return False
+
+def _infer_neogeo_loose_rom_dir (rom_abs_path, explicit_loose_rom_dir = None):
+	"""Locate ngdevkit build/rom when the launcher was not passed loose_rom_dir (e.g. custom C toolchain shortcut or RetroArch loading the zip alone)."""
+	env = str(os.environ.get('JS13K_NEOGEO_LOOSE_ROM_DIR', '') or '').strip()
+	if env != '':
+		c = os.path.abspath(os.path.expanduser(env))
+		if _neogeo_loose_rom_dir_has_files(c):
+			return c
+	if str(explicit_loose_rom_dir or '').strip() != '':
+		c = os.path.abspath(str(explicit_loose_rom_dir).strip())
+		if _neogeo_loose_rom_dir_has_files(c):
+			return c
+	rd = os.path.dirname(os.path.abspath(str(rom_abs_path or '').strip()))
+	if rd != '':
+		br = os.path.join(rd, 'build', 'rom')
+		if _neogeo_loose_rom_dir_has_files(br):
+			return os.path.abspath(br)
+	br_std = os.path.join(str(TMP_DIR or '/tmp'), 'js13k_neogeo_native_project', 'build', 'rom')
+	if _neogeo_loose_rom_dir_has_files(br_std):
+		return os.path.abspath(br_std)
+	return ''
+
+def _neogeo_scan_dir_for_mame_libretro_so (_directory):
+	found = []
+	d = os.path.abspath(os.path.expanduser(str(_directory or '')))
+	try:
+		if not os.path.isdir(d):
+			return found
+		for fn in sorted(os.listdir(d)):
+			low = str(fn).lower()
+			if not low.endswith('_libretro.so'):
+				continue
+			if 'fbneo' in low or 'finalburn' in low or 'fb_alpha' in low or 'fbalpha' in low:
+				continue
+			if 'mame' not in low:
+				continue
+			fp = os.path.join(d, fn)
+			if os.path.isfile(fp):
+				found.append(fp)
+	except Exception:
+		pass
+	return found
+
+def _neogeo_libretro_mame_core_paths ():
+	"""Augment fixed paths with distro / Flatpak / user RetroArch cores directories (cores are rarely only under /usr/lib/libretro)."""
+	fixed = [
+		'/usr/lib/libretro/mame_libretro.so',
+		'/usr/local/lib/libretro/mame_libretro.so',
+		'/usr/lib/libretro/mame_current_libretro.so',
+		'/usr/local/lib/libretro/mame_current_libretro.so',
+	]
+	search_dirs = [
+		os.path.join(os.path.expanduser('~'), '.local', 'share', 'retroarch', 'cores'),
+		os.path.join(os.path.expanduser('~'), '.var', 'app', 'org.libretro.RetroArch', 'config', 'retroarch', 'cores'),
+		os.path.join(os.path.expanduser('~'), '.var', 'app', 'net.retrodeck.retrodeck', 'config', 'retroarch', 'cores'),
+		'/usr/lib/x86_64-linux-gnu/libretro',
+		'/usr/lib64/libretro',
+		'/usr/lib/libretro',
+		'/usr/local/lib/libretro',
+	]
+	env_extra = str(os.environ.get('JS13K_NEOGEO_LIBRETRO_CORE_SEARCH_DIRS', '') or '').strip()
+	if env_extra != '':
+		for part in env_extra.replace(',', os.pathsep).split(os.pathsep):
+			p = os.path.abspath(os.path.expanduser(part.strip()))
+			if p != '':
+				search_dirs.append(p)
+	seen = set()
+	out = []
+	for p in fixed + [x for sd in search_dirs for x in _neogeo_scan_dir_for_mame_libretro_so(sd)]:
+		p = os.path.abspath(os.path.expanduser(str(p)))
+		if p == '' or p in seen:
+			continue
+		if not os.path.isfile(p):
+			continue
+		seen.add(p)
+		out.append(p)
+	return out
+
+def _write_libretro_mame_cmd_for_neogeo_loose_rom (loose_rom_dir, gamerom_token, neogeo_zip_rom_abs = None):
+	"""Write a libretro-MAME launcher .cmd line. RetroArch+MAME associates this with the romset ZIP as a *sidecar*:
+	`/path/game_js13kn.zip.cmd` beside `/path/game_js13kn.zip` (same pattern as Batocera). Passing a standalone
+	`/tmp/foo.cmd` as content leaves the basename as puzzledp_js13kn.zip — MAME then reports Unknown system puzzledp_js13kn."""
+	game = str(gamerom_token or '').strip()
+	dir_abs = os.path.abspath(str(loose_rom_dir or '').strip())
+	if game == '' or dir_abs == '' or not os.path.isdir(dir_abs):
+		return ''
+	dn = dir_abs.replace('\\', '/')
+	rompath_opt = '-rompath ' + dn
+	if (' ' in dn) or ('"' in dn):
+		rompath_opt = '-rompath "' + dn.replace('"', '\\"') + '"'
+	line = game + ' -skip_gameinfo -noautosave ' + rompath_opt + '\n'
+	def _atomic_write_cmd (path):
+		dnm = os.path.dirname(path)
+		if dnm != '':
+			try:
+				os.makedirs(dnm, exist_ok = True)
+			except Exception:
+				pass
+		with open(path, 'w', newline = '\n', encoding = 'utf-8') as wf:
+			wf.write(line)
+		return path
+	zip_abs = str(neogeo_zip_rom_abs or '').strip()
+	if zip_abs != '' and zip_abs.lower().endswith('.zip') and os.path.isfile(zip_abs):
+		sidecar = zip_abs + '.cmd'
+		try:
+			return _atomic_write_cmd(sidecar)
+		except Exception:
+			pass
+	tdir = str(TMP_DIR or '/tmp')
+	try:
+		os.makedirs(tdir, exist_ok = True)
+	except Exception:
+		pass
+	try:
+		fh, path = tempfile.mkstemp(prefix = 'js13k_neogeo_mame_', suffix = '.cmd', dir = tdir)
+		os.close(fh)
+		return _atomic_write_cmd(path)
+	except Exception:
+		return ''
+
+def _launch_neogeo_emulator (rom_path, loose_rom_dir = None, gamerom_name = None):
+	"""Launch a Neo Geo-capable emulator if one is available on PATH."""
+	rom_arg_path = str(rom_path or '').strip()
+	if rom_arg_path == '':
+		return False
+	rom_abs_path = os.path.abspath(rom_arg_path)
+	rom_dir_zip = os.path.dirname(rom_abs_path)
+	zip_base = os.path.splitext(os.path.basename(rom_abs_path))[0]
+	if zip_base == '':
+		zip_base = os.path.basename(rom_abs_path)
+	game_token = str(gamerom_name or '').strip()
+	if game_token == '':
+		game_token = zip_base
+		if zip_base.lower().endswith('_js13kn'):
+			game_token = zip_base[:-len('_js13kn')]
+	if game_token == '':
+		game_token = 'puzzledp'
+	loose_dir_abs = _infer_neogeo_loose_rom_dir(rom_abs_path, loose_rom_dir)
+	_append_gbc_trace_lines([
+		'[neo-trace] launch_neogeo:rom=' + str(rom_abs_path),
+		'[neo-trace] launch_neogeo:explicit_loose_rom_dir=' + str(loose_rom_dir or ''),
+		'[neo-trace] launch_neogeo:resolved_loose_rom_dir=' + str(loose_dir_abs or ''),
+		'[neo-trace] launch_neogeo:game_token=' + str(game_token),
+	])
+	# ngdevkit's emu.mk uses gngeo as: GNGEO ... -i $(ROMDIR) $(GAMEROM) — pass loose build/rom + GAMEROM for homebrew P ROMs.
+	loose_first_cmds = []
+	if loose_dir_abs != '':
+		mame_rp = loose_dir_abs
+		loose_first_cmds.extend([
+			['ngdevkit-gngeo', '-i', loose_dir_abs, game_token],
+			['gngeo', '-i', loose_dir_abs, game_token],
+			['ngdevkit-gngeo', '--rompath', loose_dir_abs, game_token],
+			['gngeo', '--rompath', loose_dir_abs, game_token],
+			['mame', '-noautosave', '-skip_gameinfo', '-rompath', mame_rp, game_token],
+			['mame64', '-noautosave', '-skip_gameinfo', '-rompath', mame_rp, game_token],
+		])
+	def _retroarch_launch_cmds (_rom):
+		retroarch_env = str(os.environ.get('JS13K_NEOGEO_TRY_RETROARCH', '') or '').strip()
+		if retroarch_env == '':
+			retroarch_enabled = True
+		else:
+			retroarch_enabled = retroarch_env in ('1', 'true', 'True', 'yes', 'YES')
+		if not retroarch_enabled:
+			return []
+		exe = shutil.which(str(os.environ.get('JS13K_NEOGEO_RETROARCH_BIN', 'retroarch') or 'retroarch'))
+		if not exe:
+			return []
+		core_override = str(os.environ.get('JS13K_NEOGEO_LIBRETRO_CORE', '') or '').strip()
+		core_candidates = []
+		fbneo_first = str(os.environ.get('JS13K_NEOGEO_FBNEO_RETROARCH_FIRST', '0') or '0').strip() not in (
+			'', '0', 'false', 'False', 'no', 'NO'
+		)
+		if core_override != '':
+			core_candidates.append(core_override)
+		# FBNeo / FinalBurn Neo only recognizes ROM sets in its DAT: custom ngdevkit zips usually show
+		# "Romset is unknown". MAME-style cores are more forgiving for homebrew carts.
+		mame_cores = list(_neogeo_libretro_mame_core_paths())
+		fbneo_cores = [
+			'/usr/lib/libretro/fbneo_libretro.so',
+			'/usr/lib/libretro/finalburnneo_libretro.so',
+			'/usr/lib/libretro/fbalpha2012_neogeo_libretro.so',
+			'/usr/local/lib/libretro/fbneo_libretro.so',
+			'/usr/local/lib/libretro/finalburnneo_libretro.so',
+			'/usr/local/lib/libretro/fbalpha2012_neogeo_libretro.so',
+		]
+		if fbneo_first:
+			core_candidates.extend(fbneo_cores + mame_cores)
+		else:
+			core_candidates.extend(mame_cores + fbneo_cores)
+		out = []
+		seen = set()
+		cmd_for_mame = ''
+		zip_rom_arg = str(_rom or '').strip()
+		if loose_dir_abs != '' and zip_rom_arg.lower().endswith('.zip'):
+			cmd_for_mame = _write_libretro_mame_cmd_for_neogeo_loose_rom(loose_dir_abs, game_token, zip_rom_arg)
+		elif loose_dir_abs != '':
+			cmd_for_mame = _write_libretro_mame_cmd_for_neogeo_loose_rom(loose_dir_abs, game_token, None)
+		_append_gbc_trace_lines(['[neo-trace] launch_neogeo:libretro_mame_cmd_path=' + str(cmd_for_mame or '')])
+		for core in core_candidates:
+			core_path = os.path.expanduser(str(core or '')).strip()
+			if core_path == '' or core_path in seen:
+				continue
+			seen.add(core_path)
+			if not os.path.isfile(core_path):
+				continue
+			core_bn = os.path.basename(core_path).lower()
+			is_fbneo_like = ('fbneo' in core_bn) or ('fbalpha2012_neogeo' in core_bn) or ('finalburnneo' in core_bn)
+			if is_fbneo_like:
+				out.append([exe, '-L', core_path, _rom])
+			elif cmd_for_mame != '':
+				out.append([exe, '-L', core_path, cmd_for_mame])
+			else:
+				out.append([exe, '-L', core_path, _rom])
+		return out
+	# Passing the romset ZIP to libretro-MAME names a non-existent arcade device (e.g. puzzledp_js13kn): use RetroArch+MAME via .cmd.
+	launch_cmds = loose_first_cmds + _retroarch_launch_cmds(rom_abs_path)
+	_stop_active_emu_procs()
+	for cmd in launch_cmds:
+		exe = str(cmd[0] if cmd else '').strip()
+		if exe == '':
+			continue
+		exe_path = shutil.which(exe)
+		if not exe_path:
+			continue
+		try:
+			proc = subprocess.Popen(
+				[exe_path] + list(cmd[1 :]),
+				stdout = subprocess.PIPE,
+				stderr = subprocess.STDOUT,
+				text = True,
+				bufsize = 1,
+			)
+			_pipe_process_output_to_terminal(proc, prefix = os.path.basename(exe_path))
+			return True
+		except Exception as err:
+			print('Failed to launch', exe, 'for Neo Geo export:', err)
+	return False
 
 def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = 'gba-py', strict_print_exprs : bool = False, runtime_env = None, mirror_step = None):
 	print_calls = list((script_runtime or {}).get('print_calls') or [])
@@ -11956,6 +13322,20 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 									break
 							if env.get('rb', None) is not None:
 								break
+					if env.get('rb', None) is None:
+						try:
+							_owner_txt = str(owner)
+						except Exception:
+							_owner_txt = ''
+						if _owner_txt != '':
+							env['rb'] = _owner_txt
+							try:
+								setattr(this_obj, 'rb', _owner_txt)
+							except Exception:
+								try:
+									object.__setattr__(this_obj, 'rb', _owner_txt)
+								except Exception:
+									pass
 					try:
 						env['col'] = getattr(this_obj, 'col', None)
 					except Exception:
@@ -20389,7 +21769,25 @@ def _gb_runtime_is_stubbed (script_runtime):
 		asm_txt = open(asm_path, 'r', encoding = 'utf-8').read(512)
 	except Exception:
 		return False
-	return ('py2gb pygame-aware stub backend' in asm_txt) or ('py2gba pygame-aware stub backend' in asm_txt)
+	return (
+		('py2gb pygame-aware stub backend' in asm_txt)
+		or ('py2gba pygame-aware stub backend' in asm_txt)
+		or ('py2gb lightweight backend' in asm_txt)
+		or ('placeholder Game Boy assembly entrypoints' in asm_txt)
+	)
+
+def _gb_runtime_uses_input_polling (script_runtime):
+	asm_path = (script_runtime or {}).get('assembly_path')
+	if not asm_path or not os.path.isfile(asm_path):
+		return False
+	try:
+		asm_txt = open(asm_path, 'r', encoding = 'utf-8').read(4096)
+	except Exception:
+		return False
+	return (
+		('pygame.key.get_pressed' in asm_txt)
+		or ('pygame.key.get_mods' in asm_txt)
+	)
 
 def BuildGba (world):
 	PreBuild ()
@@ -20486,6 +21884,219 @@ def BuildGba (world):
 			)
 		except Exception:
 			pass
+		raise
+	finally:
+		PostBuild ()
+
+def BuildNeoGeo (world):
+	PreBuild ()
+	try:
+		try:
+			import numpy
+		except ImportError:
+			raise RuntimeError('Neo Geo export needs NumPy.')
+		_append_gbc_trace_lines([
+			'[neo-trace] BuildNeoGeo:start blend=' + str(getattr(bpy.data, 'filepath', '')),
+			'[neo-trace] BuildNeoGeo:cwd=' + str(os.getcwd()),
+		])
+		scene_obs = list(bpy.context.scene.collection.all_objects)
+		neo_imgs = []
+		for ob in scene_obs:
+			if not ob.exportOb or ob.hide_get():
+				continue
+			if ob.type != 'EMPTY' or ob.empty_display_type != 'IMAGE' or not ob.data or not ob.data.filepath:
+				continue
+			neo_imgs.append(ob)
+		if not neo_imgs:
+			print('Neo Geo export: no image empties with Export object enabled; wrote blank screen.')
+		neo_imgs.sort(key = lambda o: o.location.z)
+		for ob in neo_imgs:
+			img_path = os.path.join(TMP_DIR, GetFileName(ob.data.filepath))
+			prev_rot = ob.rotation_mode
+			ob.rotation_mode = 'XYZ'
+			ob.data.save(filepath = img_path)
+			ob.rotation_mode = prev_rot
+		bitmap_off = 0x300
+		out = os.path.expanduser(getattr(world, 'neoGeoPath', '')).replace('\\', '/')
+		if not out:
+			out = TMP_DIR + '/' + bpy.path.basename(bpy.data.filepath).replace('.blend', '') + '.neo'
+		elif not out.lower().endswith('.neo'):
+			out += '.neo'
+		script_runtime = ExportGbaPyAssembly(world, out, script_type = 'neogeo-py', export_prefix = 'neogeo')
+		neogeo_c_path = str((script_runtime or {}).get('neogeo_c_path', '') or '')
+		try:
+			_sb = str((script_runtime or {}).get('script_backend', '') or '')
+		except Exception:
+			_sb = ''
+		_append_gbc_trace_lines([
+			'[neo-trace] BuildNeoGeo:out_target=' + str(out),
+			'[neo-trace] BuildNeoGeo:neogeo_c_path=' + str(neogeo_c_path),
+			'[neo-trace] BuildNeoGeo:script_backend=' + str(_sb),
+		])
+		toolchain_fallback_reason = ''
+		native_build_error = ''
+		neo_native_user_canvas_np = None
+		if neo_imgs:
+			neo_es = {}
+			for ob_early in neo_imgs:
+				pix_early = _gba_load_saved_image_rgba(ob_early)
+				if pix_early is not None:
+					neo_es[ob_early.name] = pix_early
+			try:
+				_gba_apply_script_surface_ops(
+					neo_es,
+					list((script_runtime or {}).get('surface_ops') or []),
+					frame = 1,
+					include_init = True,
+					include_update = False,
+				)
+			except Exception:
+				pass
+			try:
+				neo_native_user_canvas_np = _gba_composite_scene(
+					world,
+					neo_imgs,
+					image_surfaces = neo_es,
+					script_runtime = script_runtime,
+					frame = 1,
+				)
+			except Exception as neo_comp_err:
+				print('Neo Geo export: composite for native CROM sprites failed:', neo_comp_err)
+				neo_native_user_canvas_np = None
+		allow_compat_fallback = str(os.environ.get('JS13K_NEOGEO_ALLOW_COMPAT_FALLBACK', '0') or '0').strip() not in ('', '0', 'false', 'False', 'no', 'NO')
+		explicit_toolchain_cmd = str(os.environ.get('JS13K_NEOGEO_C_TOOLCHAIN_CMD', '') or '').strip()
+		if explicit_toolchain_cmd == '':
+			explicit_toolchain_cmd = str(os.environ.get('S13K_NEOGEO_C_TOOLCHAIN_CMD', '') or '').strip()
+		if explicit_toolchain_cmd != '' and neogeo_c_path != '' and os.path.isfile(neogeo_c_path):
+			ok, msg = _run_neogeo_c_toolchain(neogeo_c_path, out)
+			if ok:
+				try:
+					out_size = int(os.path.getsize(out))
+				except Exception:
+					out_size = -1
+				try:
+					_loose_try = _infer_neogeo_loose_rom_dir(os.path.abspath(out), None)
+				except Exception:
+					_loose_try = ''
+				print('Neo Geo export: built via configured C toolchain.')
+				if str(_loose_try or '') != '':
+					print(
+						'Neo Geo export: inferred loose ROM directory for emulators:',
+						str(_loose_try),
+						'(set JS13K_NEOGEO_LOOSE_ROM_DIR or use ngdevkit native zip export for a fixed path.)',
+					)
+				_append_gbc_trace_lines([
+					'[neo-trace] BuildNeoGeo:branch=explicit_c_toolchain_ok',
+					'[neo-trace] BuildNeoGeo:inferred_loose_rom_for_launch=' + str(_loose_try or ''),
+				])
+				if out_size >= 0:
+					print('Saved Neo Geo export:', out, '(%i bytes)' %out_size)
+				else:
+					print('Saved Neo Geo export:', out)
+				rom_path = os.path.abspath(out)
+				if not _launch_neogeo_emulator(rom_path, loose_rom_dir = (_loose_try or None)):
+					print('No compatible Neo Geo emulator found in PATH; open the ROM manually:', rom_path)
+				return
+			toolchain_fallback_reason = str(msg or 'unknown toolchain error')
+			native_build_error = 'Configured C toolchain command failed: ' + toolchain_fallback_reason
+		if neogeo_c_path != '' and os.path.isfile(neogeo_c_path):
+			native_ok, native_msg, native_out_path, native_loose_rom_dir, native_neo_gamerom = (
+				_build_native_neogeo_romset_from_c(neogeo_c_path, out, neo_native_user_canvas_np)
+			)
+			if native_ok and isinstance(native_out_path, str) and native_out_path != '':
+				try:
+					native_size = int(os.path.getsize(native_out_path))
+				except Exception:
+					native_size = -1
+				print('Neo Geo export: built native Neo Geo romset via ngdevkit.')
+				if isinstance(native_loose_rom_dir, str) and str(native_loose_rom_dir).strip() != '':
+					print(
+						'Neo Geo export: loose ROM directory (ngdevkit build/rom, for gngeo/MAME rompath):',
+						os.path.abspath(str(native_loose_rom_dir).strip()),
+					)
+				_append_gbc_trace_lines([
+					'[neo-trace] BuildNeoGeo:branch=native_ngdevkit_zip_ok',
+					'[neo-trace] BuildNeoGeo:native_zip_out=' + str(native_out_path or ''),
+					'[neo-trace] BuildNeoGeo:native_loose_rom_dir=' + str(native_loose_rom_dir or ''),
+					'[neo-trace] BuildNeoGeo:native_gamerom=' + str(native_neo_gamerom or ''),
+				])
+				if native_size >= 0:
+					print('Saved Neo Geo romset:', native_out_path, '(%i bytes)' %native_size)
+				else:
+					print('Saved Neo Geo romset:', native_out_path)
+				rom_path = os.path.abspath(native_out_path)
+				if not _launch_neogeo_emulator(
+					rom_path,
+					loose_rom_dir = native_loose_rom_dir,
+					gamerom_name = native_neo_gamerom,
+				):
+					print('No compatible Neo Geo emulator found in PATH; open the ROM manually:', rom_path)
+				return
+			native_build_error = str(native_msg or native_build_error or 'unknown native romset build error')
+		if not allow_compat_fallback:
+			raise RuntimeError(
+				'Neo Geo export requires a native romset build, but native build failed. '
+				+ ('Reason: ' + str(native_build_error) if str(native_build_error) != '' else '')
+				+ ' Set JS13K_NEOGEO_ALLOW_COMPAT_FALLBACK=1 to force compatibility output.'
+			)
+		if str(native_build_error) != '':
+			print('Neo Geo export: native romset build failed; using compatibility fallback:', native_build_error)
+		_append_gbc_trace_lines([
+			'[neo-trace] BuildNeoGeo:branch=compatibility_fallback',
+			'[neo-trace] BuildNeoGeo:native_build_error=' + str(native_build_error or ''),
+		])
+		image_surfaces = {}
+		for ob in neo_imgs:
+			pix = _gba_load_saved_image_rgba(ob)
+			if pix is not None:
+				image_surfaces[ob.name] = pix
+		has_physics = bool(getattr(world, 'usePhysics', True)) and _gb_scene_has_physics(scene_obs)
+		update_symbols = list((script_runtime or {}).get('update_symbols') or [])
+		is_stubbed_backend = _gb_runtime_is_stubbed(script_runtime)
+		has_runtime_update = bool(update_symbols) and (not is_stubbed_backend)
+		is_neogeo_c_backend = str((script_runtime or {}).get('script_backend', '') or '').startswith('neogeo_c')
+		frame_count = 1
+		frames = None
+		if not has_runtime_update:
+			if is_neogeo_c_backend and toolchain_fallback_reason == '':
+				print('Neo Geo export: C toolchain path is unavailable; using baked frame fallback.')
+			elif not is_neogeo_c_backend:
+				print(
+					'Neo Geo export: runtime transpiler backend is placeholder/stub or missing update symbols; '
+					'using baked frame fallback.'
+				)
+			if _gb_runtime_uses_input_polling(script_runtime):
+				print(
+					'Neo Geo export: baked fallback is non-interactive. '
+					'Input-driven movement from pygame.key.get_pressed() will stay static without a real transpiler backend.'
+				)
+			if has_physics:
+				frames = _gba_generate_rapier_frames(world, scene_obs, neo_imgs, image_surfaces, script_runtime)
+			if not frames:
+				frames = _gba_generate_script_only_frames(world, neo_imgs, image_surfaces, script_runtime)
+		if frames:
+			frame_count = int(max(1, len(frames)))
+			pixel_bytes = b''.join(frames)
+		else:
+			_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = 1, include_init = True, include_update = False)
+			canvas = _gba_composite_scene(world, neo_imgs, image_surfaces = image_surfaces, script_runtime = script_runtime, frame = 1)
+			pixel_bytes = _gba_rgba_to_mode3(canvas)
+		print('Neo Geo export: using the gb-family runtime backend and .neo container output.')
+		rom = _gba_build_rom_mode3(pixel_bytes, bitmap_off, script_runtime, frame_count = frame_count)
+		MakeFolderForFile(out)
+		open(out, 'wb').write(rom)
+		print('Saved Neo Geo export:', out, '(%i bytes)' %len(rom))
+		rom_path = os.path.abspath(out)
+		force_launch_fallback = str(os.environ.get('JS13K_NEOGEO_FORCE_EMULATOR_ON_FALLBACK', '0') or '0').strip() not in ('', '0', 'false', 'False', 'no', 'NO')
+		if force_launch_fallback:
+			if not _launch_neogeo_emulator(rom_path):
+				print('No compatible Neo Geo emulator found in PATH; open the ROM manually:', rom_path)
+		else:
+			print(
+				'Neo Geo export: skipping Neo Geo emulator launch for compatibility fallback output '
+				'(not a native Neo Geo romset). Set JS13K_NEOGEO_FORCE_EMULATOR_ON_FALLBACK=1 to force launch.'
+			)
+	except Exception:
 		raise
 	finally:
 		PostBuild ()
@@ -22415,11 +24026,9 @@ def BuildGbc (world):
 							)
 							if isinstance(_phase1_print_env, dict) and _phase1_print_env.get('sim', None) is not None:
 								def _is_dead_runtime_rb (_h):
-									try:
-										if isinstance(_h, (tuple, list)) and len(_h) == 2:
-											return (abs(float(_h[0])) <= 1e-6) and (abs(float(_h[1])) <= 1e-6)
-									except Exception:
-										pass
+									# Rapier handles can be tuple-like, including (0, 0).
+									# Treat any concrete handle as valid and let owner-handle
+									# matching determine usability.
 									return False
 								def _runtime_rb_unusable (_rb, _rb_ids, _rb_named, _owner_name):
 									if _rb is None:
@@ -23001,7 +24610,7 @@ _world_preview_state = {
 }
 
 def _preview_quantize_rgb8 (_rgb_u8, preview_type : str):
-	if preview_type == 'gba':
+	if preview_type in ('gba', 'neogeo'):
 		return ((_rgb_u8.astype('uint16') >> 3) << 3).astype('uint8')
 	# Simple fallback quantization for GBC-like color depth.
 	return ((_rgb_u8.astype('uint16') >> 6) * 85).astype('uint8')
@@ -23011,7 +24620,7 @@ def _preview_quantize_rgb01 (_rgb, preview_type : str):
 	out = []
 	for c in clr:
 		u8 = int(round(c * 255.0))
-		if preview_type == 'gba':
+		if preview_type in ('gba', 'neogeo'):
 			u8 = (u8 >> 3) << 3
 		else:
 			u8 = (u8 >> 6) * 85
@@ -23138,7 +24747,7 @@ def _start_world_preview (world, preview_type : str):
 	if world is None:
 		raise RuntimeError('No world found for preview.')
 	preview_type = str(preview_type or 'gbc').lower()
-	if preview_type not in ('gbc', 'gba'):
+	if preview_type not in ('gbc', 'gba', 'neogeo'):
 		preview_type = 'gbc'
 	_stop_world_preview(world)
 	state = _world_preview_state
@@ -23243,13 +24852,13 @@ CAP_TYPE_ITEMS = [('butt', 'butt', ''), ('round', 'round', ''), ('square', 'squa
 JOIN_TYPES = ['arcs', 'bevl', 'miter', 'miter-clip', 'round']
 JOIN_TYPE_ITEMS = [('arcs', 'arcs', ''), ('bevel', 'bevel', ''), ('miter', 'miter', ''), ('miter-clip', 'miter-clip', ''), ('round', 'round', '')]
 MINIFY_METHOD_ITEMS = [('none', 'none', ''), ('terser', 'terser', ''), ('roadroller', 'roadroller', '')]
-PREVIEW_TYPE_ITEMS = [('gbc', 'gbc', ''), ('gba', 'gba', '')]
+PREVIEW_TYPE_ITEMS = [('gbc', 'gbc', ''), ('gba', 'gba', ''), ('neogeo', 'neogeo', '')]
 SHAPE_TYPE_ITEMS = [('ball', 'circle', ''), ('halfspace', 'half-space', ''), ('cuboid', 'rectangle', ''), ('roundCuboid', 'rounded-rectangle', ''), ('capsule', 'capsule', ''), ('segment', 'segment', ''), ('triangle', 'triangle', ''), ('roundTriangle', 'rounded-triangle', ''), ('polyline', 'segment-series', ''), ('trimesh', 'triangle-mesh', ''), ('convexHull', 'convex-polygon', ''), ('roundConvexHull', 'rounded-convex-polygon', ''), ('heightfield', 'heightfield', ''), ]
 SHAPE_TYPES = ['ball', 'halfspace', 'cuboid', 'roundCuboid', 'capsule', 'segment', 'triangle', 'roundTriangle', 'polyline', 'trimesh', 'convexHull', 'roundConvexHull', 'heightfield']
 RIGID_BODY_TYPE_ITEMS = [('dynamic', 'dynamic', ''), ('fixed', 'fixed', ''), ('kinematicPositionBased', 'kinematic-position-based', ''), ('kinematicVelocityBased', 'kinematic-velocity-based', '')]
 RIGID_BODY_TYPES = ['dynamic', 'fixed', 'kinematicPositionBased', 'kinematicVelocityBased']
 JOINT_TYPE_ITEMS = [('fixed', 'fixed', ''), ('spring', 'spring', ''), ('revolute', 'revolute', ''), ('prismatic', 'prismatic', ''), ('rope', 'rope', '')]
-SCRIPT_TYPE_ITEMS = [('html-py', 'html-py', ''), ('html-js', 'html-js', ''), ('exe', 'exe', ''), ('unity', 'unity', ''), ('gba-py', 'gba-py', 'Python → Thumb asm for GBA (see Export to GBA)'), ('gbc-py', 'gbc-py', 'Python → ZGB C for GBC (see Export to GBC)')]
+SCRIPT_TYPE_ITEMS = [('html-py', 'html-py', ''), ('html-js', 'html-js', ''), ('exe', 'exe', ''), ('unity', 'unity', ''), ('gba-py', 'gba-py', 'Python → Thumb asm for GBA (see Export to GBA)'), ('gbc-py', 'gbc-py', 'Python → ZGB C for GBC (see Export to GBC)'), ('neogeo-py', 'neogeo-py', 'Python → C for Neo Geo toolchains (see Export to Neo Geo)')]
 BOUNCINESS_COMBINE_RULE_ITEMS = [('average', 'average', ''), ('minimum', 'min', ''), ('multiply', 'multiply', ''), ('maximum', 'max', '')]
 BOUNCINESS_COMBINE_RULES = ['average', 'minimum', 'multiply', 'maximum']
 
@@ -23260,6 +24869,7 @@ bpy.types.World.htmlPath = bpy.props.StringProperty(name = 'Export .html')
 bpy.types.World.exePath = bpy.props.StringProperty(name = 'Export .exe')
 bpy.types.World.gbaPath = bpy.props.StringProperty(name = 'Export .gba', default = TMP_DIR + '/export.gba')
 bpy.types.World.gbcPath = bpy.props.StringProperty(name = 'Export .gbc', default = TMP_DIR + '/export.gbc')
+bpy.types.World.neoGeoPath = bpy.props.StringProperty(name = 'Export .neo', default = TMP_DIR + '/export.neo')
 bpy.types.World.usePhysics = bpy.props.BoolProperty(name = 'Use physics', default = True)
 bpy.types.World.zipPath = bpy.props.StringProperty(name = 'Export .zip')
 bpy.types.World.unityProjPath = bpy.props.StringProperty(name = 'Unity project path', default = TMP_DIR + '/TestUnityProject')
@@ -23801,6 +25411,24 @@ class GbcExport (bpy.types.Operator):
 		return {'FINISHED'}
 
 @bpy.utils.register_class
+class NeoGeoExport (bpy.types.Operator):
+	bl_idname = 'world.neogeo_export'
+	bl_label = 'Export to Neo Geo (.neo)'
+	bl_description = 'Build a Neo Geo export from image empties and neogeo-py scripts'
+
+	@classmethod
+	def poll (cls, ctx):
+		return True
+
+	def execute (self, ctx):
+		try:
+			BuildNeoGeo (ctx.world)
+		except Exception as e:
+			self.report({'ERROR'}, str(e))
+			return {'CANCELLED'}
+		return {'FINISHED'}
+
+@bpy.utils.register_class
 class ToggleWorldPreview (bpy.types.Operator):
 	bl_idname = 'world.toggle_preview'
 	bl_label = 'Toggle Preview'
@@ -23841,6 +25469,7 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.prop(ctx.world, 'exePath')
 		self.layout.prop(ctx.world, 'gbaPath')
 		self.layout.prop(ctx.world, 'gbcPath')
+		self.layout.prop(ctx.world, 'neoGeoPath')
 		self.layout.prop(ctx.world, 'usePhysics')
 		self.layout.prop(ctx.world, 'zipPath')
 		self.layout.prop(ctx.world, 'unityProjPath')
@@ -23865,6 +25494,7 @@ class WorldPanel (bpy.types.Panel):
 		self.layout.operator('world.unity_export', icon = 'CONSOLE')
 		self.layout.operator('world.gba_export', icon = 'CONSOLE')
 		self.layout.operator('world.gbc_export', icon = 'CONSOLE')
+		self.layout.operator('world.neogeo_export', icon = 'CONSOLE')
 
 @bpy.utils.register_class
 class JS13KBPanel (bpy.types.Panel):

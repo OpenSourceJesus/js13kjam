@@ -18,9 +18,9 @@ class GbcPureZgbRuntimeRegressionTests(unittest.TestCase):
 		src = self._read_main_py()
 		self.assertIn('SpriteManagerAdd(', src)
 		self.assertIn('} SPRITES;', src)
-		self.assertIn('sprite->vel_x', src)
-		self.assertIn('sprite->vel_y', src)
-		self.assertIn('+ GRAVITY', src)
+		self.assertIn('js13k_runtime_vel_x', src)
+		self.assertIn('js13k_runtime_vel_y', src)
+		self.assertIn('GRAVITY', src)
 		self.assertIn('sim_set_linear_velocity', src)
 		self.assertIn('sim_get_linear_velocity', src)
 
@@ -41,6 +41,16 @@ class GbcPureZgbRuntimeRegressionTests(unittest.TestCase):
 		self.assertIn('has_physics = False', src)
 		self.assertIn('_gbc_build_dynamic_physics_rom(', src)
 		self.assertIn('_gbc_build_dynamic_physics_rom_multi(', src)
+
+	def test_neogeo_export_is_wired_into_world_properties_and_ui(self):
+		src = self._read_main_py()
+		self.assertIn("('neogeo', 'neogeo', '')", src)
+		self.assertIn("('neogeo-py', 'neogeo-py'", src)
+		self.assertIn("bpy.types.World.neoGeoPath = bpy.props.StringProperty(name = 'Export .neo'", src)
+		self.assertIn("bl_idname = 'world.neogeo_export'", src)
+		self.assertIn("BuildNeoGeo (ctx.world)", src)
+		self.assertIn('Neo Geo export: runtime transpiler backend is placeholder/stub or missing update symbols;', src)
+		self.assertIn('using baked frame fallback.', src)
 
 	def test_transpiler_auto_rewrites_pygame_keys_to_joypad(self):
 		root = pathlib.Path(__file__).resolve().parents[1]
