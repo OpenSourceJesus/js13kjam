@@ -1,4 +1,6 @@
 SpaceShooter:
-	python Main.py SpaceShooter.blend -minify -no_mangle=[close_shop,buy_item,add_cash,open_shop]
+	python Main.py Examples/SpaceShooter.blend -minify -no_mangle=[close_shop,buy_item,add_cash,open_shop]
 BlackCat:
-	python Main.py BlackCat.blend -minify -no_mangle=[reset,close_shop,buy_item,open_shop]
+	python Main.py Examples/BlackCat.blend -minify -no_mangle=[reset,close_shop,buy_item,open_shop]
+GBTest:
+	QT_QPA_PLATFORM=xcb GDK_BACKEND=x11 SDL_VIDEODRIVER=x11 python Main.py Examples/GBTest.blend

@@ -1,6 +1,6 @@
 import unittest
 
-from GbcPyTranspiler import GbcTranspileError, compile_general_script, compile_velocity_script
+from GbcPyTranspiler import GbcTranspileError, compile_general_script, compile_script_to_c_function, compile_velocity_script
 
 
 class GbcPyTranspilerTests(unittest.TestCase):
@@ -295,6 +295,27 @@ sim.set_linear_velocity(this.rb, vel)
 		self.assertEqual(result.velocity_script.get('right_delta'), 70)
 		self.assertEqual(result.velocity_script.get('down_delta'), -70)
 		self.assertEqual(result.velocity_script.get('up_delta'), 70)
+
+	def test_neogeo_c_transpile_appends_zero_attach_for_sim_add_cuboid_collider(self):
+		code = 'sim.add_cuboid_collider(1, [0, 0], 0, 1, 1, [10, 10], 0, 1, 0, 0)'
+		out = compile_script_to_c_function(code, function_name = 'fn', this_var_name = 'th')
+		self.assertIn('sim_add_cuboid_collider(1, ((int32_t[]){0, 0}), 0, 1, 1, ((int32_t[]){10, 10}), 0, 1, 0, 0, 0)', out.c_source)
+
+	def test_neogeo_c_transpile_set_gravity_uses_milli(self):
+		code = 'sim.set_gravity(0, -0.4)'
+		out = compile_script_to_c_function(code, function_name = 'fn', this_var_name = 'th')
+		self.assertIn('sim_set_gravity_milli(0, -400)', out.c_source)
+
+	def test_neogeo_c_transpile_physics_set_gravity_uses_milli(self):
+		code = 'physics.set_gravity(0, -9.81)'
+		out = compile_script_to_c_function(code, function_name = 'fn', this_var_name = 'th')
+		self.assertIn('sim_set_gravity_milli(0, -9810)', out.c_source)
+
+	def test_neogeo_c_transpile_get_rigid_body_position_declares_int32_ptr(self):
+		code = 'pos = sim.get_rigid_body_position(this.rb)\nsim.step()'
+		out = compile_script_to_c_function(code, function_name = 'fn', this_var_name = 'js13k_this_Player')
+		self.assertIn('int32_t *pos = 0;', out.c_source)
+		self.assertIn('pos = sim_get_rigid_body_position(js13k_this_Player->rb);', out.c_source)
 
 
 if __name__ == '__main__':

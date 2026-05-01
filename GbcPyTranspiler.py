@@ -1842,6 +1842,24 @@ class _GeneralCFunctionTranspiler:
 				return name
 		return None
 
+	def _neo_geo_numeric_literal (self, a) -> Optional[float]:
+		'''If *a* is a numeric literal (incl. unary +/-), return its float value.'''
+		if isinstance(a, ast.Constant) and isinstance(a.value, (int, float)):
+			return float(a.value)
+		if isinstance(a, ast.UnaryOp) and isinstance(a.op, ast.USub):
+			inner = self._neo_geo_numeric_literal(a.operand)
+			return None if inner is None else -inner
+		if isinstance(a, ast.UnaryOp) and isinstance(a.op, ast.UAdd):
+			return self._neo_geo_numeric_literal(a.operand)
+		return None
+
+	def _neo_geo_gravity_milli_arg (self, a) -> str:
+		'''Neo Geo M68K: gravity as milligravity so -0.4 is not int-rounded to 0.'''
+		nv = self._neo_geo_numeric_literal(a)
+		if nv is not None:
+			return str(int(round(nv * 1000.0)))
+		return '(int32_t)((float)(' + self._expr_to_c(a) + ') * 1000.0f)'
+
 	def _expr_to_c (self, expr) -> str:
 		if isinstance(expr, ast.Constant):
 			if isinstance(expr.value, bool):
@@ -1940,6 +1958,15 @@ class _GeneralCFunctionTranspiler:
 				and fn.attr == 'get_pressed'
 			):
 				return 'joypad()'
+			if (
+				isinstance(fn, ast.Attribute)
+				and isinstance(fn.value, ast.Name)
+				and fn.value.id in ('sim', 'physics')
+				and str(fn.attr) == 'set_gravity'
+				and len(list(expr.args or [])) == 2
+			):
+				args_m = [self._neo_geo_gravity_milli_arg(a) for a in list(expr.args or [])]
+				return 'sim_set_gravity_milli(' + ', '.join(args_m) + ')'
 			if isinstance(fn, ast.Name):
 				fn_name = self._safe_ident(fn.id)
 			elif isinstance(fn, ast.Attribute):
@@ -1949,6 +1976,15 @@ class _GeneralCFunctionTranspiler:
 			if fn_name == 'print':
 				fn_name = 'js13k_print'
 			args = [self._expr_to_c(a) for a in list(expr.args or [])]
+			# Neo Geo native physics C API always passes attach rigid-body handle (0 = world-fixed).
+			if (
+				isinstance(fn, ast.Attribute)
+				and isinstance(fn.value, ast.Name)
+				and fn.value.id == 'sim'
+				and str(fn.attr) == 'add_cuboid_collider'
+				and len(args) == 10
+			):
+				args.append('0')
 			return fn_name + '(' + ', '.join(args) + ')'
 		self._disallow_node(expr, type(expr).__name__)
 		return '0'
@@ -1967,6 +2003,30 @@ class _GeneralCFunctionTranspiler:
 		self._disallow_node(target, 'assignment target')
 		return '/*unsupported_target*/'
 
+	def _is_sim_physics_vector_get_call (self, node) -> bool:
+		'''True for calls whose C ABI returns int32_t* (xy pair), e.g. sim_get_rigid_body_position.'''
+		if not isinstance(node, ast.Call):
+			return False
+		fn = node.func
+		if not isinstance(fn, ast.Attribute):
+			return False
+		if not isinstance(fn.value, ast.Name) or fn.value.id not in ('sim', 'physics'):
+			return False
+		return str(fn.attr) in (
+			'get_rigid_body_position',
+			'get_linear_velocity',
+			'get_collider_position',
+		)
+
+	def _decl_type_for_assign_rhs (self, rhs) -> str:
+		if isinstance(rhs, (ast.List, ast.Tuple)):
+			return 'int32_t*'
+		if isinstance(rhs, ast.Constant) and isinstance(rhs.value, str):
+			return 'const char*'
+		if self._is_sim_physics_vector_get_call(rhs):
+			return 'int32_t*'
+		return 'int32_t'
+
 	def _collect_local_symbols (self, stmts):
 		for stmt in list(stmts or []):
 			if isinstance(stmt, ast.Assign):
@@ -1976,10 +2036,9 @@ class _GeneralCFunctionTranspiler:
 							continue
 						name = self._target_to_c_lvalue(t)
 						self.local_symbols.add(name)
-						if isinstance(stmt.value, (ast.List, ast.Tuple)):
-							self.local_symbol_types[name] = 'int32_t*'
-						elif isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
-							self.local_symbol_types[name] = 'const char*'
+						dt = self._decl_type_for_assign_rhs(stmt.value)
+						if dt != 'int32_t':
+							self.local_symbol_types[name] = dt
 						else:
 							self.local_symbol_types.setdefault(name, 'int32_t')
 			elif isinstance(stmt, ast.AugAssign):
@@ -1993,7 +2052,7 @@ class _GeneralCFunctionTranspiler:
 				self._collect_local_symbols(getattr(stmt, 'body', []))
 				self._collect_local_symbols(getattr(stmt, 'orelse', []))
 			elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Subscript):
-				b = stmt.value.base
+				b = stmt.value.value
 				if isinstance(b, (ast.Name, ast.Attribute)):
 					if isinstance(b, ast.Attribute) and isinstance(b.value, ast.Name) and b.value.id == 'this':
 						continue
@@ -2070,22 +2129,53 @@ class _GeneralCFunctionTranspiler:
 		self._emit_line('int32_t ' + fn_name + ' (' + ', '.join(params) + ') {')
 		self.indent += 1
 		inner_locals: Set[str] = set()
-		for inner in list(getattr(fn_node, 'body', []) or []):
-			if isinstance(inner, ast.Assign):
-				for t in list(inner.targets or []):
-					if isinstance(t, (ast.Name, ast.Attribute)):
-						if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == 'this':
+		inner_types: Dict[str, str] = {}
+
+		def _walk_fn_body (stmts):
+			for stmt in list(stmts or []):
+				if isinstance(stmt, ast.Assign):
+					for t in list(stmt.targets or []):
+						if isinstance(t, (ast.Name, ast.Attribute)):
+							if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == 'this':
+								continue
+							name = self._target_to_c_lvalue(t)
+							inner_locals.add(name)
+							dt = self._decl_type_for_assign_rhs(stmt.value)
+							if dt != 'int32_t':
+								inner_types[name] = dt
+							else:
+								inner_types.setdefault(name, 'int32_t')
+				elif isinstance(stmt, ast.AugAssign):
+					if isinstance(stmt.target, (ast.Name, ast.Attribute)):
+						if isinstance(stmt.target, ast.Attribute) and isinstance(stmt.target.value, ast.Name) and stmt.target.value.id == 'this':
 							continue
-						inner_locals.add(self._target_to_c_lvalue(t))
-			elif isinstance(inner, ast.AugAssign):
-				if isinstance(inner.target, (ast.Name, ast.Attribute)):
-					if isinstance(inner.target, ast.Attribute) and isinstance(inner.target.value, ast.Name) and inner.target.value.id == 'this':
-						continue
-					inner_locals.add(self._target_to_c_lvalue(inner.target))
+						name = self._target_to_c_lvalue(stmt.target)
+						inner_locals.add(name)
+						inner_types.setdefault(name, 'int32_t')
+				elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Subscript):
+					b = stmt.value.value
+					if isinstance(b, (ast.Name, ast.Attribute)):
+						if isinstance(b, ast.Attribute) and isinstance(b.value, ast.Name) and b.value.id == 'this':
+							pass
+						else:
+							name = self._target_to_c_lvalue(b)
+							inner_locals.add(name)
+							inner_types[name] = 'int32_t*'
+				elif isinstance(stmt, (ast.If, ast.While)):
+					_walk_fn_body(getattr(stmt, 'body', []))
+					_walk_fn_body(getattr(stmt, 'orelse', []))
+
+		_walk_fn_body(list(getattr(fn_node, 'body', []) or []))
 		for name in sorted(list(inner_locals)):
 			if name in [self._safe_ident(a.arg) for a in list(getattr(fn_node.args, 'args', []) or [])]:
 				continue
-			self._emit_line('int32_t ' + name + ' = 0;')
+			decl_t = str(inner_types.get(name, 'int32_t'))
+			if decl_t == 'int32_t*':
+				self._emit_line('int32_t *' + name + ' = 0;')
+			elif decl_t == 'const char*':
+				self._emit_line('const char *' + name + ' = 0;')
+			else:
+				self._emit_line('int32_t ' + name + ' = 0;')
 		if inner_locals != set():
 			self._emit_line('')
 		for inner in list(getattr(fn_node, 'body', []) or []):

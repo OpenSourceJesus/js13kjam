@@ -5302,7 +5302,7 @@ def _neogeo_safe_c_identifier (_value, _fallback = 'symbol'):
 		out = '_' + out
 	return out
 
-def _write_neogeo_py_c (_script_entries, _out_path):
+def _write_neogeo_py_c (_script_entries, _out_path, rb_handle_by_owner = None):
 	if not callable(_gbc_transpiler_compile_script_to_c_function):
 		raise RuntimeError('C transpiler backend unavailable for neogeo-py export.')
 	def _relax_neogeo_c_compat (_c_src):
@@ -5356,6 +5356,9 @@ def _write_neogeo_py_c (_script_entries, _out_path):
 		'/*',
 		' * This file is intended for an external Neo Geo C toolchain.',
 		' * Configure JS13K_NEOGEO_C_TOOLCHAIN_CMD to compile/link it.',
+		' *',
+		' * Rapier/PyRapier does not run on the M68K ROM: weak no-op stubs here are overridden by',
+		' * js13k_neogeo_physics.c (native ngdevkit build) for sim_step/physics_step and core sim_* APIs.',
 		' */',
 		'',
 		'#ifndef J_LEFT',
@@ -5379,6 +5382,9 @@ def _write_neogeo_py_c (_script_entries, _out_path):
 		'__attribute__((weak)) int32_t *sim_get_linear_velocity (int32_t rb) { static int32_t v[2] = {0, 0}; (void)rb; return v; }',
 		'__attribute__((weak)) int32_t sim_cast_collider (int32_t col, int32_t *dir, int32_t *origin, int32_t flags) { (void)col; (void)dir; (void)origin; (void)flags; return 0; }',
 		'__attribute__((weak)) void sim_set_linear_velocity (int32_t rb, int32_t *vel) { (void)rb; (void)vel; }',
+		'__attribute__((weak)) void sim_set_gravity_milli (int32_t gx_milli, int32_t gy_milli) { (void)gx_milli; (void)gy_milli; }',
+		'__attribute__((weak)) void sim_step (void) { }',
+		'__attribute__((weak)) void physics_step (void) { }',
 		'__attribute__((weak)) void set_camera_position (int32_t x, int32_t y) { (void)x; (void)y; }',
 		'',
 		'enum {',
@@ -5423,6 +5429,28 @@ def _write_neogeo_py_c (_script_entries, _out_path):
 		lines.append('static ' + owner_struct + ' ' + owner_inst + ' = {0};')
 		lines.append('static ' + owner_struct + ' *' + this_ptr + ' = &' + owner_inst + ';')
 		lines.append('')
+	_rb_map = rb_handle_by_owner if isinstance(rb_handle_by_owner, dict) else {}
+	lines.append('/* Bind this.rb to M68K physics handles (same order as neo_export_bodies / neo_rb_map). */')
+	lines.append('static void js13k_neogeo_bind_exported_physics_handles (void) {')
+	for owner_name in sorted(owner_fields.keys()):
+		if str(owner_name) == '__world__':
+			continue
+		_fields = owner_fields.get(owner_name) or set()
+		if 'rb' not in _fields:
+			continue
+		_h = _rb_map.get(str(owner_name))
+		if _h is None:
+			_h = _rb_map.get(owner_name)
+		try:
+			_hi = int(_h)
+		except Exception:
+			_hi = 0
+		if _hi <= 0:
+			continue
+		_this_ptr = 'js13k_this_' + _owner_sym(owner_name)
+		lines.append('\t' + _this_ptr + '->rb = ' + str(int(_hi)) + ';')
+	lines.append('}')
+	lines.append('')
 	fn_rows = []
 	for idx, entry in enumerate(list(_script_entries or [])):
 		if not isinstance(entry, dict):
@@ -5457,6 +5485,7 @@ def _write_neogeo_py_c (_script_entries, _out_path):
 	lines.extend([
 		'void js13k_neogeo_run_init_scripts (void) {',
 		'\tint i;',
+		'\tjs13k_neogeo_bind_exported_physics_handles();',
 		'\tjs13k_neogeo_update_key_state();',
 		'\tfor (i = 0; i < ' + str(int(len(init_fn_names))) + '; ++i) {',
 		'\t\tswitch (i) {',
@@ -5705,10 +5734,16 @@ def _neo_geo_user_art_helpers_c (start_tile_u16 : int, ncols : int, nrows : int,
 	aw = nc * 16
 	ah = nr * 16
 	return '\n'.join([
+		'#include <stdint.h>',
+		'#include <math.h>',
 		'#define JS13K_ADDR_SCB1\t0',
 		'#define JS13K_ADDR_SCB2\t0x8000',
 		'#define JS13K_ADDR_SCB3\t0x8200',
 		'#define JS13K_ADDR_SCB4\t0x8400',
+		'',
+		'static u16 js13k_neo_art_rows = 0;',
+		'static u16 js13k_neo_art_anchor_px = 0;',
+		'static u16 js13k_neo_art_anchor_py = 0;',
 		'',
 		'static void js13k_neo_user_art_palette(void)',
 		'{',
@@ -5757,12 +5792,420 @@ def _neo_geo_user_art_helpers_c (start_tile_u16 : int, ncols : int, nrows : int,
 		'\t\t\t*REG_VRAMRW = ((u16)1u << 6);',
 		'\t\t}',
 		'\t}',
+		'\tjs13k_neo_art_rows = rows;',
+		'\tjs13k_neo_art_anchor_px = px;',
+		'\tjs13k_neo_art_anchor_py = py;',
+		'}',
+		'',
+		'static void js13k_neo_user_art_scb_write_origin (u16 px, u16 py)',
+		'{',
+		'\t*REG_VRAMMOD = 0x200;',
+		'\t*REG_VRAMADDR = JS13K_ADDR_SCB3;',
+		'\t*REG_VRAMRW = (py << 7) + js13k_neo_art_rows;',
+		'\t*REG_VRAMADDR = JS13K_ADDR_SCB4;',
+		'\t*REG_VRAMRW = (px << 7);',
+		'}',
+		'',
+		'extern void neo_rb_world_center_xy_f (int32_t rb, float *ox, float *oy);',
+		'',
+		'void js13k_neo_user_art_follow_rigid_body (int32_t rb, int32_t origin_x, int32_t origin_y)',
+		'{',
+		'\tfloat px, py;',
+		'\tfloat dx, dy;',
+		'\tint32_t nx, ny;',
+		'\tu16 upx, upy;',
+		'\tif (rb <= 0) return;',
+		'\tneo_rb_world_center_xy_f(rb, &px, &py);',
+		'\tdx = px - (float)origin_x;',
+		'\tdy = py - (float)origin_y;',
+		'\tnx = (int32_t)lroundf((float)js13k_neo_art_anchor_px + dx);',
+		'\tny = (int32_t)lroundf((float)js13k_neo_art_anchor_py + dy);',
+		'\tif (nx < 0) nx = 0;',
+		'\tif (ny < 0) ny = 0;',
+		'\tif (nx > 0xffff) nx = 0xffff;',
+		'\tif (ny > 0xffff) ny = 0xffff;',
+		'\tupx = (u16)nx;',
+		'\tupy = (u16)ny;',
+		'\tjs13k_neo_user_art_scb_write_origin(upx, upy);',
 		'}',
 		'',
 	])
 
 
-def _build_native_neogeo_romset_from_c (c_path, out_path, user_art_canvas_np = None):
+def _neo_geo_user_art_physics_follow_emit (world, scene_obs):
+	'''
+	Choose (rb_handle, origin_x, origin_y) so the baked user-art sprite strip can follow sim motion.
+	Uses JS13K_NEOGEO_USER_ART_PHYSICS_SYNC_OWNER=BlenderObjectName to override; otherwise the
+	frontmost (highest Z) exported image empty with a *dynamic* rigid body (static/fixed bodies
+	do not move in sim — syncing them looks like “physics does nothing”).
+	'''
+	if not world or not bool(getattr(world, 'usePhysics', True)):
+		return None
+	if not _gb_scene_has_physics(scene_obs):
+		return None
+	hmap = _neo_geo_rigid_body_handle_map(world, scene_obs)
+	if not hmap:
+		return None
+	custom = str(os.environ.get('JS13K_NEOGEO_USER_ART_PHYSICS_SYNC_OWNER', '') or '').strip()
+	if custom != '':
+		h = hmap.get(custom)
+		follow_ob = None
+		for ob in scene_obs or []:
+			if str(ob.name) == custom:
+				follow_ob = ob
+				break
+			try:
+				if GetVarNameForObject(ob) == custom:
+					follow_ob = ob
+					break
+			except Exception:
+				pass
+		if follow_ob is None or not getattr(follow_ob, 'rigidBodyExists', False) or h is None:
+			return None
+		pos, _rot = _gba_get_object_pose(follow_ob)
+		return (int(h), int(round(float(pos[0]))), int(round(float(pos[1]))))
+	cands = []
+	for ob in scene_obs or []:
+		if not getattr(ob, 'exportOb', False) or ob.hide_get():
+			continue
+		if ob.type != 'EMPTY' or ob.empty_display_type != 'IMAGE':
+			continue
+		if not getattr(ob, 'rigidBodyExists', False):
+			continue
+		cands.append(ob)
+	if not cands:
+		return None
+	dynamic_cands = [o for o in cands if int(_neo_geo_rigid_body_type_index(o)) == 0]
+	if dynamic_cands:
+		dynamic_cands.sort(key = lambda o: float(o.location.z))
+		follow_ob = dynamic_cands[-1]
+	else:
+		print(
+			'Neo Geo native: user-art sync auto-pick found no dynamic rigid body on image empties '
+			'(only fixed/kinematic). Sprite follows frontmost image anyway — motion will not track physics. '
+			'Set rigidBodyType=dynamic on the moving sprite or JS13K_NEOGEO_USER_ART_PHYSICS_SYNC_OWNER=Name.'
+		)
+		cands.sort(key = lambda o: float(o.location.z))
+		follow_ob = cands[-1]
+	h = hmap.get(str(follow_ob.name))
+	if h is None:
+		try:
+			vn = GetVarNameForObject(follow_ob)
+		except Exception:
+			vn = ''
+		if isinstance(vn, str) and vn != '':
+			h = hmap.get(vn)
+	if h is None:
+		return None
+	pos, _rot = _gba_get_object_pose(follow_ob)
+	return (int(h), int(round(float(pos[0]))), int(round(float(pos[1]))))
+
+
+def _neo_geo_c_float_lit (_x):
+	try:
+		v = float(_x)
+	except Exception:
+		v = 0.0
+	t = repr(v)
+	if 'e' in t or 'E' in t:
+		t = '{:.9g}'.format(v)
+	return t + 'f'
+
+
+def _neo_geo_rigid_body_type_index (ob):
+	'''Map Blender rigidBodyType enum to PyRapier-style type index (0=dynamic …).'''
+	try:
+		v = getattr(ob, 'rigidBodyType', None)
+	except Exception:
+		v = None
+	if v in RIGID_BODY_TYPES:
+		return RIGID_BODY_TYPES.index(v)
+	s = str(v or '').strip()
+	for i, bid in enumerate(RIGID_BODY_TYPES):
+		if s.lower() == str(bid).lower():
+			return i
+	try:
+		for bid, alt, _unused in RIGID_BODY_TYPE_ITEMS:
+			if v == bid or s == str(alt) or s.lower() == str(alt).lower():
+				return RIGID_BODY_TYPES.index(bid)
+	except Exception:
+		pass
+	return 0
+
+
+def _neo_geo_emit_physics_data_block (world, scene_obs):
+	'''C fragment: exported rigid bodies/colliders + gravity for native Neo Geo physics TU.'''
+	if not world or not bool(getattr(world, 'usePhysics', True)):
+		return (
+			'\nconst float neo_export_gravity[2] = { 0.0f, -9.81f };\n'
+			'const int neo_export_body_n = 0;\n'
+			'const NeoBodyInit neo_export_bodies[1] = {{ 0 }};\n'
+			'const int neo_export_col_n = 0;\n'
+			'const NeoColInit neo_export_cols[1] = {{ 0 }};\n'
+			'const int neo_rb_map_n = 0;\n'
+			'const NeoRbNameEntry neo_rb_map[1] = {{ NULL, 0 }};\n'
+		)
+	physics_obs = [
+		ob for ob in (scene_obs or [])
+		if getattr(ob, 'exportOb', False) and (not ob.hide_get()) and (getattr(ob, 'rigidBodyExists', False) or getattr(ob, 'colliderExists', False))
+	]
+	if not physics_obs:
+		return (
+			'\nconst float neo_export_gravity[2] = { 0.0f, -9.81f };\n'
+			'const int neo_export_body_n = 0;\n'
+			'const NeoBodyInit neo_export_bodies[1] = {{ 0 }};\n'
+			'const int neo_export_col_n = 0;\n'
+			'const NeoColInit neo_export_cols[1] = {{ 0 }};\n'
+			'const int neo_rb_map_n = 0;\n'
+			'const NeoRbNameEntry neo_rb_map[1] = {{ NULL, 0 }};\n'
+		)
+	gx, gy = _blender_scene_gravity_xy_for_2d_sim()
+	if abs(float(gx)) < 1e-12 and abs(float(gy)) < 1e-12:
+		gx, gy = 0.0, -9.81
+	lines = [
+		'',
+		'const float neo_export_gravity[2] = { ' + _neo_geo_c_float_lit(gx) + ', ' + _neo_geo_c_float_lit(gy) + ' };',
+	]
+	rigid_bodies = {}
+	body_pose_by_idx = {}
+	body_inits = []
+	for ob in physics_obs:
+		if not getattr(ob, 'rigidBodyExists', False):
+			continue
+		idx = len(body_inits) + 1
+		rigid_bodies[ob.name] = idx
+		pos, rot_deg = _gba_get_object_pose(ob)
+		body_pose_by_idx[idx] = (float(pos[0]), float(pos[1]), float(rot_deg))
+		rt = _neo_geo_rigid_body_type_index(ob)
+		body_inits.append(
+			'{ .px = ' + _neo_geo_c_float_lit(pos[0])
+			+ ', .py = ' + _neo_geo_c_float_lit(pos[1])
+			+ ', .vx = 0.f, .vy = 0.f, .rot_deg = ' + _neo_geo_c_float_lit(rot_deg)
+			+ ', .ang_vel = 0.f, .gs = ' + _neo_geo_c_float_lit(getattr(ob, 'gravityScale', 1.0))
+			+ ', .enabled = ' + str(int(bool(ob.rigidBodyEnable)))
+			+ ', .body_type = ' + str(int(rt))
+			+ ', .can_rot = ' + str(int(bool(getattr(ob, 'canRot', True))))
+			+ ', .lin_drag = ' + _neo_geo_c_float_lit(getattr(ob, 'linearDrag', 0.0))
+			+ ', .ang_drag = ' + _neo_geo_c_float_lit(getattr(ob, 'angDrag', 0.0))
+			+ ' }'
+		)
+	lines.append('const int neo_export_body_n = ' + str(int(len(body_inits))) + ';')
+	if body_inits:
+		lines.append('const NeoBodyInit neo_export_bodies[' + str(int(len(body_inits))) + '] = {')
+		lines.append(',\n'.join(['\t' + row for row in body_inits]) + ',')
+		lines.append('};')
+	else:
+		lines.append('const NeoBodyInit neo_export_bodies[1] = {{ 0 }};')
+	col_inits = []
+	for ob in physics_obs:
+		if not getattr(ob, 'colliderExists', False):
+			continue
+		try:
+			membership, filter_mask = _gba_get_collision_groups(ob)
+			attach_targets = []
+			for i in range(MAX_ATTACH_COLLIDER_CNT):
+				if getattr(ob, 'attach%i' %i):
+					attach_ob = getattr(ob, 'attachTo%i' %i)
+					if attach_ob and attach_ob.name in rigid_bodies:
+						attach_targets.append(rigid_bodies[attach_ob.name])
+			if ob.name in rigid_bodies and not attach_targets:
+				attach_targets = [rigid_bodies[ob.name]]
+			targets = attach_targets or [None]
+			pos, rot_deg = _gba_get_object_pose(ob)
+			w, h = _gba_get_object_size(ob)
+			rot_c = float(rot_deg) + float(getattr(ob, 'colliderRotOff', 0.0) or 0.0)
+			hw = float(w) * 0.5
+			hh = float(h) * 0.5
+			rest_f = float(getattr(ob, 'bounciness', 0.0) or 0.0)
+			dens_f = float(getattr(ob, 'density', 1.0) or 1.0)
+		except Exception:
+			continue
+		for attach_idx in targets:
+			if attach_idx is None:
+				col_inits.append(
+					'{ .body = 0, .hw = ' + _neo_geo_c_float_lit(hw)
+					+ ', .hh = ' + _neo_geo_c_float_lit(hh)
+					+ ', .lx = ' + _neo_geo_c_float_lit(pos[0])
+					+ ', .ly = ' + _neo_geo_c_float_lit(pos[1])
+					+ ', .lrot_deg = ' + _neo_geo_c_float_lit(rot_c)
+					+ ', .rest = ' + _neo_geo_c_float_lit(rest_f)
+					+ ', .density = ' + _neo_geo_c_float_lit(dens_f)
+					+ ', .enabled = ' + str(int(bool(ob.colliderEnable)))
+					+ ', .sensor = ' + str(int(bool(ob.isSensor)))
+					+ ', .membership = ' + str(int(membership)) + 'u'
+					+ ', .filter = ' + str(int(filter_mask)) + 'u }'
+				)
+			else:
+				bx, by, br = body_pose_by_idx.get(int(attach_idx), (float(pos[0]), float(pos[1]), 0.0))
+				lx, ly = _gba_rapier_rotate2d_xy(float(pos[0]) - bx, float(pos[1]) - by, -br)
+				lrot = float(rot_c) - br
+				col_inits.append(
+					'{ .body = ' + str(int(attach_idx))
+					+ ', .hw = ' + _neo_geo_c_float_lit(hw)
+					+ ', .hh = ' + _neo_geo_c_float_lit(hh)
+					+ ', .lx = ' + _neo_geo_c_float_lit(lx)
+					+ ', .ly = ' + _neo_geo_c_float_lit(ly)
+					+ ', .lrot_deg = ' + _neo_geo_c_float_lit(lrot)
+					+ ', .rest = ' + _neo_geo_c_float_lit(rest_f)
+					+ ', .density = ' + _neo_geo_c_float_lit(dens_f)
+					+ ', .enabled = ' + str(int(bool(ob.colliderEnable)))
+					+ ', .sensor = ' + str(int(bool(ob.isSensor)))
+					+ ', .membership = ' + str(int(membership)) + 'u'
+					+ ', .filter = ' + str(int(filter_mask)) + 'u }'
+				)
+	lines.append('const int neo_export_col_n = ' + str(int(len(col_inits))) + ';')
+	if col_inits:
+		lines.append('const NeoColInit neo_export_cols[' + str(int(len(col_inits))) + '] = {')
+		lines.append(',\n'.join(['\t' + row for row in col_inits]) + ',')
+		lines.append('};')
+	else:
+		lines.append('const NeoColInit neo_export_cols[1] = {{ 0 }};')
+	name_pairs = []
+	for ob in physics_obs:
+		if not getattr(ob, 'rigidBodyExists', False):
+			continue
+		h = rigid_bodies.get(ob.name)
+		if not isinstance(h, int) or h <= 0:
+			continue
+		def _esc (_s):
+			t = str(_s or '').replace('\\', '\\\\').replace('"', '\\"')
+			return '"' + t + '"'
+		name_pairs.append((_esc(ob.name), h))
+		try:
+			vn = GetVarNameForObject(ob)
+		except Exception:
+			vn = ''
+		if isinstance(vn, str) and vn != '' and vn != ob.name:
+			name_pairs.append((_esc(vn), h))
+	lines.append('const int neo_rb_map_n = ' + str(int(len(name_pairs))) + ';')
+	if name_pairs:
+		lines.append('const NeoRbNameEntry neo_rb_map[' + str(int(len(name_pairs))) + '] = {')
+		lines.append(',\n'.join(['\t{ ' + nm + ', ' + str(int(hd)) + ' }' for nm, hd in name_pairs]) + ',')
+		lines.append('};')
+	else:
+		lines.append('const NeoRbNameEntry neo_rb_map[1] = {{ NULL, 0 }};')
+	return '\n'.join(lines) + '\n'
+
+
+def _neo_geo_rigid_body_handle_map (world, scene_obs):
+	'''
+	Map owner keys (Blender object name and optional JS var name) -> 1-based rigid body handle.
+	Must stay in lockstep with rigid body iteration in _neo_geo_emit_physics_data_block.
+	'''
+	out = {}
+	if not world or not bool(getattr(world, 'usePhysics', True)):
+		return out
+	physics_obs = [
+		ob for ob in (scene_obs or [])
+		if getattr(ob, 'exportOb', False) and (not ob.hide_get()) and (getattr(ob, 'rigidBodyExists', False) or getattr(ob, 'colliderExists', False))
+	]
+	if not physics_obs:
+		return out
+	n = 0
+	for ob in physics_obs:
+		if not getattr(ob, 'rigidBodyExists', False):
+			continue
+		n += 1
+		idx = int(n)
+		out[str(ob.name)] = idx
+		try:
+			vn = GetVarNameForObject(ob)
+		except Exception:
+			vn = ''
+		if isinstance(vn, str) and vn != '' and vn != str(ob.name):
+			out[str(vn)] = idx
+	return out
+
+
+def _neo_geo_write_native_physics_c (dst_abs, world, scene_obs):
+	'''Write js13k_neogeo_physics.c (export data + runtime) next to ngdevkit project.'''
+	rt_path = os.path.join(_thisDir, 'js13k_neogeo_physics_runtime.c')
+	if not os.path.isfile(rt_path):
+		return False
+	try:
+		with open(rt_path, 'r', encoding = 'utf-8') as rf:
+			raw = rf.read()
+	except Exception:
+		return False
+	if '/*JS13K_NEO_DATA*/' not in raw:
+		return False
+	head, tail = raw.split('/*JS13K_NEO_DATA*/', 1)
+	gen = _neo_geo_emit_physics_data_block(world, scene_obs)
+	try:
+		with open(dst_abs, 'w', encoding = 'utf-8') as wf:
+			wf.write('/* Auto-generated: Neo Geo native physics (scene data + runtime). */\n')
+			wf.write(head)
+			wf.write(gen)
+			wf.write(tail)
+	except Exception:
+		return False
+	return True
+
+
+def _neo_geo_patch_makefile_add_physics_o (project_dir):
+	mk = os.path.join(str(project_dir or ''), 'Makefile')
+	if not os.path.isfile(mk):
+		return False
+	try:
+		with open(mk, 'r', encoding = 'utf-8') as f:
+			t = f.read()
+	except Exception:
+		return False
+	repl = '$(ELF):\t$(BUILDDIR)/main.o $(BUILDDIR)/js13k_neogeo_physics.o'
+	if repl in t:
+		return True
+	needle = '$(ELF):\t$(BUILDDIR)/main.o'
+	if needle in t:
+		t = t.replace(needle, repl, 1)
+	else:
+		needle2 = '$(ELF): $(BUILDDIR)/main.o'
+		repl2 = '$(ELF): $(BUILDDIR)/main.o $(BUILDDIR)/js13k_neogeo_physics.o'
+		if needle2 in t:
+			t = t.replace(needle2, repl2, 1)
+		else:
+			return False
+	try:
+		with open(mk, 'w', encoding = 'utf-8') as f:
+			f.write(t)
+	except Exception:
+		return False
+	return True
+
+
+def _neo_geo_patch_makefile_add_lm (project_dir):
+	'''Append -lm for js13k_neogeo_physics (cosf/sinf/lroundf). ngdevkit default link omits libm.'''
+	mk = os.path.join(str(project_dir or ''), 'Makefile')
+	if not os.path.isfile(mk):
+		return False
+	marker = 'LDFLAGS += -lm'
+	try:
+		with open(mk, 'r', encoding = 'utf-8') as f:
+			t = f.read()
+	except Exception:
+		return False
+	if marker in t:
+		return True
+	insert = marker + '\n'
+	# Prefer appending right after the default LDFLAGS= line from 00-template.
+	if re.search(r'^LDFLAGS\s*=\s*', t, flags = re.MULTILINE):
+		t = re.sub(
+			r'^(LDFLAGS\s*=\s*[^\n]*\n)',
+			lambda m: m.group(1) + insert,
+			t,
+			count = 1,
+			flags = re.MULTILINE,
+		)
+	else:
+		t = insert + t
+	try:
+		with open(mk, 'w', encoding = 'utf-8') as f:
+			f.write(t)
+	except Exception:
+		return False
+	return True
+
+
+def _build_native_neogeo_romset_from_c (c_path, out_path, user_art_canvas_np = None, world = None, scene_obs = None):
 	def _prepend_system_path_bins (_base_env):
 		"""/gui apps like Blender sometimes launch with PATH missing /usr/bin (ImageMagick/gcc)."""
 		env = dict(_base_env or os.environ.copy())
@@ -5940,6 +6383,13 @@ def _build_native_neogeo_romset_from_c (c_path, out_path, user_art_canvas_np = N
 	if os.path.isdir(setup_src):
 		shutil.copytree(setup_src, setup_dst, dirs_exist_ok = True)
 	shutil.copyfile(str(c_path), os.path.join(project_dir, 'js13k_neogeo_scripts.c'))
+	_phys_dst = os.path.join(project_dir, 'js13k_neogeo_physics.c')
+	if not _neo_geo_write_native_physics_c(_phys_dst, world, scene_obs):
+		print('Neo Geo native: failed to write js13k_neogeo_physics.c; build may miss dynamic physics.')
+	if not _neo_geo_patch_makefile_add_physics_o(project_dir):
+		print('Neo Geo native: could not patch Makefile for js13k_neogeo_physics.o.')
+	if not _neo_geo_patch_makefile_add_lm(project_dir):
+		print('Neo Geo native: could not patch Makefile to link libm (-lm).')
 	_vb_ev = str(os.environ.get('JS13K_NEOGEO_NG_WAIT_VBLANK', '') or '').strip().lower()
 	_native_neo_wait_vblank = _vb_ev in ('1', 'true', 'yes', 'y')
 	_min_diag_ev = str(os.environ.get('JS13K_NEOGEO_MINIMAL_DIAG_MAIN', '') or '').strip().lower()
@@ -6008,6 +6458,22 @@ def _build_native_neogeo_romset_from_c (c_path, out_path, user_art_canvas_np = N
 		])
 	else:
 		_keep_neo_banner = str(os.environ.get('JS13K_NEOGEO_KEEP_BANNER', '') or '0').strip().lower() in ('1', 'true', 'yes', 'y')
+		_neo_main_sim_step = str(os.environ.get('JS13K_NEOGEO_NATIVE_MAIN_SIM_STEP', '1') or '1').strip().lower() not in ('0', 'false', 'no', 'n')
+		_neo_art_sync_ev = str(os.environ.get('JS13K_NEOGEO_USER_ART_PHYSICS_SYNC', '1') or '1').strip().lower()
+		_neo_art_sync_on = _neo_art_sync_ev not in ('0', 'false', 'no', 'n')
+		_neo_follow_tuple = None
+		if (_neo_art is not None) and _neo_art_sync_on:
+			_neo_follow_tuple = _neo_geo_user_art_physics_follow_emit(world, scene_obs)
+			if (_neo_follow_tuple is None) and _gb_scene_has_physics(scene_obs):
+				print(
+					'Neo Geo native: user-art sprite sync skipped (no rigid body on an image empty, or handle not in export). '
+					'Set JS13K_NEOGEO_USER_ART_PHYSICS_SYNC_OWNER to the Blender object name, or add rigid body + Export on the sprite.'
+				)
+			elif _neo_follow_tuple is not None:
+				_append_gbc_trace_lines([
+					'[neo-trace] neo_native:user_art_physics_sync=rb%i@%i,%i'
+					% (int(_neo_follow_tuple[0]), int(_neo_follow_tuple[1]), int(_neo_follow_tuple[2])),
+				])
 		main_lines = [
 			'#include <ngdevkit/neogeo.h>',
 			'#include <ngdevkit/ng-fix.h>',
@@ -6015,6 +6481,8 @@ def _build_native_neogeo_romset_from_c (c_path, out_path, user_art_canvas_np = N
 		if _native_neo_wait_vblank:
 			main_lines.append('#include <ngdevkit/ng-video.h>')
 		main_lines.append('#include "js13k_neogeo_scripts.c"')
+		main_lines.append('extern void js13k_neogeo_physics_init(void);')
+		main_lines.append('extern void js13k_neogeo_physics_ensure_gravity_from_export(void);')
 		if _neo_art is not None:
 			main_lines.append('')
 			main_lines.extend(_neo_geo_user_art_helpers_c(_neo_sprite_start_tile, _neo_art[0], _neo_art[1], _neo_art[2]).rstrip('\n').split('\n'))
@@ -6074,10 +6542,19 @@ def _build_native_neogeo_romset_from_c (c_path, out_path, user_art_canvas_np = N
 		if _keep_neo_banner or (_neo_art is None):
 			main_lines.append('\tng_center_text(15, 0, "JS13K NEO GEO BUILD");')
 		main_lines.extend([
+			'\tjs13k_neogeo_physics_init();',
 			'\tjs13k_neogeo_run_init_scripts();',
+			'\tjs13k_neogeo_physics_ensure_gravity_from_export();',
 			'\tfor (;;) {',
 			'\t\tjs13k_neogeo_run_update_scripts();',
 		])
+		if _neo_main_sim_step:
+			main_lines.append('\t\tsim_step();')
+		if (_neo_art is not None) and _neo_art_sync_on and (_neo_follow_tuple is not None):
+			main_lines.append(
+				'\t\tjs13k_neo_user_art_follow_rigid_body(%d, %d, %d);'
+				% (int(_neo_follow_tuple[0]), int(_neo_follow_tuple[1]), int(_neo_follow_tuple[2]))
+			)
 		if _native_neo_wait_vblank:
 			main_lines.append('\t\tng_wait_vblank();')
 		main_lines.extend([
@@ -6182,8 +6659,8 @@ def _build_native_neogeo_romset_from_c (c_path, out_path, user_art_canvas_np = N
 		)
 	return (True, 'ok', native_out, rom_dir, gamerom_slug)
 
-def ExportGbaPyAssembly (world, gba_out_path : str, script_type : str = 'gba-py', export_prefix : str = 'gba'):
-	'''Collect gb-family scripts from world/objects; write Thumb assembly next to target output.'''
+def _collect_script_entries_by_type (world, script_type : str, export_prefix : str):
+	'''Collect normalized gb-family script entries while exportType matches export_prefix (RegisterPhysics parity).'''
 	global exportType
 	prev_export = exportType
 	exportType = str(export_prefix or 'gba')
@@ -6229,6 +6706,11 @@ def ExportGbaPyAssembly (world, gba_out_path : str, script_type : str = 'gba-py'
 					'symbol_hint' : ob.name + '_' + getattr(script, 'name', 'script'),
 				})
 	exportType = prev_export
+	return script_entries
+
+def ExportGbaPyAssembly (world, gba_out_path : str, script_type : str = 'gba-py', export_prefix : str = 'gba'):
+	'''Collect gb-family scripts from world/objects; write Thumb assembly next to target output.'''
+	script_entries = _collect_script_entries_by_type(world, script_type, export_prefix)
 	if script_type == 'neogeo-py':
 		runtime = {
 			'script_count' : int(len(script_entries)),
@@ -6242,7 +6724,12 @@ def ExportGbaPyAssembly (world, gba_out_path : str, script_type : str = 'gba-py'
 			'builtin_only_quit' : True,
 		}
 		try:
-			c_path = _write_neogeo_py_c(script_entries, gba_out_path)
+			try:
+				_neo_scene_obs = list(bpy.context.scene.collection.all_objects)
+			except Exception:
+				_neo_scene_obs = None
+			_neo_rb_handles = _neo_geo_rigid_body_handle_map(world, _neo_scene_obs)
+			c_path = _write_neogeo_py_c(script_entries, gba_out_path, rb_handle_by_owner = _neo_rb_handles)
 			runtime['neogeo_c_path'] = str(c_path)
 			runtime['script_backend'] = 'neogeo_c'
 		except Exception as err:
@@ -10790,7 +11277,14 @@ def GenJs (world):
 			vars += 'var ' + charControllerName + ';\n'
 		physics = physics.replace('// Vars', vars)
 		if bpy.context.scene.use_gravity:
-			gravity = ToVector2String(bpy.context.scene.gravity)
+			g = list(bpy.context.scene.gravity)
+			while len(g) < 3:
+				g.append(0.0)
+			if abs(float(g[0])) < 1e-12 and abs(float(g[1])) < 1e-12 and abs(float(g[2])) > 1e-12:
+				_js_gx, _js_gy = _blender_scene_gravity_xy_for_2d_sim()
+				gravity = '{x : ' + str(_js_gx) + ', y : ' + str(_js_gy) + '}'
+			else:
+				gravity = ToVector2String(bpy.context.scene.gravity)
 		else:
 			gravity = '{x : 0, y : 0}'
 		physics = physics.replace('// Gravity', 'var gravity = ' + gravity + ';')
@@ -10898,10 +11392,8 @@ def GenPython (world, datas, background = ''):
 	python = python.replace('# API', '')
 	python = python.replace('# Vars', '\n'.join(vars))
 	python = python.replace('# UI Methods', '\n'.join((uiMethods)))
-	gravity = [0, 0]
-	if bpy.context.scene.use_gravity:
-		gravity = list(bpy.context.scene.gravity)
-	physicsInitClauses = ['sim.set_length_unit (' + str(world.unitLen) + ')\nsim.set_gravity (' + str(gravity[0]) + ', ' + str(gravity[1]) + ')']
+	_gp_x, _gp_y = _blender_scene_gravity_xy_for_2d_sim()
+	physicsInitClauses = ['sim.set_length_unit (' + str(world.unitLen) + ')\nsim.set_gravity (' + str(_gp_x) + ', ' + str(_gp_y) + ')']
 	for rigidBody in rigidBodies.values():
 		physicsInitClauses.append(rigidBody)
 	for collider in colliders.values():
@@ -20813,11 +21305,9 @@ def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions
 	try:
 		sim = py_rapier.Simulation()
 		sim.set_length_unit(float(world.unitLen))
-		gravity = [0.0, 0.0]
-		if bpy.context.scene.use_gravity:
-			g = list(bpy.context.scene.gravity)
-			gravity = [float(g[0]), float(g[1])]
-		sim.set_gravity(gravity[0], gravity[1])
+		gx, gy = _blender_scene_gravity_xy_for_2d_sim()
+		sim.set_gravity(gx, gy)
+		gravity = [float(gx), float(gy)]
 	except Exception:
 		return {}
 	rigid_bodies_by_name = {}
@@ -21008,6 +21498,156 @@ def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions
 		'_gbc_gravity_step_by_handle' : dict(gbc_gravity_step_by_handle),
 	}
 
+def _gba_neo_compat_autophys_script_entry (world, scene_obs):
+	"""World gba-py init snippet: sim.set_length_unit/set_gravity + add_rigid_body / add_cuboid_collider for exported
+	physics objects (matches _build_runtime_print_physics_env cuboid path). No import; transpiler-safe.
+	Set JS13K_NEOGEO_COMPAT_AUTO_PHYSICS_INIT=0 to skip if you register bodies manually in gba-py.
+	When auto-init is enabled, _gba_neo_compat_autophys_update_script_entry appends sim.step() for the linked runtime."""
+	if not bool(getattr(world, 'usePhysics', True)):
+		return None
+	if _gba_try_import_pyrapier2d() is None:
+		return None
+	physics_obs = [
+		ob for ob in (scene_obs or [])
+		if ob.exportOb and not ob.hide_get() and (getattr(ob, 'rigidBodyExists', False) or getattr(ob, 'colliderExists', False))
+	]
+	if not physics_obs:
+		return None
+	lines = []
+	lines.append('sim.set_length_unit(' + str(float(getattr(world, 'unitLen', 1.0) or 1.0)) + ')')
+	gx, gy = _blender_scene_gravity_xy_for_2d_sim()
+	if abs(float(gx)) < 1e-12 and abs(float(gy)) < 1e-12:
+		gx, gy = 0.0, -9.81
+	lines.append('sim.set_gravity(' + repr(float(gx)) + ', ' + repr(float(gy)) + ')')
+	rigid_by_name = {}
+	for ob in physics_obs:
+		if not getattr(ob, 'rigidBodyExists', False):
+			continue
+		try:
+			pos, rot_deg = _gba_get_object_pose(ob)
+			rt = RIGID_BODY_TYPES.index(ob.rigidBodyType) if ob.rigidBodyType in RIGID_BODY_TYPES else 0
+			vn = GetVarNameForObject(ob)
+			var = str(vn) + '_js13k_auto_rb'
+		except Exception:
+			continue
+		lines.append(
+			var + ' = sim.add_rigid_body('
+			+ str(int(bool(ob.rigidBodyEnable))) + ', '
+			+ str(int(rt)) + ', '
+			+ '[' + repr(float(pos[0])) + ', ' + repr(float(pos[1])) + '], '
+			+ repr(float(rot_deg)) + ', '
+			+ repr(float(getattr(ob, 'gravityScale', 1.0))) + ', '
+			+ str(int(getattr(ob, 'dominance', 0) or 0)) + ', '
+			+ str(int(bool(getattr(ob, 'canRot', True)))) + ', '
+			+ repr(float(getattr(ob, 'linearDrag', 0.0))) + ', '
+			+ repr(float(getattr(ob, 'angDrag', 0.0))) + ', '
+			+ str(int(bool(getattr(ob, 'canSleep', True)))) + ', '
+			+ str(int(bool(getattr(ob, 'continuousCollideDetect', False))))
+			+ ')'
+		)
+		rigid_by_name[ob.name] = var
+		lines.append('rigidBodiesIds[' + repr(ob.name) + '] = ' + var)
+		lines.append('rigidBodiesIds[' + repr(str(vn)) + '] = ' + var)
+	for ob in physics_obs:
+		if not getattr(ob, 'colliderExists', False):
+			continue
+		try:
+			membership, filter_mask = _gba_get_collision_groups(ob)
+			attach_targets = []
+			for i in range(MAX_ATTACH_COLLIDER_CNT):
+				if getattr(ob, 'attach%i' %i):
+					attach_ob = getattr(ob, 'attachTo%i' %i)
+					if attach_ob and attach_ob.name in rigid_by_name:
+						attach_targets.append(rigid_by_name[attach_ob.name])
+			if ob.name in rigid_by_name and not attach_targets:
+				attach_targets = [rigid_by_name[ob.name]]
+			targets = attach_targets or [None]
+			pos, rot_deg = _gba_get_object_pose(ob)
+			w, h = _gba_get_object_size(ob)
+			rot_c = float(rot_deg) + float(getattr(ob, 'colliderRotOff', 0.0) or 0.0)
+			try:
+				br_idx = int(BOUNCINESS_COMBINE_RULES.index(getattr(ob, 'bouncinessCombineRule', BOUNCINESS_COMBINE_RULES[0])))
+			except Exception:
+				br_idx = 0
+		except Exception:
+			continue
+		for attach_sym in targets:
+			if attach_sym is None:
+				lines.append(
+					'sim.add_cuboid_collider('
+					+ str(int(bool(ob.colliderEnable))) + ', '
+					+ '[' + repr(float(pos[0])) + ', ' + repr(float(pos[1])) + '], '
+					+ repr(float(rot_c)) + ', '
+					+ str(int(membership)) + ', '
+					+ str(int(filter_mask)) + ', '
+					+ '[' + repr(float(w)) + ', ' + repr(float(h)) + '], '
+					+ str(int(bool(ob.isSensor))) + ', '
+					+ repr(float(ob.density)) + ', '
+					+ repr(float(ob.bounciness)) + ', '
+					+ str(int(br_idx))
+					+ ')'
+				)
+			else:
+				lines.append(
+					'sim.add_cuboid_collider('
+					+ str(int(bool(ob.colliderEnable))) + ', '
+					+ '[' + repr(float(pos[0])) + ', ' + repr(float(pos[1])) + '], '
+					+ repr(float(rot_c)) + ', '
+					+ str(int(membership)) + ', '
+					+ str(int(filter_mask)) + ', '
+					+ '[' + repr(float(w)) + ', ' + repr(float(h)) + '], '
+					+ str(int(bool(ob.isSensor))) + ', '
+					+ repr(float(ob.density)) + ', '
+					+ repr(float(ob.bounciness)) + ', '
+					+ str(int(br_idx)) + ', '
+					+ str(attach_sym)
+					+ ')'
+				)
+	raw_txt = '\n'.join(lines)
+	try:
+		norm = _normalize_gb_script_code(raw_txt, True, 'gba-py', '__world__')
+	except Exception:
+		return None
+	return {
+		'code' : norm,
+		'raw_code' : raw_txt,
+		'source_code' : raw_txt,
+		'source_line_offset' : 0,
+		'is_init' : True,
+		'script_obj' : None,
+		'owner_name' : '__world__',
+		'symbol_hint' : 'world_js13k_neo_compat_autophys',
+	}
+
+def _gba_neo_compat_autophys_update_script_entry (world, scene_obs):
+	"""World gba-py update snippet: sim.step() for Neo compat when auto-init is used. No import; transpiler-safe.
+	Paired with _gba_neo_compat_autophys_script_entry; set JS13K_NEOGEO_COMPAT_AUTO_PHYSICS_INIT=0 to skip both."""
+	if not bool(getattr(world, 'usePhysics', True)):
+		return None
+	if _gba_try_import_pyrapier2d() is None:
+		return None
+	physics_obs = [
+		ob for ob in (scene_obs or [])
+		if ob.exportOb and not ob.hide_get() and (getattr(ob, 'rigidBodyExists', False) or getattr(ob, 'colliderExists', False))
+	]
+	if not physics_obs:
+		return None
+	raw_txt = 'sim.step()'
+	try:
+		norm = _normalize_gb_script_code(raw_txt, False, 'gba-py', '__world__')
+	except Exception:
+		return None
+	return {
+		'code' : norm,
+		'raw_code' : raw_txt,
+		'source_code' : raw_txt,
+		'source_line_offset' : 0,
+		'is_init' : False,
+		'script_obj' : None,
+		'owner_name' : '__world__',
+		'symbol_hint' : 'world_js13k_neo_compat_autophys_update',
+	}
+
 def _gba_get_collision_groups (ob):
 	membership = 0
 	for i, enabled in enumerate(ob.collisionGroupMembership):
@@ -21051,6 +21691,25 @@ def _gba_get_object_pose (ob):
 	ob.rotation_mode = prev_rot_mode
 	return [float(pos.x), float(pos.y)], float(rot_deg)
 
+def _blender_scene_gravity_xy_for_2d_sim ():
+	"""(gx, gy) for Rapier2D / GBC phase1 gravity. Blender defaults to (0,0,-9.81) on Z;
+	export paths historically read only X,Y — Z-only gravity was ignored and bodies did not fall."""
+	try:
+		sce = bpy.context.scene
+	except Exception:
+		return 0.0, 0.0
+	if not getattr(sce, 'use_gravity', False):
+		return 0.0, 0.0
+	g = list(getattr(sce, 'gravity', [0.0, 0.0, 0.0]) or [0.0, 0.0, 0.0])
+	while len(g) < 3:
+		g.append(0.0)
+	gx = float(g[0])
+	gy = float(g[1])
+	gz = float(g[2])
+	if abs(gx) < 1e-12 and abs(gy) < 1e-12 and abs(gz) > 1e-12:
+		return 0.0, gz
+	return gx, gy
+
 def _gba_add_cuboid_collider_for_object (sim, ob, membership, filter_mask, attach_to = None):
 	pos, rot_deg = _gba_get_object_pose(ob)
 	w, h = _gba_get_object_size(ob)
@@ -21068,23 +21727,26 @@ def _gba_add_cuboid_collider_for_object (sim, ob, membership, filter_mask, attac
 		attach_to,
 	)
 
-def _gba_generate_rapier_frames (world, scene_obs, image_empties, image_surfaces, script_runtime):
+def _gba_rapier_rotate2d_xy (x, y, deg):
+	r = math.radians(deg)
+	c = math.cos(r)
+	s = math.sin(r)
+	return (x * c - y * s, x * s + y * c)
+
+
+def _gba_rapier_prepare_image_bindings (world, scene_obs, image_empties, script_runtime):
 	if not getattr(world, 'usePhysics', True):
 		return None
 	py_rapier = _gba_try_import_pyrapier2d()
 	if not py_rapier:
-		print('GBA export: PyRapier2d not available; exporting a single static frame.')
 		return None
 	physics_obs = [ob for ob in scene_obs if ob.exportOb and not ob.hide_get() and (getattr(ob, 'rigidBodyExists', False) or getattr(ob, 'colliderExists', False))]
 	if not physics_obs:
 		return None
 	sim = py_rapier.Simulation()
-	sim.set_length_unit (float(world.unitLen))
-	gravity = [0, 0]
-	if bpy.context.scene.use_gravity:
-		g = list(bpy.context.scene.gravity)
-		gravity = [g[0], g[1]]
-	sim.set_gravity (gravity[0], gravity[1])
+	sim.set_length_unit(float(world.unitLen))
+	_gxg, _gyg = _blender_scene_gravity_xy_for_2d_sim()
+	sim.set_gravity(float(_gxg), float(_gyg))
 	rigid_bodies = {}
 	for ob in physics_obs:
 		if not getattr(ob, 'rigidBodyExists', False):
@@ -21120,11 +21782,6 @@ def _gba_generate_rapier_frames (world, scene_obs, image_empties, image_surfaces
 		elif ob.name in rigid_bodies:
 			for attach_to in attach_targets:
 				_gba_add_cuboid_collider_for_object(sim, ob, membership, filter_mask, attach_to = attach_to)
-	def _rotate2d (x, y, deg):
-		r = math.radians(deg)
-		c = math.cos(r)
-		s = math.sin(r)
-		return (x * c - y * s, x * s + y * c)
 	image_bindings = {}
 	for image_ob in image_empties:
 		controller = image_ob if image_ob.name in rigid_bodies else None
@@ -21141,7 +21798,7 @@ def _gba_generate_rapier_frames (world, scene_obs, image_empties, image_surfaces
 		body_pos0, body_rot0 = _gba_get_object_pose(controller)
 		dx = img_pos0[0] - body_pos0[0]
 		dy = img_pos0[1] - body_pos0[1]
-		local_x, local_y = _rotate2d(dx, dy, -body_rot0)
+		local_x, local_y = _gba_rapier_rotate2d_xy(dx, dy, -body_rot0)
 		image_bindings[image_ob.name] = {
 			'handle' : rigid_bodies[controller.name],
 			'local_x' : local_x,
@@ -21149,34 +21806,53 @@ def _gba_generate_rapier_frames (world, scene_obs, image_empties, image_surfaces
 			'rot_off' : img_rot0 - body_rot0,
 		}
 	frame_count = int(max(1, min(360, getattr(world, 'bakedPhysicsFrames', 120))))
-	any_dynamic = any(getattr(ob, 'rigidBodyExists', False) and getattr(ob, 'rigidBodyType', '') == 'dynamic' and getattr(ob, 'rigidBodyEnable', True) for ob in physics_obs)
+	any_dynamic = any(
+		getattr(ob, 'rigidBodyExists', False) and str(getattr(ob, 'rigidBodyType', '')) == 'dynamic' and getattr(ob, 'rigidBodyEnable', True)
+		for ob in physics_obs
+	)
 	if not any_dynamic:
 		frame_count = 1
+	rt = script_runtime if isinstance(script_runtime, dict) else {}
+	return sim, image_bindings, int(frame_count), image_empties, rt
+
+
+def _gba_rapier_sim_transform_snapshot (sim, image_empties, image_bindings):
+	transform_overrides = {}
+	for ob in image_empties:
+		binding = image_bindings.get(ob.name)
+		if binding:
+			pos = sim.get_rigid_body_position(binding['handle'])
+			rot = sim.get_rigid_body_rotation(binding['handle'])
+			if pos is not None and rot is not None:
+				off_x, off_y = _gba_rapier_rotate2d_xy(binding['local_x'], binding['local_y'], rot)
+				transform_overrides[ob.name] = {
+					'x' : pos[0] + off_x,
+					'y' : pos[1] + off_y,
+					'rot_deg' : rot + binding['rot_off'],
+				}
+	return transform_overrides
+
+
+def _gba_generate_rapier_frames (world, scene_obs, image_empties, image_surfaces, script_runtime):
+	prep = _gba_rapier_prepare_image_bindings(world, scene_obs, image_empties, script_runtime)
+	if prep is None:
+		py_try = _gba_try_import_pyrapier2d()
+		if getattr(world, 'usePhysics', True) and (not py_try):
+			print('GBA export: PyRapier2d not available; exporting a single static frame.')
+		return None
+	sim, image_bindings, frame_count, image_empties, rt = prep
 	frames = []
-	debug_first = None
-	debug_last = None
-	_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = 1, include_init = True, include_update = False)
+	_gba_apply_script_surface_ops(image_surfaces, rt.get('surface_ops', []), frame = 1, include_init = True, include_update = False)
 	for frame in range(frame_count):
-		_gba_apply_script_surface_ops(image_surfaces, script_runtime.get('surface_ops', []), frame = frame + 1, include_init = False, include_update = True)
-		transform_overrides = {}
-		for ob in image_empties:
-			binding = image_bindings.get(ob.name)
-			if binding:
-				pos = sim.get_rigid_body_position(binding['handle'])
-				rot = sim.get_rigid_body_rotation(binding['handle'])
-				if pos is not None and rot is not None:
-					off_x, off_y = _rotate2d(binding['local_x'], binding['local_y'], rot)
-					transform_overrides[ob.name] = {
-						'x' : pos[0] + off_x,
-						'y' : pos[1] + off_y,
-						'rot_deg' : rot + binding['rot_off'],
-					}
-		canvas = _gba_composite_scene(world, image_empties, image_surfaces = image_surfaces, transform_overrides = transform_overrides, script_runtime = script_runtime, frame = frame + 1)
+		_gba_apply_script_surface_ops(image_surfaces, rt.get('surface_ops', []), frame = frame + 1, include_init = False, include_update = True)
+		transform_overrides = _gba_rapier_sim_transform_snapshot(sim, image_empties, image_bindings)
+		canvas = _gba_composite_scene(world, image_empties, image_surfaces = image_surfaces, transform_overrides = transform_overrides, script_runtime = rt, frame = frame + 1)
 		frames.append(_gba_rgba_to_mode3(canvas))
 		if frame + 1 < frame_count:
 			sim.step ()
 	print('GBA export: baked', len(frames), 'Rapier frame(s) for runtime playback.')
 	return frames
+
 
 def _gba_has_update_visuals (script_runtime):
 	runtime = script_runtime or {}
@@ -21512,11 +22188,18 @@ def _gba_build_runtime_code_linked (script_runtime : dict, bitmap_rom_offset : i
 	)
 	init_calls = '\n'.join('\tbl\t' + sym for sym in init_symbols) if init_symbols else '\t@ no init script calls'
 	update_calls = '\n'.join('\tbl\t' + sym for sym in update_symbols) if update_symbols else '\t@ no update script calls'
-	main_loop_body = '\n'.join([
-		'\tbl\tpy2gb_wait_vblank',
-		'\t@ no baked frame playback; keep VRAM live between updates',
-		'\tbl\tpy2gb_call_update',
-	])
+	if frame_count > 1:
+		main_loop_body = '\n'.join([
+			'\tbl\tpy2gb_wait_vblank',
+			'\tbl\tpy2gb_blit_frame',
+			'\tbl\tpy2gb_call_update',
+		])
+	else:
+		main_loop_body = '\n'.join([
+			'\tbl\tpy2gb_wait_vblank',
+			'\t@ single ROM frame; keep VRAM live between updates',
+			'\tbl\tpy2gb_call_update',
+		])
 	frame_base_rom = 0x08000000 + bitmap_rom_offset
 	frame_stride = 240 * 160 * 2
 	frame_end_rom = frame_base_rom + frame_stride * frame_count
@@ -21773,6 +22456,7 @@ def _gb_runtime_is_stubbed (script_runtime):
 		('py2gb pygame-aware stub backend' in asm_txt)
 		or ('py2gba pygame-aware stub backend' in asm_txt)
 		or ('py2gb lightweight backend' in asm_txt)
+		or ('py2gba lightweight backend' in asm_txt)
 		or ('placeholder Game Boy assembly entrypoints' in asm_txt)
 	)
 
@@ -22001,13 +22685,19 @@ def BuildNeoGeo (world):
 			native_build_error = 'Configured C toolchain command failed: ' + toolchain_fallback_reason
 		if neogeo_c_path != '' and os.path.isfile(neogeo_c_path):
 			native_ok, native_msg, native_out_path, native_loose_rom_dir, native_neo_gamerom = (
-				_build_native_neogeo_romset_from_c(neogeo_c_path, out, neo_native_user_canvas_np)
+				_build_native_neogeo_romset_from_c(neogeo_c_path, out, neo_native_user_canvas_np, world = world, scene_obs = scene_obs)
 			)
 			if native_ok and isinstance(native_out_path, str) and native_out_path != '':
 				try:
 					native_size = int(os.path.getsize(native_out_path))
 				except Exception:
 					native_size = -1
+				if bool(getattr(world, 'usePhysics', True)) and _gb_scene_has_physics(scene_obs):
+					print(
+						'Neo Geo native: dynamic physics uses the bundled M68K runtime (js13k_neogeo_physics.c): '
+						'exported rigid bodies/colliders + sim_step() each vblank (not Rapier). '
+						'Compatibility .neo fallback still uses optional gba-py / Rapier bake when native build is unavailable.'
+					)
 				print('Neo Geo export: built native Neo Geo romset via ngdevkit.')
 				if isinstance(native_loose_rom_dir, str) and str(native_loose_rom_dir).strip() != '':
 					print(
@@ -22055,6 +22745,67 @@ def BuildNeoGeo (world):
 		is_stubbed_backend = _gb_runtime_is_stubbed(script_runtime)
 		has_runtime_update = bool(update_symbols) and (not is_stubbed_backend)
 		is_neogeo_c_backend = str((script_runtime or {}).get('script_backend', '') or '').startswith('neogeo_c')
+		# Compatibility .neo is a GBA-family linked ROM: live physics matches BuildGba (gba-py + py2gb + sim.step).
+		if has_physics and (not has_runtime_update) and _py2gb_export_gba_py_assembly and _py2gb_cli_module_available():
+			gba_phy_rt = None
+			try:
+				gba_script_entries = _collect_script_entries_by_type(world, 'gba-py', 'gba')
+				_auto_phys = str(os.environ.get('JS13K_NEOGEO_COMPAT_AUTO_PHYSICS_INIT', '') or '1').strip().lower() not in ('0', 'false', 'no', 'n')
+				if _auto_phys:
+					_auto_entry = _gba_neo_compat_autophys_script_entry(world, scene_obs)
+					if _auto_entry is not None:
+						_auto_upd = _gba_neo_compat_autophys_update_script_entry(world, scene_obs)
+						gba_script_entries = [_auto_entry] + list(gba_script_entries)
+						if _auto_upd is not None:
+							gba_script_entries = list(gba_script_entries) + [_auto_upd]
+						print(
+							'Neo Geo export: prepended auto gba-py init for exported rigid bodies/colliders and scene gravity '
+							'(set JS13K_NEOGEO_COMPAT_AUTO_PHYSICS_INIT=0 if you register PyRapier bodies manually in gba-py).'
+						)
+						_append_gbc_trace_lines(['[neo-trace] BuildNeoGeo:compat_autophys_init=1'])
+						if _auto_upd is not None:
+							print(
+								'Neo Geo export: appended auto gba-py update calling sim.step() each frame '
+								'(py2gba lightweight backend is a no-op on device; motion uses export-time Rapier bake when available).'
+							)
+							_append_gbc_trace_lines(['[neo-trace] BuildNeoGeo:compat_autophys_update=1'])
+				gba_phy_rt = _run_py2gb_export_with_resolved_logs(
+					_py2gb_export_gba_py_assembly,
+					gba_script_entries,
+					out,
+					strict_print_exprs = False,
+				)
+				if isinstance(gba_phy_rt, dict):
+					gba_phy_rt = _augment_runtime_with_dynamic_circles(gba_phy_rt, gba_script_entries)
+			except Exception as gba_phy_err:
+				print('Neo Geo export: optional gba-py export for physics failed:', gba_phy_err)
+			if isinstance(gba_phy_rt, dict):
+				_asm = str(gba_phy_rt.get('assembly_path') or '')
+				_us = list(gba_phy_rt.get('update_symbols') or [])
+				_is_init_sy = list(gba_phy_rt.get('init_symbols') or [])
+				if _asm and os.path.isfile(_asm) and (_is_init_sy or _us):
+					script_runtime = dict(script_runtime or {})
+					script_runtime['assembly_path'] = _asm
+					script_runtime['init_symbols'] = _is_init_sy
+					script_runtime['update_symbols'] = _us
+					_so = list(script_runtime.get('surface_ops') or [])
+					_so.extend(list(gba_phy_rt.get('surface_ops') or []))
+					script_runtime['surface_ops'] = _so
+					if _gb_runtime_is_stubbed(gba_phy_rt):
+						print(
+							'Neo Geo export: linked gba-py Thumb stubs from py2gba lightweight backend '
+							'(on-device sim.step is not executed; use export-time Rapier bake for visible motion).'
+						)
+						_append_gbc_trace_lines(['[neo-trace] BuildNeoGeo:compat_physics_runtime=gba_py_thumb_stub'])
+					else:
+						print(
+							'Neo Geo export: compatibility ROM will use gba-py Thumb assembly for dynamic physics '
+							'(call sim.step() each frame from a gba-py update script; auto-init registers Blender bodies only).'
+						)
+						_append_gbc_trace_lines(['[neo-trace] BuildNeoGeo:compat_physics_runtime=gba_py_thumb'])
+		update_symbols = list((script_runtime or {}).get('update_symbols') or [])
+		is_stubbed_backend = _gb_runtime_is_stubbed(script_runtime)
+		has_runtime_update = bool(update_symbols) and (not is_stubbed_backend)
 		frame_count = 1
 		frames = None
 		if not has_runtime_update:
@@ -22063,7 +22814,7 @@ def BuildNeoGeo (world):
 			elif not is_neogeo_c_backend:
 				print(
 					'Neo Geo export: runtime transpiler backend is placeholder/stub or missing update symbols; '
-					'using baked frame fallback.'
+					'using baked frame fallback (export-time Rapier bake when PyRapier2d and dynamic bodies are available).'
 				)
 			if _gb_runtime_uses_input_polling(script_runtime):
 				print(
@@ -22736,6 +23487,11 @@ def BuildGbc (world):
 			proxy.hide_get = (lambda : False)
 			proxy.rigidBodyExists = False
 			proxy.colliderExists = False
+			# Link bake-time Rapier sprites to Blender physics empties named on the source curve.
+			try:
+				proxy.parent = _curve_ob
+			except Exception:
+				proxy.parent = None
 			return proxy
 		for ob in scene_obs:
 			if not ob.exportOb or ob.hide_get() or ob.type != 'CURVE':
@@ -23404,12 +24160,10 @@ def BuildGbc (world):
 			])
 			if not rigid_sprite_obs:
 				raise RuntimeError('GBC dynamic physics phase1 requires at least one exported image empty with an enabled rigid body.')
-			gravity_x = 0.0
-			gravity_y = 0.0
-			if bpy.context.scene.use_gravity:
-				g = list(bpy.context.scene.gravity)
-				gravity_x = float(g[0])
-				gravity_y = float(g[1])
+			gravity_x, gravity_y = _blender_scene_gravity_xy_for_2d_sim()
+			_append_gbc_trace_lines([
+				'[gbc-trace] BuildGbc:scene_gravity_sim_xy=(' + str(float(gravity_x)) + ',' + str(float(gravity_y)) + ')',
+			])
 			# Multi-body path does not implement camera-follow semantics yet.
 			# When a single dynamic body requests follow-camera, route to the
 			# single-body runtime so camera tracks the player correctly.
