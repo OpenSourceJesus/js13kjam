@@ -1784,10 +1784,18 @@ class GbcCFunctionCompileResult:
 
 
 class _GeneralCFunctionTranspiler:
-	def __init__ (self, code: str, function_name: str, this_var_name: str = 'js13k_this'):
+	def __init__ (
+		self,
+		code: str,
+		function_name: str,
+		this_var_name: str = 'js13k_this',
+		*,
+		print_style: str = 'legacy',
+	):
 		self.code = str(code or '')
 		self.function_name = str(function_name or 'gbc_script_fn')
 		self.this_var_name = str(this_var_name or 'js13k_this')
+		self.print_style = str(print_style or 'legacy')
 		self.tree = ast.parse(self.code)
 		self.indent = 0
 		self.lines: List[str] = []
@@ -1859,6 +1867,35 @@ class _GeneralCFunctionTranspiler:
 		if nv is not None:
 			return str(int(round(nv * 1000.0)))
 		return '(int32_t)((float)(' + self._expr_to_c(a) + ') * 1000.0f)'
+
+	def _neo_geo_print_arg_is_xy_int32_ptr (self, node) -> bool:
+		'''True when the C value is int32_t* to a length-2 vector (physics getters, same typed locals).'''
+		if isinstance(node, ast.Call) and self._is_sim_physics_vector_get_call(node):
+			return True
+		if isinstance(node, ast.Name) and str(node.id) != 'this':
+			return self.local_symbol_types.get(self._safe_ident(node.id), 'int32_t') == 'int32_t*'
+		return False
+
+	def _neo_geo_print_arg_chunk (self, node) -> str:
+		if isinstance(node, ast.Constant) and isinstance(node.value, str):
+			return 'js13k_print_s(' + self._c_string_literal(node.value) + ')'
+		c_expr = self._expr_to_c(node)
+		if self._neo_geo_print_arg_is_xy_int32_ptr(node):
+			return 'js13k_print_iv2(' + c_expr + ')'
+		return 'js13k_print_i(' + c_expr + ')'
+
+	def _neo_geo_print_expr_to_c (self, call_node: ast.Call) -> str:
+		'''Neo Geo ROM: route print(...) to js13k_print_* helpers (stdio in js13k_neogeo_physics.o).'''
+		args = list(getattr(call_node, 'args', []) or [])
+		if len(args) == 0:
+			return '(js13k_print_end(), (int32_t)0)'
+		chunks = []
+		for i, a in enumerate(args):
+			if i > 0:
+				chunks.append('js13k_print_sep()')
+			chunks.append(self._neo_geo_print_arg_chunk(a))
+		chunks.append('js13k_print_end()')
+		return '(' + ', '.join(chunks) + ', (int32_t)0)'
 
 	def _expr_to_c (self, expr) -> str:
 		if isinstance(expr, ast.Constant):
@@ -1968,6 +2005,8 @@ class _GeneralCFunctionTranspiler:
 				args_m = [self._neo_geo_gravity_milli_arg(a) for a in list(expr.args or [])]
 				return 'sim_set_gravity_milli(' + ', '.join(args_m) + ')'
 			if isinstance(fn, ast.Name):
+				if str(fn.id) == 'print' and self.print_style == 'neo':
+					return self._neo_geo_print_expr_to_c(expr)
 				fn_name = self._safe_ident(fn.id)
 			elif isinstance(fn, ast.Attribute):
 				fn_name = self._safe_ident(self._expr_to_c(fn))
@@ -2230,10 +2269,13 @@ def compile_script_to_c_function (
 	code: str,
 	function_name: str = 'gbc_script_fn',
 	this_var_name: str = 'js13k_this',
+	*,
+	print_style: str = 'legacy',
 ) -> GbcCFunctionCompileResult:
 	transpiler = _GeneralCFunctionTranspiler(
 		code = str(code or ''),
 		function_name = str(function_name or 'gbc_script_fn'),
 		this_var_name = str(this_var_name or 'js13k_this'),
+		print_style = str(print_style or 'legacy'),
 	)
 	return transpiler.transpile()

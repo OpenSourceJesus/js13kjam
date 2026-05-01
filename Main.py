@@ -324,6 +324,20 @@ def GetScripts (ob):
 				scripts.append((txt.as_string(), getattr(ob, 'initScript%i' %i), getattr(ob, 'scriptType%i' %i), txt, getattr(ob, 'scriptIsGlobal%i' %i, False)))
 	return scripts
 
+def _js13k_script_type_js_prefix (script_type):
+	'''One-line JS so each injected init/update block sees SCRIPT_TYPE (matches SCRIPT_TYPE_ITEMS ids).'''
+	try:
+		return 'var SCRIPT_TYPE = ' + json.dumps(str(script_type)) + ';\n'
+	except Exception:
+		return 'var SCRIPT_TYPE = "";\n'
+
+def _js13k_script_type_py_prefix (script_type):
+	'''One-line Python prepended to transpile / mirror / Codon sources.'''
+	try:
+		return 'SCRIPT_TYPE = ' + repr(str(script_type)) + '\n'
+	except Exception:
+		return 'SCRIPT_TYPE = ""\n'
+
 _GB_GLOBAL_MEMBER_NODE_TYPES = (
 	ast.Import,
 	ast.ImportFrom,
@@ -5372,9 +5386,12 @@ def _write_neogeo_py_c (_script_entries, _out_path, rb_handle_by_owner = None):
 		'#define J_SELECT (1u << 7)',
 		'#endif',
 		'',
-		'#ifndef js13k_print',
-		'#define js13k_print(...) ((int32_t)0)',
-		'#endif',
+		'/* print() -> js13k_print_* (strong no-ops in js13k_neogeo_physics.o; terminal via Blender mirror). */',
+		'__attribute__((weak)) int32_t js13k_print_i (int32_t v) { (void)v; return 0; }',
+		'__attribute__((weak)) int32_t js13k_print_iv2 (const int32_t *p) { (void)p; return 0; }',
+		'__attribute__((weak)) int32_t js13k_print_s (const char *msg) { (void)msg; return 0; }',
+		'__attribute__((weak)) int32_t js13k_print_sep (void) { return 0; }',
+		'__attribute__((weak)) int32_t js13k_print_end (void) { return 0; }',
 		'__attribute__((weak)) uint16_t joypad (void) { return 0; }',
 		'static int32_t dt = 1;',
 		'static int32_t SCREEN_SIZE[2] = {320, 224};',
@@ -5468,6 +5485,7 @@ def _write_neogeo_py_c (_script_entries, _out_path, rb_handle_by_owner = None):
 			source_code,
 			function_name = fn_name,
 			this_var_name = this_var_name,
+			print_style = 'neo',
 		)
 		c_src = str(getattr(compiled_c, 'c_source', '') or '')
 		c_src = _relax_neogeo_c_compat(c_src)
@@ -6673,12 +6691,15 @@ def _collect_script_entries_by_type (world, script_type : str, export_prefix : s
 			script = scriptInfo[3]
 			if _type == script_type:
 				raw_script_txt = scriptTxt
+				_st_pref = _js13k_script_type_py_prefix(str(script_type))
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, '__world__')
+				scriptTxt = _st_pref + str(scriptTxt or '')
+				_stamped = _st_pref + str(raw_script_txt or '')
 				script_entries.append({
 					'code' : scriptTxt,
-					'raw_code' : raw_script_txt,
-					'source_code' : raw_script_txt,
-					'source_line_offset' : 0,
+					'raw_code' : _stamped,
+					'source_code' : _stamped,
+					'source_line_offset' : 1,
 					'is_init' : is_init,
 					'script_obj' : script,
 					'owner_name' : '__world__',
@@ -6694,12 +6715,15 @@ def _collect_script_entries_by_type (world, script_type : str, export_prefix : s
 			script = scriptInfo[3]
 			if _type == script_type:
 				raw_script_txt = scriptTxt
+				_st_pref = _js13k_script_type_py_prefix(str(script_type))
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, ob.name)
+				scriptTxt = _st_pref + str(scriptTxt or '')
+				_stamped = _st_pref + str(raw_script_txt or '')
 				script_entries.append({
 					'code' : scriptTxt,
-					'raw_code' : raw_script_txt,
-					'source_code' : raw_script_txt,
-					'source_line_offset' : 0,
+					'raw_code' : _stamped,
+					'source_code' : _stamped,
+					'source_line_offset' : 1,
 					'is_init' : is_init,
 					'script_obj' : script,
 					'owner_name' : ob.name,
@@ -6749,12 +6773,15 @@ def _build_fallback_gbc_script_runtime (world):
 	script_entries = []
 	def _append_entry (_owner_name, _script_txt, _is_init, _is_global, _script, _symbol_hint, _owner_attributes = None, _owner_attribute_types = None):
 		raw_script_txt = str(_script_txt or '')
+		_st_pref = _js13k_script_type_py_prefix('gbc-py')
 		norm_script_txt = _normalize_gb_script_code(raw_script_txt, bool(_is_init), 'gbc-py', _owner_name)
+		norm_script_txt = _st_pref + str(norm_script_txt or '')
+		_stamped = _st_pref + raw_script_txt
 		script_entries.append({
 			'code' : str(norm_script_txt or ''),
-			'raw_code' : raw_script_txt,
-			'source_code' : raw_script_txt,
-			'source_line_offset' : 0,
+			'raw_code' : _stamped,
+			'source_code' : _stamped,
+			'source_line_offset' : 1,
 			'is_init' : bool(_is_init),
 			'is_global' : bool(_is_global),
 			'script_obj' : _script,
@@ -6863,12 +6890,15 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 		entries = []
 		def _append (_owner_name, _script_txt, _is_init, _is_global, _script, _symbol_hint, _owner_attributes = None, _owner_attribute_types = None):
 			raw_script_txt = str(_script_txt or '')
+			_st_pref = _js13k_script_type_py_prefix('gbc-py')
 			norm_script_txt = _normalize_gb_script_code(raw_script_txt, bool(_is_init), 'gbc-py', _owner_name)
+			norm_script_txt = _st_pref + str(norm_script_txt or '')
+			_stamped = _st_pref + raw_script_txt
 			entries.append({
 				'code' : str(norm_script_txt or ''),
-				'raw_code' : raw_script_txt,
-				'source_code' : raw_script_txt,
-				'source_line_offset' : 0,
+				'raw_code' : _stamped,
+				'source_code' : _stamped,
+				'source_line_offset' : 1,
 				'is_init' : bool(_is_init),
 				'is_global' : bool(_is_global),
 				'script_obj' : _script,
@@ -7618,14 +7648,18 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 				norm_script_txt = local_attr_suffix
 			else:
 				norm_script_txt = norm_script_txt + '\n' + local_attr_suffix
+		_st_pref = _js13k_script_type_py_prefix('gbc-py')
+		norm_script_txt = _st_pref + str(norm_script_txt or '')
+		_stamped = _st_pref + str(raw_script_txt or '')
+		source_line_offset = int(source_line_offset or 0) + 1
 		# GBC export now targets generated ZGB C only. Do not run asm-generating
 		# gbc transpiler paths while collecting script entries.
 		transpiled_meta = None
 		general_aot_meta = None
 		script_entries.append({
 			'code' : norm_script_txt,
-			'raw_code' : raw_script_txt,
-			'source_code' : raw_script_txt,
+			'raw_code' : _stamped,
+			'source_code' : _stamped,
 			'source_line_offset' : source_line_offset,
 			'owner_attributes' : dict(_owner_attributes) if isinstance(_owner_attributes, dict) else {},
 			'owner_attribute_types' : dict(_owner_attribute_types) if isinstance(_owner_attribute_types, dict) else {},
@@ -8277,7 +8311,11 @@ def GetBlenderData ():
 			script = scriptInfo[3]
 			if _type.startswith(exportType):
 				if _type == 'html-py':
-					scriptTxt = Py2Js(scriptTxt, script)
+					scriptTxt = _js13k_script_type_js_prefix('html-py') + Py2Js(scriptTxt, script)
+				elif _type == 'html-js':
+					scriptTxt = _js13k_script_type_js_prefix('html-js') + scriptTxt
+				elif _type == 'exe':
+					scriptTxt = _js13k_script_type_py_prefix('exe') + scriptTxt
 				elif _type == 'gba-py':
 					continue
 				elif _type == 'gbc-py':
@@ -8301,7 +8339,11 @@ def GetBlenderData ():
 			script = scriptInfo[3]
 			if _type.startswith(exportType):
 				if _type == 'html-py':
-					scriptTxt = Py2Js(scriptTxt, script)
+					scriptTxt = _js13k_script_type_js_prefix('html-py') + Py2Js(scriptTxt, script)
+				elif _type == 'html-js':
+					scriptTxt = _js13k_script_type_js_prefix('html-js') + scriptTxt
+				elif _type == 'exe':
+					scriptTxt = _js13k_script_type_py_prefix('exe') + scriptTxt
 				elif _type == 'gba-py':
 					continue
 				elif _type == 'gbc-py':
@@ -8327,6 +8369,8 @@ buildInfo = {
 
 PYTHON = '''from python import os, sys, math, pygame, random, PyRapier2d
 from random import uniform
+
+SCRIPT_TYPE = 'exe'
 
 os.environ['SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS'] = '1'
 
@@ -12410,10 +12454,40 @@ def _launch_neogeo_emulator (rom_path, loose_rom_dir = None, gamerom_name = None
 				bufsize = 1,
 			)
 			_pipe_process_output_to_terminal(proc, prefix = os.path.basename(exe_path))
-			return True
+			return True, proc
 		except Exception as err:
 			print('Failed to launch', exe, 'for Neo Geo export:', err)
-	return False
+	return False, None
+
+def _start_neogeo_terminal_print_mirror (emu_proc, script_runtime, world, scene_obs):
+	"""
+	Re-run neogeo-py source in CPython with the same PyRapier `sim` as the rest
+	of the export, while the native emulator is open. M68K code cannot stream
+	back to the Blender/terminal process; this mirror thread is what makes
+	`print()` show up there (same pattern as the mGBA + gba-py mirror).
+	"""
+	if emu_proc is None:
+		return
+	_on = str(os.environ.get('JS13K_NEOGEO_TERMINAL_PRINT', '1') or '1').strip().lower()
+	if _on in ('0', 'false', 'no', 'n'):
+		return
+	try:
+		_rt_obs = _extend_runtime_print_scene_with_offscene_script_physics(scene_obs, 'neogeo-py')
+		_rt_env = _build_runtime_print_physics_env(world, _rt_obs)
+		_mstep = None
+		_sim = _rt_env.get('sim')
+		if _sim is not None and hasattr(_sim, 'step'):
+			_mstep = _sim.step
+		_start_gba_update_print_mirror(
+			emu_proc,
+			script_runtime,
+			script_label = 'neogeo-py',
+			strict_print_exprs = False,
+			runtime_env = _rt_env,
+			mirror_step = _mstep,
+		)
+	except Exception as _e:
+		print('Neo Geo: host print mirror (see JS13K_NEOGEO_TERMINAL_PRINT) failed:', _e)
 
 def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = 'gba-py', strict_print_exprs : bool = False, runtime_env = None, mirror_step = None):
 	print_calls = list((script_runtime or {}).get('print_calls') or [])
@@ -22678,8 +22752,11 @@ def BuildNeoGeo (world):
 				else:
 					print('Saved Neo Geo export:', out)
 				rom_path = os.path.abspath(out)
-				if not _launch_neogeo_emulator(rom_path, loose_rom_dir = (_loose_try or None)):
+				_neo_ok, _neo_proc = _launch_neogeo_emulator(rom_path, loose_rom_dir = (_loose_try or None))
+				if not _neo_ok:
 					print('No compatible Neo Geo emulator found in PATH; open the ROM manually:', rom_path)
+				else:
+					_start_neogeo_terminal_print_mirror(_neo_proc, script_runtime, world, scene_obs)
 				return
 			toolchain_fallback_reason = str(msg or 'unknown toolchain error')
 			native_build_error = 'Configured C toolchain command failed: ' + toolchain_fallback_reason
@@ -22715,12 +22792,15 @@ def BuildNeoGeo (world):
 				else:
 					print('Saved Neo Geo romset:', native_out_path)
 				rom_path = os.path.abspath(native_out_path)
-				if not _launch_neogeo_emulator(
+				_neo_ok, _neo_proc = _launch_neogeo_emulator(
 					rom_path,
 					loose_rom_dir = native_loose_rom_dir,
 					gamerom_name = native_neo_gamerom,
-				):
+				)
+				if not _neo_ok:
 					print('No compatible Neo Geo emulator found in PATH; open the ROM manually:', rom_path)
+				else:
+					_start_neogeo_terminal_print_mirror(_neo_proc, script_runtime, world, scene_obs)
 				return
 			native_build_error = str(native_msg or native_build_error or 'unknown native romset build error')
 		if not allow_compat_fallback:
@@ -22840,8 +22920,11 @@ def BuildNeoGeo (world):
 		rom_path = os.path.abspath(out)
 		force_launch_fallback = str(os.environ.get('JS13K_NEOGEO_FORCE_EMULATOR_ON_FALLBACK', '0') or '0').strip() not in ('', '0', 'false', 'False', 'no', 'NO')
 		if force_launch_fallback:
-			if not _launch_neogeo_emulator(rom_path):
+			_neo_ok, _neo_proc = _launch_neogeo_emulator(rom_path)
+			if not _neo_ok:
 				print('No compatible Neo Geo emulator found in PATH; open the ROM manually:', rom_path)
+			else:
+				_start_neogeo_terminal_print_mirror(_neo_proc, script_runtime, world, scene_obs)
 		else:
 			print(
 				'Neo Geo export: skipping Neo Geo emulator launch for compatibility fallback output '

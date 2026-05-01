@@ -636,3 +636,36 @@ int32_t get_rigidbody (const char *name)
 	}
 	return 0;
 }
+
+/*
+ * Transpiled neogeo-py print(): no-op on the M68K ROM. Terminal output comes from the
+ * host-side mirror in Blender (JS13K_NEOGEO_TERMINAL_PRINT); there is no path from the
+ * cart to the Python process stdout. Keeping these empty avoids drawing on the fix layer.
+ */
+int32_t js13k_print_i (int32_t v)
+{
+	(void)v;
+	return 0;
+}
+
+int32_t js13k_print_iv2 (const int32_t *p)
+{
+	(void)p;
+	return 0;
+}
+
+int32_t js13k_print_s (const char *msg)
+{
+	(void)msg;
+	return 0;
+}
+
+int32_t js13k_print_sep (void)
+{
+	return 0;
+}
+
+int32_t js13k_print_end (void)
+{
+	return 0;
+}

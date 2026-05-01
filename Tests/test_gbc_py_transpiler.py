@@ -317,6 +317,34 @@ sim.set_linear_velocity(this.rb, vel)
 		self.assertIn('int32_t *pos = 0;', out.c_source)
 		self.assertIn('pos = sim_get_rigid_body_position(js13k_this_Player->rb);', out.c_source)
 
+	def test_neogeo_print_style_emits_stdio_helpers(self):
+		code = 'print(1, 2)\nprint("hi")\nprint()'
+		out = compile_script_to_c_function(code, function_name = 'fn', this_var_name = 'th', print_style = 'neo')
+		self.assertIn('js13k_print_i(1)', out.c_source)
+		self.assertIn('js13k_print_sep()', out.c_source)
+		self.assertIn('js13k_print_i(2)', out.c_source)
+		self.assertIn('js13k_print_s("hi")', out.c_source)
+		self.assertIn('(js13k_print_end(), (int32_t)0)', out.c_source)
+
+	def test_neogeo_print_iv2_for_position_vector_local(self):
+		code = (
+			'pos = sim.get_rigid_body_position(this.rb)\n'
+			'print(this.rb, pos)\n'
+		)
+		out = compile_script_to_c_function(
+			code,
+			function_name = 'fn',
+			this_var_name = 'js13k_this_Player',
+			print_style = 'neo',
+		)
+		self.assertIn('js13k_print_i(js13k_this_Player->rb)', out.c_source)
+		self.assertIn('js13k_print_iv2(pos)', out.c_source)
+
+	def test_legacy_print_style_keeps_js13k_print(self):
+		code = 'print(42)'
+		out = compile_script_to_c_function(code, function_name = 'fn', this_var_name = 'th')
+		self.assertIn('js13k_print(42);', out.c_source)
+
 
 if __name__ == '__main__':
 	unittest.main()
