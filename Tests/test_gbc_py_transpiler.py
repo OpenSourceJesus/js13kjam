@@ -311,6 +311,16 @@ sim.set_linear_velocity(this.rb, vel)
 		out = compile_script_to_c_function(code, function_name = 'fn', this_var_name = 'th')
 		self.assertIn('sim_set_gravity_milli(0, -9810)', out.c_source)
 
+	def test_neogeo_c_transpile_sim_add_rigid_body_uses_milli_for_gs_and_drag(self):
+		code = (
+			'sim.add_rigid_body(1, 0, [0, 0], 0, 1.25, 2, 1, 0.1, 0.05, 1, 0)'
+		)
+		out = compile_script_to_c_function(code, function_name = 'fn', this_var_name = 'th')
+		self.assertIn(
+			'sim_add_rigid_body(1, 0, ((int32_t[]){0, 0}), 0, 1250, 2, 1, 100, 50, 1, 0)',
+			out.c_source,
+		)
+
 	def test_neogeo_c_transpile_get_rigid_body_position_declares_int32_ptr(self):
 		code = 'pos = sim.get_rigid_body_position(this.rb)\nsim.step()'
 		out = compile_script_to_c_function(code, function_name = 'fn', this_var_name = 'js13k_this_Player')

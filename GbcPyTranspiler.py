@@ -2004,6 +2004,22 @@ class _GeneralCFunctionTranspiler:
 			):
 				args_m = [self._neo_geo_gravity_milli_arg(a) for a in list(expr.args or [])]
 				return 'sim_set_gravity_milli(' + ', '.join(args_m) + ')'
+			if (
+				isinstance(fn, ast.Attribute)
+				and isinstance(fn.value, ast.Name)
+				and fn.value.id in ('sim', 'physics')
+				and str(fn.attr) == 'add_rigid_body'
+			):
+				args_rb = list(expr.args or [])
+				if len(args_rb) != 11:
+					self._disallow_node(expr, 'sim.add_rigid_body (expected 11 positional args)')
+				parts_rb = []
+				for i, a in enumerate(args_rb):
+					if i in (4, 7, 8):
+						parts_rb.append(self._neo_geo_gravity_milli_arg(a))
+					else:
+						parts_rb.append(self._expr_to_c(a))
+				return 'sim_add_rigid_body(' + ', '.join(parts_rb) + ')'
 			if isinstance(fn, ast.Name):
 				if str(fn.id) == 'print' and self.print_style == 'neo':
 					return self._neo_geo_print_expr_to_c(expr)

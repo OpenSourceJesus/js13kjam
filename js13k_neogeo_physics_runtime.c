@@ -17,6 +17,8 @@
 #define NEO_MAX_RB 48
 #define NEO_MAX_COL 96
 #define NEO_DT (1.0f / 60.0f)
+/* sim_get_* return int32_t*; transpiled scripts stash pointers. One static pair caused every call to clobber the previous buffer (e.g. va=get(a); vb=get(b) → va pointed at b). */
+#define NEO_GET_VEC_RING 16
 
 typedef struct {
 	float px, py, vx, vy, rot_deg, ang_vel;
@@ -26,6 +28,9 @@ typedef struct {
 	int32_t enabled;
 	int32_t body_type;
 	int32_t can_rot;
+	int32_t dominance;
+	int32_t can_sleep;
+	int32_t ccd;
 } NeoBody;
 
 typedef struct {
@@ -50,6 +55,7 @@ typedef struct {
 	float px, py, vx, vy, rot_deg, ang_vel, gs;
 	int32_t enabled, body_type, can_rot;
 	float lin_drag, ang_drag;
+	int32_t dominance, can_sleep, ccd;
 } NeoBodyInit;
 
 typedef struct {
@@ -77,8 +83,10 @@ static int32_t g_rb_count;
 static int32_t g_col_count;
 static float g_len_unit = 1.0f;
 static float g_gx, g_gy;
-static int32_t g_pos_out[2];
-static int32_t g_vel_out[2];
+static int32_t g_pos_ring[NEO_GET_VEC_RING][2];
+static int32_t g_vel_ring[NEO_GET_VEC_RING][2];
+static uint32_t g_pos_ring_i;
+static uint32_t g_vel_ring_i;
 
 static int32_t neo_rb_valid (int32_t h)
 {
@@ -275,6 +283,9 @@ void js13k_neogeo_physics_init (void)
 			d->enabled = s->enabled;
 			d->body_type = s->body_type;
 			d->can_rot = s->can_rot;
+			d->dominance = s->dominance;
+			d->can_sleep = s->can_sleep;
+			d->ccd = s->ccd;
 			d->inv_mass = 0.0f;
 			d->inv_inertia = 0.0f;
 		}
@@ -380,9 +391,6 @@ int32_t sim_add_rigid_body (
 	int32_t ccd
 )
 {
-	(void)dominance;
-	(void)can_sleep;
-	(void)ccd;
 	if (g_rb_count >= NEO_MAX_RB)
 		return 0;
 	if (pos == NULL)
@@ -394,10 +402,14 @@ int32_t sim_add_rigid_body (
 	b->px = (float)pos[0];
 	b->py = (float)pos[1];
 	b->rot_deg = (float)rot_deg;
-	b->gravity_scale = (float)gravity_scale;
+	/* Transpiled neogeo-py passes gravity_scale / linear_drag / angular_drag as milli-floats (see sim_set_gravity_milli). */
+	b->gravity_scale = (float)gravity_scale * 0.001f;
 	b->can_rot = can_rot;
-	b->linear_drag = (float)linear_drag / 100.0f;
-	b->angular_drag = (float)ang_drag / 100.0f;
+	b->linear_drag = (float)linear_drag * 0.001f;
+	b->angular_drag = (float)ang_drag * 0.001f;
+	b->dominance = dominance;
+	b->can_sleep = can_sleep;
+	b->ccd = ccd;
 	if (body_type == 0)
 		b->inv_mass = 1.0f / 1.0f;
 	else
@@ -485,14 +497,16 @@ int32_t sim_add_cuboid_collider (
 
 int32_t *sim_get_rigid_body_position (int32_t rb)
 {
-	g_pos_out[0] = 0;
-	g_pos_out[1] = 0;
+	uint32_t s = g_pos_ring_i++ % NEO_GET_VEC_RING;
+	int32_t *out = g_pos_ring[s];
+	out[0] = 0;
+	out[1] = 0;
 	if (!neo_rb_valid(rb))
-		return g_pos_out;
+		return out;
 	const NeoBody *b = &g_rb[rb - 1];
-	g_pos_out[0] = (int32_t)lroundf(b->px);
-	g_pos_out[1] = (int32_t)lroundf(b->py);
-	return g_pos_out;
+	out[0] = (int32_t)lroundf(b->px);
+	out[1] = (int32_t)lroundf(b->py);
+	return out;
 }
 
 /* main.c user-art sync: unrounded float pose so sub-pixel sim motion still moves sprites after rounding. */
@@ -518,14 +532,16 @@ int32_t sim_get_rigid_body_rotation (int32_t rb)
 
 int32_t *sim_get_linear_velocity (int32_t rb)
 {
-	g_vel_out[0] = 0;
-	g_vel_out[1] = 0;
+	uint32_t s = g_vel_ring_i++ % NEO_GET_VEC_RING;
+	int32_t *out = g_vel_ring[s];
+	out[0] = 0;
+	out[1] = 0;
 	if (!neo_rb_valid(rb))
-		return g_vel_out;
+		return out;
 	const NeoBody *b = &g_rb[rb - 1];
-	g_vel_out[0] = (int32_t)lroundf(b->vx);
-	g_vel_out[1] = (int32_t)lroundf(b->vy);
-	return g_vel_out;
+	out[0] = (int32_t)lroundf(b->vx);
+	out[1] = (int32_t)lroundf(b->vy);
+	return out;
 }
 
 void sim_set_linear_velocity (int32_t rb, int32_t *vel)
@@ -590,6 +606,11 @@ void sim_step (void)
 				if (!cb->enabled || cb->sensor)
 					continue;
 				if (!neo_groups_hit(ca->membership, ca->filter, cb->membership, cb->filter))
+					continue;
+				/* Child colliders on the same body share motion; their OBBs can overlap by design.
+				   Resolving them applies impulses twice to one body and kills velocity (looks like
+				   “falling stops” with no external collision). */
+				if (ca->body > 0 && ca->body == cb->body)
 					continue;
 				const NeoBody *bb = (cb->body > 0) ? &g_rb[cb->body - 1] : NULL;
 				if (cb->body > 0 && (bb == NULL || !bb->enabled))

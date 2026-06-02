@@ -338,6 +338,73 @@ def _js13k_script_type_py_prefix (script_type):
 	except Exception:
 		return 'SCRIPT_TYPE = ""\n'
 
+# Bound by every gbc-py preamble; must not participate in gbc-py `global`/`_js13k_gbc_global_values` injection
+# (would conflict with user `global SCRIPT_TYPE` after the preamble assign and causes SyntaxError).
+_JS13K_GBC_PREAMBLE_ASSIGNED_GLOBALS = frozenset({'SCRIPT_TYPE'})
+
+def _strip_gbc_preamble_reserved_global_declarations (code : str, shared_global_member_names = None):
+	'''Normalize `global` declarations for gbc-py mirror/ZGB pipeline sources.
+
+	- Always drop names in `_JS13K_GBC_PREAMBLE_ASSIGNED_GLOBALS` (e.g. SCRIPT_TYPE) from every
+	  `global` statement (preamble assigns them at module start).
+	- Optionally drop **module-level** names in `shared_global_member_names`: those are initialized
+	  in the shared prefix (`time = 0`, etc.); a later `global time` in the same module raises
+	  "assigned to before global declaration".
+	Inside nested `def` / `class`, `global time` is kept so function bodies can still bind shared state.
+	'''
+	code_txt = str(code or '')
+	if not code_txt.strip():
+		return code_txt
+	if 'global' not in code_txt:
+		return code_txt
+	preamble_reserved = _JS13K_GBC_PREAMBLE_ASSIGNED_GLOBALS
+	try:
+		mod_shared = frozenset(
+			str(n) for n in list(shared_global_member_names or [])
+			if isinstance(n, str) and re.fullmatch(r'[A-Za-z_]\w*', n)
+		)
+	except Exception:
+		mod_shared = frozenset()
+	try:
+		tree = ast.parse(code_txt)
+	except Exception:
+		return code_txt
+	class _Strip (ast.NodeTransformer):
+		def __init__ (self, _mod_shared, _preamble_reserved):
+			self._scope_depth = 0
+			self._mod_shared = _mod_shared
+			self._preamble_reserved = _preamble_reserved
+		def visit_FunctionDef (self, node):
+			self._scope_depth += 1
+			node = self.generic_visit(node)
+			self._scope_depth -= 1
+			return node
+		def visit_AsyncFunctionDef (self, node):
+			self._scope_depth += 1
+			node = self.generic_visit(node)
+			self._scope_depth -= 1
+			return node
+		def visit_ClassDef (self, node):
+			self._scope_depth += 1
+			node = self.generic_visit(node)
+			self._scope_depth -= 1
+			return node
+		def visit_Global (self, node):
+			names = [n for n in list(node.names or []) if isinstance(n, str) and n not in self._preamble_reserved]
+			if self._scope_depth == 0 and self._mod_shared:
+				names = [n for n in names if n not in self._mod_shared]
+			if not names:
+				new = ast.Pass()
+				return ast.fix_missing_locations(ast.copy_location(new, node))
+			new_g = ast.Global(names = names)
+			ast.copy_location(new_g, node)
+			return ast.fix_missing_locations(new_g)
+	try:
+		new_tree = ast.fix_missing_locations(_Strip(mod_shared, preamble_reserved).visit(tree))
+		return ast.unparse(new_tree)
+	except Exception:
+		return code_txt
+
 _GB_GLOBAL_MEMBER_NODE_TYPES = (
 	ast.Import,
 	ast.ImportFrom,
@@ -459,6 +526,8 @@ def _collect_gbc_global_member_names (script_entries : list):
 		for name in _collect_top_level_assigned_names(raw_code):
 			if isinstance(name, str) and re.fullmatch(r'[A-Za-z_]\w*', name) and not name.startswith('__'):
 				names.add(name)
+	for _reserved in _JS13K_GBC_PREAMBLE_ASSIGNED_GLOBALS:
+		names.discard(_reserved)
 	return names
 
 def _inject_global_decls_for_mutated_names (code : str, candidate_names):
@@ -493,6 +562,7 @@ def _inject_global_decls_for_mutated_names (code : str, candidate_names):
 			target = node.target
 		if isinstance(target, ast.Name):
 			mutated.add(target.id)
+	mutated -= _JS13K_GBC_PREAMBLE_ASSIGNED_GLOBALS
 	to_add = sorted([
 		n for n in list(mutated & candidate_set)
 		if isinstance(n, str) and re.fullmatch(r'[A-Za-z_]\w*', n) and n not in existing_global_names
@@ -5316,6 +5386,28 @@ def _neogeo_safe_c_identifier (_value, _fallback = 'symbol'):
 		out = '_' + out
 	return out
 
+def _neo_rb_map_lookup (rb_map, owner_name):
+	'''Rigid-body handle from _neo_geo_rigid_body_handle_map; tolerate owner_name vs Blender key mismatch (case).'''
+	if not isinstance(rb_map, dict):
+		return None
+	k = str(owner_name if owner_name is not None else '')
+	if k != '':
+		if k in rb_map:
+			return rb_map[k]
+		try:
+			if owner_name in rb_map:
+				return rb_map[owner_name]
+		except Exception:
+			pass
+		lk = k.lower().strip()
+		for mk, mv in rb_map.items():
+			try:
+				if str(mk).lower().strip() == lk:
+					return mv
+			except Exception:
+				continue
+	return None
+
 def _write_neogeo_py_c (_script_entries, _out_path, rb_handle_by_owner = None):
 	if not callable(_gbc_transpiler_compile_script_to_c_function):
 		raise RuntimeError('C transpiler backend unavailable for neogeo-py export.')
@@ -5362,6 +5454,17 @@ def _write_neogeo_py_c (_script_entries, _out_path, rb_handle_by_owner = None):
 						fields.add(attr_name)
 		except Exception:
 			pass
+	# Rigid-body handle: must exist on this even when scripts never mention this.rb (AST would omit the field
+	# and bind would skip → this->rb stays 0). sim_get_rigid_body_position(0) always returns {0,0}, so sprites
+	# / scripts look frozen while sim_step still integrates the real body.
+	_hmap = rb_handle_by_owner if isinstance(rb_handle_by_owner, dict) else {}
+	for _own_k, _hdl in _hmap.items():
+		try:
+			if int(_hdl) <= 0:
+				continue
+		except Exception:
+			continue
+		owner_fields.setdefault(str(_own_k), set()).add('rb')
 	lines = [
 		'/* Auto-generated by ExportGbaPyAssembly (neogeo-py -> C). */',
 		'#include <stdint.h>',
@@ -5373,6 +5476,10 @@ def _write_neogeo_py_c (_script_entries, _out_path, rb_handle_by_owner = None):
 		' *',
 		' * Rapier/PyRapier does not run on the M68K ROM: weak no-op stubs here are overridden by',
 		' * js13k_neogeo_physics.c (native ngdevkit build) for sim_step/physics_step and core sim_* APIs.',
+		' *',
+		' * Weak sim_* definitions are link stubs (overridden by js13k_neogeo_physics_runtime.c); omit',
+		' * them when no script calls that API — normal. Exported owners get this->rb from Blender rigid',
+		' * bodies even if scripts never mention this.rb.',
 		' */',
 		'',
 		'#ifndef J_LEFT',
@@ -5429,13 +5536,33 @@ def _write_neogeo_py_c (_script_entries, _out_path, rb_handle_by_owner = None):
 		'int32_t *pygame_key_get_pressed (void) { return js13k_key_state; }',
 		'',
 	]
-	def _owner_sym (_name):
-		return _neogeo_safe_c_identifier(_name, 'owner')
+	# Distinct C identifiers per owner — sanitized Blender names can collide (e.g. "Arrow-X" and "Arrow_X"
+	# both → "Arrow_X"), which duplicated typedefs and broke the native ROM link.
+	_used_neo_owner_syms = set()
+	owner_unique_sym = {}
+	for _on in sorted(owner_fields.keys()):
+		_base = _neogeo_safe_c_identifier(_on, 'owner')
+		_u = _base
+		_n = 2
+		while _u in _used_neo_owner_syms:
+			_u = _base + '_' + str(_n)
+			_n += 1
+		_used_neo_owner_syms.add(_u)
+		owner_unique_sym[str(_on)] = _u
+	def _neo_this_var_for_owner (_ow):
+		k = str(_ow if _ow is not None else '__world__')
+		return 'js13k_this_' + str(owner_unique_sym.get(k) or _neogeo_safe_c_identifier(k, 'owner'))
+	# One struct instance per unique symbol (merge fields if multiple Blender owners collapsed to same usym).
+	usym_to_fields = {}
 	for owner_name in sorted(owner_fields.keys()):
-		fields = sorted(list(owner_fields.get(owner_name) or []))
-		owner_struct = 'js13k_neogeo_owner_' + _owner_sym(owner_name) + '_t'
-		owner_inst = 'js13k_neogeo_owner_' + _owner_sym(owner_name)
-		this_ptr = 'js13k_this_' + _owner_sym(owner_name)
+		u = owner_unique_sym[str(owner_name)]
+		usym_to_fields.setdefault(u, set())
+		usym_to_fields[u] |= owner_fields.get(owner_name) or set()
+	for usym in sorted(usym_to_fields.keys()):
+		fields = sorted(list(usym_to_fields[usym]))
+		owner_struct = 'js13k_neogeo_owner_' + usym + '_t'
+		owner_inst = 'js13k_neogeo_owner_' + usym
+		this_ptr = 'js13k_this_' + usym
 		lines.append('typedef struct ' + owner_struct + ' {')
 		if fields == []:
 			lines.append('\tint32_t __dummy;')
@@ -5455,16 +5582,14 @@ def _write_neogeo_py_c (_script_entries, _out_path, rb_handle_by_owner = None):
 		_fields = owner_fields.get(owner_name) or set()
 		if 'rb' not in _fields:
 			continue
-		_h = _rb_map.get(str(owner_name))
-		if _h is None:
-			_h = _rb_map.get(owner_name)
+		_h = _neo_rb_map_lookup(_rb_map, owner_name)
 		try:
 			_hi = int(_h)
 		except Exception:
 			_hi = 0
 		if _hi <= 0:
 			continue
-		_this_ptr = 'js13k_this_' + _owner_sym(owner_name)
+		_this_ptr = _neo_this_var_for_owner(owner_name)
 		lines.append('\t' + _this_ptr + '->rb = ' + str(int(_hi)) + ';')
 	lines.append('}')
 	lines.append('')
@@ -5474,7 +5599,7 @@ def _write_neogeo_py_c (_script_entries, _out_path, rb_handle_by_owner = None):
 			continue
 		is_init = bool(entry.get('is_init', False))
 		owner_name = str(entry.get('owner_name', '__world__') or '__world__')
-		this_var_name = 'js13k_this_' + _owner_sym(owner_name)
+		this_var_name = _neo_this_var_for_owner(owner_name)
 		fn_name = 'js13k_neogeo_%s_%s_%03i' %(
 			_neogeo_safe_c_identifier(entry.get('symbol_hint', 'script'), 'script'),
 			('init' if is_init else 'update'),
@@ -6005,6 +6130,9 @@ def _neo_geo_emit_physics_data_block (world, scene_obs):
 			+ ', .can_rot = ' + str(int(bool(getattr(ob, 'canRot', True))))
 			+ ', .lin_drag = ' + _neo_geo_c_float_lit(getattr(ob, 'linearDrag', 0.0))
 			+ ', .ang_drag = ' + _neo_geo_c_float_lit(getattr(ob, 'angDrag', 0.0))
+			+ ', .dominance = ' + str(int(getattr(ob, 'dominance', 0) or 0))
+			+ ', .can_sleep = ' + str(int(bool(getattr(ob, 'canSleep', True))))
+			+ ', .ccd = ' + str(int(bool(getattr(ob, 'continuousCollideDetect', False))))
 			+ ' }'
 		)
 	lines.append('const int neo_export_body_n = ' + str(int(len(body_inits))) + ';')
@@ -6693,8 +6821,8 @@ def _collect_script_entries_by_type (world, script_type : str, export_prefix : s
 				raw_script_txt = scriptTxt
 				_st_pref = _js13k_script_type_py_prefix(str(script_type))
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, '__world__')
-				scriptTxt = _st_pref + str(scriptTxt or '')
-				_stamped = _st_pref + str(raw_script_txt or '')
+				scriptTxt = _strip_gbc_preamble_reserved_global_declarations(_st_pref + str(scriptTxt or ''))
+				_stamped = _strip_gbc_preamble_reserved_global_declarations(_st_pref + str(raw_script_txt or ''))
 				script_entries.append({
 					'code' : scriptTxt,
 					'raw_code' : _stamped,
@@ -6717,8 +6845,8 @@ def _collect_script_entries_by_type (world, script_type : str, export_prefix : s
 				raw_script_txt = scriptTxt
 				_st_pref = _js13k_script_type_py_prefix(str(script_type))
 				scriptTxt = _normalize_gb_script_code(scriptTxt, bool(is_init), _type, ob.name)
-				scriptTxt = _st_pref + str(scriptTxt or '')
-				_stamped = _st_pref + str(raw_script_txt or '')
+				scriptTxt = _strip_gbc_preamble_reserved_global_declarations(_st_pref + str(scriptTxt or ''))
+				_stamped = _strip_gbc_preamble_reserved_global_declarations(_st_pref + str(raw_script_txt or ''))
 				script_entries.append({
 					'code' : scriptTxt,
 					'raw_code' : _stamped,
@@ -6775,8 +6903,8 @@ def _build_fallback_gbc_script_runtime (world):
 		raw_script_txt = str(_script_txt or '')
 		_st_pref = _js13k_script_type_py_prefix('gbc-py')
 		norm_script_txt = _normalize_gb_script_code(raw_script_txt, bool(_is_init), 'gbc-py', _owner_name)
-		norm_script_txt = _st_pref + str(norm_script_txt or '')
-		_stamped = _st_pref + raw_script_txt
+		norm_script_txt = _strip_gbc_preamble_reserved_global_declarations(_st_pref + str(norm_script_txt or ''))
+		_stamped = _strip_gbc_preamble_reserved_global_declarations(_st_pref + raw_script_txt)
 		script_entries.append({
 			'code' : str(norm_script_txt or ''),
 			'raw_code' : _stamped,
@@ -6836,6 +6964,7 @@ def _build_fallback_gbc_script_runtime (world):
 					owner_attrs,
 					owner_attr_types,
 				)
+	_gbc_fallback_gmem = _collect_gbc_global_member_names(script_entries)
 	runtime = {
 		'script_count' : len(script_entries),
 		'init_quit' : False,
@@ -6846,6 +6975,7 @@ def _build_fallback_gbc_script_runtime (world):
 		'update_display_ops' : [],
 		'surface_ops' : [],
 		'builtin_only_quit' : True,
+		'gbc_shared_global_member_names' : sorted(_gbc_fallback_gmem),
 	}
 	try:
 		runtime = _augment_runtime_with_dynamic_circles(runtime, script_entries)
@@ -6886,67 +7016,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 		if out[0].isdigit():
 			out = '_' + out
 		return out
-	def _collect_script_entries ():
-		entries = []
-		def _append (_owner_name, _script_txt, _is_init, _is_global, _script, _symbol_hint, _owner_attributes = None, _owner_attribute_types = None):
-			raw_script_txt = str(_script_txt or '')
-			_st_pref = _js13k_script_type_py_prefix('gbc-py')
-			norm_script_txt = _normalize_gb_script_code(raw_script_txt, bool(_is_init), 'gbc-py', _owner_name)
-			norm_script_txt = _st_pref + str(norm_script_txt or '')
-			_stamped = _st_pref + raw_script_txt
-			entries.append({
-				'code' : str(norm_script_txt or ''),
-				'raw_code' : _stamped,
-				'source_code' : _stamped,
-				'source_line_offset' : 1,
-				'is_init' : bool(_is_init),
-				'is_global' : bool(_is_global),
-				'script_obj' : _script,
-				'owner_name' : str(_owner_name or '__world__'),
-				'symbol_hint' : str(_symbol_hint or 'script'),
-				'owner_attributes' : dict(_owner_attributes) if isinstance(_owner_attributes, dict) else {},
-				'owner_attribute_types' : dict(_owner_attribute_types) if isinstance(_owner_attribute_types, dict) else {},
-			})
-		if world:
-			for scriptInfo in GetScripts(world):
-				if str(scriptInfo[2]) != 'gbc-py':
-					continue
-				_append(
-					'__world__',
-					scriptInfo[0],
-					scriptInfo[1],
-					bool(scriptInfo[4]) if len(scriptInfo) > 4 else False,
-					scriptInfo[3],
-					'world_' + getattr(scriptInfo[3], 'name', 'script'),
-					{},
-					{},
-				)
-		for ob in bpy.data.objects:
-			if (not getattr(ob, 'exportOb', False)) or ob.hide_get() or (not IsExportHierarchyEnabled(ob)):
-				continue
-			try:
-				owner_attrs = dict(GetAttributes(ob) or {})
-			except Exception:
-				owner_attrs = {}
-			try:
-				owner_attr_types = dict(GetAttributeTypes(ob) or {})
-			except Exception:
-				owner_attr_types = {}
-			for scriptInfo in GetScripts(ob):
-				if str(scriptInfo[2]) != 'gbc-py':
-					continue
-				_append(
-					ob.name,
-					scriptInfo[0],
-					scriptInfo[1],
-					bool(scriptInfo[4]) if len(scriptInfo) > 4 else False,
-					scriptInfo[3],
-					ob.name + '_' + getattr(scriptInfo[3], 'name', 'script'),
-					owner_attrs,
-					owner_attr_types,
-				)
-		return entries
-	def _write_gbc_py_zgb_c (_script_entries, _out_path):
+	def _write_gbc_py_zgb_c (_script_entries, _out_path, transpile_trace_out = None):
 		base_no_ext = os.path.splitext(str(_out_path or ''))[0]
 		if base_no_ext == '':
 			base_no_ext = os.path.join(TMP_DIR, 'export')
@@ -7093,7 +7163,11 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			# Prefer authored/source script text for C transpilation so runtime
 			# normalization shims (which can include Python-only try/except guards)
 			# do not expand the unsupported subset.
-			source_code = str(entry.get('source_code', entry.get('raw_code', entry.get('code', ''))) or '')
+			source_code = str(
+				entry.get('zgb_transpile_source')
+				or entry.get('source_code', entry.get('raw_code', entry.get('code', '')))
+				or ''
+			)
 			if callable(_gbc_transpiler_compile_script_to_c_function):
 				compiled_c = _gbc_transpiler_compile_script_to_c_function(
 					source_code,
@@ -7103,6 +7177,15 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 				c_src = str(getattr(compiled_c, 'c_source', '') or '')
 				if c_src.strip() == '':
 					raise RuntimeError('C transpiler produced empty output for script function: ' + str(fn_name))
+				try:
+					if isinstance(transpile_trace_out, list):
+						transpile_trace_out.append({
+							'fn_name' : str(fn_name),
+							'owner_name' : str(owner_name),
+							'diagnostics' : list(getattr(compiled_c, 'diagnostics', None) or []),
+						})
+				except Exception:
+					pass
 				for row in c_src.rstrip().splitlines():
 					lines.append(str(row))
 			else:
@@ -7380,7 +7463,7 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			f.write('\n'.join(lines) + '\n')
 		return c_path, zgb_vendor_include_dir
 	try:
-		runtime_script_entries = _collect_script_entries()
+		runtime_script_entries, gbc_shared_global_member_names = _collect_gbc_py_zgb_runtime_script_entries(world)
 		runtime = {
 			'script_count' : int(len(runtime_script_entries)),
 			'init_quit' : False,
@@ -7392,11 +7475,19 @@ def ExportGbcPyAssembly (world, gbc_out_path : str):
 			'surface_ops' : [],
 			'builtin_only_quit' : True,
 			'force_zgb_spritemanager_runtime' : bool(_GBC_FORCE_ZGB_SPRITEMANAGER_RUNTIME),
+			'gbc_shared_global_member_names' : sorted(
+				{str(n) for n in (gbc_shared_global_member_names or []) if isinstance(n, str)}
+			),
 		}
 		runtime = _augment_runtime_with_dynamic_circles(runtime, runtime_script_entries)
-		runtime['gbc_transpiled_scripts'] = []
+		_zgb_transpile_trace = []
 		runtime['script_backend'] = 'zgb_c'
-		zgb_c_path, zgb_vendor_include_dir = _write_gbc_py_zgb_c(runtime_script_entries, gbc_out_path)
+		zgb_c_path, zgb_vendor_include_dir = _write_gbc_py_zgb_c(
+			runtime_script_entries,
+			gbc_out_path,
+			_zgb_transpile_trace,
+		)
+		runtime['gbc_transpiled_scripts'] = list(_zgb_transpile_trace)
 		runtime['zgb_c_path'] = str(zgb_c_path)
 		runtime['zgb_vendor_include_dir'] = str(zgb_vendor_include_dir)
 		runtime['zgb_vendor_root'] = os.path.join(_thisDir, 'third_party', 'ZGB').replace('\\', '/')
@@ -7453,144 +7544,184 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 		'    pass',
 	])
 	return '\n'.join(lines).strip()
-	def _rewrite_gbc_this_attribute_accesses_to_locals (_code, _owner_attributes):
-		if not isinstance(_code, str) or _code.strip() == '':
-			return str(_code or '')
-		if not isinstance(_owner_attributes, dict) or _owner_attributes == {}:
-			return str(_code)
-		_attr_names = {str(_k) for _k in _owner_attributes.keys() if isinstance(_k, str) and _k != ''}
-		if _attr_names == set():
-			return str(_code)
-		try:
-			_tree = ast.parse(_code)
-		except Exception:
-			return str(_code)
-		class _RewriteThisAttributeRefs(ast.NodeTransformer):
-			def visit_Attribute (self, node):
-				node = self.generic_visit(node)
-				if (
-					isinstance(node, ast.Attribute)
-					and isinstance(node.value, ast.Name)
-					and node.value.id == 'this'
-					and isinstance(node.attr, str)
-					and node.attr in _attr_names
-					and isinstance(node.ctx, (ast.Load, ast.Store))
-				):
-					return ast.copy_location(ast.Name(id = node.attr, ctx = node.ctx), node)
-				return node
-		try:
-			_tree = _RewriteThisAttributeRefs().visit(_tree)
-			_tree = ast.fix_missing_locations(_tree)
-			return ast.unparse(_tree)
-		except Exception:
-			return str(_code)
-	def _protect_runtime_binding_assignments (_code, _protected_names):
-		if not isinstance(_code, str) or _code.strip() == '':
-			return str(_code or '')
-		protected = {str(_n) for _n in list(_protected_names or []) if isinstance(_n, str) and str(_n) != ''}
-		if protected == set():
-			return str(_code)
-		def _mapped_name (_name):
-			return '_js13k_user_shadow_' + str(_name)
-		try:
-			_tree = ast.parse(_code)
-		except Exception:
-			return str(_code)
-		class _ProtectBindings(ast.NodeTransformer):
-			def visit_Name (self, node):
-				node = self.generic_visit(node)
-				if isinstance(node, ast.Name) and isinstance(node.id, str) and node.id in protected and isinstance(node.ctx, (ast.Store, ast.Del)):
-					return ast.copy_location(ast.Name(id = _mapped_name(node.id), ctx = node.ctx), node)
-				return node
-			def visit_FunctionDef (self, node):
-				node = self.generic_visit(node)
-				if isinstance(node.name, str) and node.name in protected:
-					node.name = _mapped_name(node.name)
-				return node
-			def visit_AsyncFunctionDef (self, node):
-				node = self.generic_visit(node)
-				if isinstance(node.name, str) and node.name in protected:
-					node.name = _mapped_name(node.name)
-				return node
-			def visit_ClassDef (self, node):
-				node = self.generic_visit(node)
-				if isinstance(node.name, str) and node.name in protected:
-					node.name = _mapped_name(node.name)
-				return node
-			def visit_ExceptHandler (self, node):
-				node = self.generic_visit(node)
-				if isinstance(getattr(node, 'name', None), str) and node.name in protected:
-					node.name = _mapped_name(node.name)
-				return node
-		try:
-			_tree = _ProtectBindings().visit(_tree)
-			_tree = ast.fix_missing_locations(_tree)
-			return ast.unparse(_tree)
-		except Exception:
-			return str(_code)
-	def _build_gbc_obs_prefix (_obs_data):
-		_obs_map = dict(_obs_data) if isinstance(_obs_data, dict) else {}
-		return (
-			'_js13k_obs_export = ' + repr(_obs_map) + '\n'
-			'_obs_existing = globals().get("obs", None)\n'
-			'if isinstance(_obs_existing, dict):\n'
-			'    obs = _obs_existing\n'
-			'else:\n'
-			'    obs = {}\n'
-			'for _js13k_ob_key, _js13k_ob_default in _js13k_obs_export.items():\n'
-			'    _js13k_prev = obs.get(_js13k_ob_key)\n'
-			'    if isinstance(_js13k_prev, dict) and isinstance(_js13k_ob_default, dict):\n'
-			'        _js13k_merged = dict(_js13k_ob_default)\n'
-			'        _js13k_merged.update(_js13k_prev)\n'
-			'        obs[_js13k_ob_key] = _js13k_merged\n'
-			'    else:\n'
-			'        obs[_js13k_ob_key] = _js13k_ob_default\n'
-			'_js13k_rigid_bodies = globals().get("rigidBodies", globals().get("rigidBodiesIds", {}))\n'
-			'_js13k_colliders = globals().get("colliders", globals().get("collidersIds", {}))\n'
-			'_js13k_rigid_bodies_ids = globals().get("rigidBodiesIds", _js13k_rigid_bodies)\n'
-			'_js13k_colliders_ids = globals().get("collidersIds", _js13k_colliders)\n'
-			'def _js13k_lookup_runtime_handle(_src, _name):\n'
-			'    if not isinstance(_src, dict):\n'
-			'        return None\n'
-			'    if _name in _src:\n'
-			'        _v = _src[_name]\n'
-			'        if _v is not None:\n'
-			'            return _v\n'
-			'    if isinstance(_name, str):\n'
-			'        if _name.startswith("_"):\n'
-			'            _v = _src.get(_name[1:])\n'
-			'            if _v is not None:\n'
-			'                return _v\n'
-			'        else:\n'
-			'            _v = _src.get("_" + _name)\n'
-			'            if _v is not None:\n'
-			'                return _v\n'
-			'        _name_norm = "".join([_c for _c in _name.lstrip("_").lower() if (("a" <= _c <= "z") or ("0" <= _c <= "9") or _c == "_")])\n'
-			'        for _k, _v in list(_src.items()):\n'
-			'            if not isinstance(_k, str):\n'
-			'                continue\n'
-			'            _k_norm = "".join([_c for _c in _k.lstrip("_").lower() if (("a" <= _c <= "z") or ("0" <= _c <= "9") or _c == "_")])\n'
-			'            if _k_norm == _name_norm or _k_norm.endswith("_" + _name_norm) or _k_norm.endswith(_name_norm):\n'
-			'                return _v\n'
-			'    return None\n'
-			'for _js13k_ob_name, _js13k_ob_data in obs.items():\n'
-			'    if not isinstance(_js13k_ob_data, dict):\n'
-			'        continue\n'
-			'    _js13k_ob_data["rb"] = _js13k_lookup_runtime_handle(_js13k_rigid_bodies, _js13k_ob_name)\n'
-			'    if _js13k_ob_data.get("rb", None) is None:\n'
-			'        _js13k_ob_data["rb"] = _js13k_lookup_runtime_handle(_js13k_rigid_bodies_ids, _js13k_ob_name)\n'
-			'    _js13k_ob_data["col"] = _js13k_lookup_runtime_handle(_js13k_colliders, _js13k_ob_name)\n'
-			'    if _js13k_ob_data.get("col", None) is None:\n'
-			'        _js13k_ob_data["col"] = _js13k_lookup_runtime_handle(_js13k_colliders_ids, _js13k_ob_name)\n'
-			'objects = obs\n'
-			'del _obs_existing\n'
-			'del _js13k_rigid_bodies\n'
-			'del _js13k_colliders\n'
-			'del _js13k_rigid_bodies_ids\n'
-			'del _js13k_colliders_ids\n'
-			'del _js13k_lookup_runtime_handle\n'
-			'del _js13k_obs_export\n'
-		)
+def _rewrite_gbc_this_attribute_accesses_to_locals (_code, _owner_attributes):
+	if not isinstance(_code, str) or _code.strip() == '':
+		return str(_code or '')
+	if not isinstance(_owner_attributes, dict) or _owner_attributes == {}:
+		return str(_code)
+	_attr_names = {str(_k) for _k in _owner_attributes.keys() if isinstance(_k, str) and _k != ''}
+	if _attr_names == set():
+		return str(_code)
+	try:
+		_tree = ast.parse(_code)
+	except Exception:
+		return str(_code)
+	class _RewriteThisAttributeRefs(ast.NodeTransformer):
+		def visit_Attribute (self, node):
+			node = self.generic_visit(node)
+			if (
+				isinstance(node, ast.Attribute)
+				and isinstance(node.value, ast.Name)
+				and node.value.id == 'this'
+				and isinstance(node.attr, str)
+				and node.attr in _attr_names
+				and isinstance(node.ctx, (ast.Load, ast.Store))
+			):
+				return ast.copy_location(ast.Name(id = node.attr, ctx = node.ctx), node)
+			return node
+	try:
+		_tree = _RewriteThisAttributeRefs().visit(_tree)
+		_tree = ast.fix_missing_locations(_tree)
+		return ast.unparse(_tree)
+	except Exception:
+		return str(_code)
+def _protect_runtime_binding_assignments (_code, _protected_names):
+	if not isinstance(_code, str) or _code.strip() == '':
+		return str(_code or '')
+	protected = {str(_n) for _n in list(_protected_names or []) if isinstance(_n, str) and str(_n) != ''}
+	if protected == set():
+		return str(_code)
+	def _mapped_name (_name):
+		return '_js13k_user_shadow_' + str(_name)
+	try:
+		_tree = ast.parse(_code)
+	except Exception:
+		return str(_code)
+	class _ProtectBindings(ast.NodeTransformer):
+		def visit_Name (self, node):
+			node = self.generic_visit(node)
+			if isinstance(node, ast.Name) and isinstance(node.id, str) and node.id in protected and isinstance(node.ctx, (ast.Store, ast.Del)):
+				return ast.copy_location(ast.Name(id = _mapped_name(node.id), ctx = node.ctx), node)
+			return node
+		def visit_FunctionDef (self, node):
+			node = self.generic_visit(node)
+			if isinstance(node.name, str) and node.name in protected:
+				node.name = _mapped_name(node.name)
+			return node
+		def visit_AsyncFunctionDef (self, node):
+			node = self.generic_visit(node)
+			if isinstance(node.name, str) and node.name in protected:
+				node.name = _mapped_name(node.name)
+			return node
+		def visit_ClassDef (self, node):
+			node = self.generic_visit(node)
+			if isinstance(node.name, str) and node.name in protected:
+				node.name = _mapped_name(node.name)
+			return node
+		def visit_ExceptHandler (self, node):
+			node = self.generic_visit(node)
+			if isinstance(getattr(node, 'name', None), str) and node.name in protected:
+				node.name = _mapped_name(node.name)
+			return node
+	try:
+		_tree = _ProtectBindings().visit(_tree)
+		_tree = ast.fix_missing_locations(_tree)
+		return ast.unparse(_tree)
+	except Exception:
+		return str(_code)
+def _build_gbc_obs_prefix (_obs_data):
+	_obs_map = dict(_obs_data) if isinstance(_obs_data, dict) else {}
+	return (
+		'_js13k_obs_export = ' + repr(_obs_map) + '\n'
+		'_obs_existing = globals().get("obs", None)\n'
+		'if isinstance(_obs_existing, dict):\n'
+		'    obs = _obs_existing\n'
+		'else:\n'
+		'    obs = {}\n'
+		'for _js13k_ob_key, _js13k_ob_default in _js13k_obs_export.items():\n'
+		'    _js13k_prev = obs.get(_js13k_ob_key)\n'
+		'    if isinstance(_js13k_prev, dict) and isinstance(_js13k_ob_default, dict):\n'
+		'        _js13k_merged = dict(_js13k_ob_default)\n'
+		'        _js13k_merged.update(_js13k_prev)\n'
+		'        obs[_js13k_ob_key] = _js13k_merged\n'
+		'    else:\n'
+		'        obs[_js13k_ob_key] = _js13k_ob_default\n'
+		'_js13k_rigid_bodies = globals().get("rigidBodies", globals().get("rigidBodiesIds", {}))\n'
+		'_js13k_colliders = globals().get("colliders", globals().get("collidersIds", {}))\n'
+		'_js13k_rigid_bodies_ids = globals().get("rigidBodiesIds", _js13k_rigid_bodies)\n'
+		'_js13k_colliders_ids = globals().get("collidersIds", _js13k_colliders)\n'
+		'def _js13k_lookup_runtime_handle(_src, _name):\n'
+		'    if not isinstance(_src, dict):\n'
+		'        return None\n'
+		'    if _name in _src:\n'
+		'        _v = _src[_name]\n'
+		'        if _v is not None:\n'
+		'            return _v\n'
+		'    if isinstance(_name, str):\n'
+		'        if _name.startswith("_"):\n'
+		'            _v = _src.get(_name[1:])\n'
+		'            if _v is not None:\n'
+		'                return _v\n'
+		'        else:\n'
+		'            _v = _src.get("_" + _name)\n'
+		'            if _v is not None:\n'
+		'                return _v\n'
+		'        _name_norm = "".join([_c for _c in _name.lstrip("_").lower() if (("a" <= _c <= "z") or ("0" <= _c <= "9") or _c == "_")])\n'
+		'        for _k, _v in list(_src.items()):\n'
+		'            if not isinstance(_k, str):\n'
+		'                continue\n'
+		'            _k_norm = "".join([_c for _c in _k.lstrip("_").lower() if (("a" <= _c <= "z") or ("0" <= _c <= "9") or _c == "_")])\n'
+		'            if _k_norm == _name_norm or _k_norm.endswith("_" + _name_norm) or _k_norm.endswith(_name_norm):\n'
+		'                return _v\n'
+		'    return None\n'
+		'for _js13k_ob_name, _js13k_ob_data in obs.items():\n'
+		'    if not isinstance(_js13k_ob_data, dict):\n'
+		'        continue\n'
+		'    _js13k_ob_data["rb"] = _js13k_lookup_runtime_handle(_js13k_rigid_bodies, _js13k_ob_name)\n'
+		'    if _js13k_ob_data.get("rb", None) is None:\n'
+		'        _js13k_ob_data["rb"] = _js13k_lookup_runtime_handle(_js13k_rigid_bodies_ids, _js13k_ob_name)\n'
+		'    _js13k_ob_data["col"] = _js13k_lookup_runtime_handle(_js13k_colliders, _js13k_ob_name)\n'
+		'    if _js13k_ob_data.get("col", None) is None:\n'
+		'        _js13k_ob_data["col"] = _js13k_lookup_runtime_handle(_js13k_colliders_ids, _js13k_ob_name)\n'
+		'objects = obs\n'
+		'del _obs_existing\n'
+		'del _js13k_rigid_bodies\n'
+		'del _js13k_colliders\n'
+		'del _js13k_rigid_bodies_ids\n'
+		'del _js13k_colliders_ids\n'
+		'del _js13k_lookup_runtime_handle\n'
+		'del _js13k_obs_export\n'
+	)
+
+def _build_gbc_local_this_attributes_prefix (_owner_name, _owner_attributes):
+	# Mirror-only rb/col prelude (ZGB uses C-side js13k_zgb_bind_owner_handles).
+	return ""
+
+def _validate_gbc_object_attributes_for_export (ob):
+	if ob is None:
+		return
+	try:
+		attr_map = GetAttributes(ob)
+	except Exception:
+		return
+	if not isinstance(attr_map, dict):
+		return
+	try:
+		ob_name = str(getattr(ob, 'name', '?') or '?')
+	except Exception:
+		ob_name = '?'
+	for attr_name in list(attr_map.keys()):
+		if not isinstance(attr_name, str):
+			print('GBC export:', ob_name, ': gbc attribute keys must be strings; got', type(attr_name).__name__)
+			continue
+		if not attr_name.isidentifier():
+			print('GBC export:', ob_name, ': gbc attribute name is not a valid Python identifier:', repr(attr_name))
+
+def _collect_validated_gbc_script_attributes (ob):
+	try:
+		attr_map = dict(GetAttributes(ob) or {})
+	except Exception:
+		return {}
+	if not isinstance(attr_map, dict):
+		return {}
+	out = {}
+	for attr_name, attr_value in attr_map.items():
+		if isinstance(attr_name, str) and attr_name.isidentifier():
+			out[attr_name] = attr_value
+	return out
+
+def _collect_gbc_py_zgb_runtime_script_entries (world):
+	script_entries = []
 	in_prefab_coll = set()
 	in_non_prefab_coll = set()
 	for coll in bpy.data.collections:
@@ -7649,8 +7780,8 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 			else:
 				norm_script_txt = norm_script_txt + '\n' + local_attr_suffix
 		_st_pref = _js13k_script_type_py_prefix('gbc-py')
-		norm_script_txt = _st_pref + str(norm_script_txt or '')
-		_stamped = _st_pref + str(raw_script_txt or '')
+		norm_script_txt = _strip_gbc_preamble_reserved_global_declarations(_st_pref + str(norm_script_txt or ''))
+		_stamped = _strip_gbc_preamble_reserved_global_declarations(_st_pref + str(raw_script_txt or ''))
 		source_line_offset = int(source_line_offset or 0) + 1
 		# GBC export now targets generated ZGB C only. Do not run asm-generating
 		# gbc transpiler paths while collecting script entries.
@@ -7660,6 +7791,8 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 			'code' : norm_script_txt,
 			'raw_code' : _stamped,
 			'source_code' : _stamped,
+			# Stable per-entry text for ZGB C transpile (no Blender obs/globals prelude).
+			'zgb_transpile_source' : str(_stamped or ''),
 			'source_line_offset' : source_line_offset,
 			'owner_attributes' : dict(_owner_attributes) if isinstance(_owner_attributes, dict) else {},
 			'owner_attribute_types' : dict(_owner_attribute_types) if isinstance(_owner_attribute_types, dict) else {},
@@ -8003,14 +8136,31 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 				# Some backends compile from raw/source script text. Keep it aligned
 				# with runtime `code` globals prelude/sync logic.
 				entry['raw_code'] = injected_raw_code
-			if str(entry.get('owner_name', '__world__')) == '__world__':
-				continue
-			entry['code'] = re.sub(r'\bthis\s*\.\s*rb\b', 'rb', str(entry.get('code', '') or ''))
-			entry['code'] = re.sub(r'\bthis\s*\.\s*col\b', 'col', str(entry.get('code', '') or ''))
+			if str(entry.get('owner_name', '__world__')) != '__world__':
+				entry['code'] = re.sub(r'\bthis\s*\.\s*rb\b', 'rb', str(entry.get('code', '') or ''))
+				entry['code'] = re.sub(r'\bthis\s*\.\s*col\b', 'col', str(entry.get('code', '') or ''))
 			# Keep analysis/debug source text untouched so print-expression extraction
 			# can still resolve `this.rb/this.col` against runtime mirror `this`.
 			entry['raw_code'] = str(entry.get('raw_code', '') or '')
 			entry['source_code'] = str(entry.get('source_code', entry.get('raw_code', entry.get('code', ''))) or '')
+			_gbc_mod_globals = global_member_names
+			entry['code'] = _strip_gbc_preamble_reserved_global_declarations(
+				str(entry.get('code', '') or ''),
+				shared_global_member_names = _gbc_mod_globals,
+			)
+			entry['raw_code'] = _strip_gbc_preamble_reserved_global_declarations(
+				str(entry.get('raw_code', '') or ''),
+				shared_global_member_names = _gbc_mod_globals,
+			)
+			entry['source_code'] = _strip_gbc_preamble_reserved_global_declarations(
+				str(entry.get('source_code', '') or ''),
+				shared_global_member_names = _gbc_mod_globals,
+			)
+			if isinstance(entry.get('zgb_transpile_source'), str):
+				entry['zgb_transpile_source'] = _strip_gbc_preamble_reserved_global_declarations(
+					entry['zgb_transpile_source'],
+					shared_global_member_names = _gbc_mod_globals,
+				)
 		except Exception:
 			pass
 	# Dump final runtime script text (post-prefix/rewrite) for debugging.
@@ -8057,201 +8207,7 @@ def _build_gbc_local_this_attributes_suffix (_owner_attributes):
 			] + [('[gbc-trace]   ' + row) for row in numbered])
 	except Exception:
 		pass
-	exportType = prev_export
-	transpiled_entries = []
-	def _safe_c_identifier (_value, _fallback = 'script'):
-		txt = str(_value or '')
-		out = ''.join([ch if (ch.isalnum() or ch == '_') else '_' for ch in txt])
-		out = re.sub(r'_+', '_', out).strip('_')
-		if out == '':
-			out = str(_fallback)
-		if out[0].isdigit():
-			out = '_' + out
-		return out
-	def _write_gbc_py_zgb_c (_script_entries, _out_path):
-		base_no_ext = os.path.splitext(str(_out_path or ''))[0]
-		if base_no_ext == '':
-			base_no_ext = os.path.join(TMP_DIR, 'export')
-		c_path = base_no_ext + '_scripts_zgb.c'
-		lines = [
-			'/*',
-			' * Auto-generated by ExportGbcPyAssembly.',
-			' * Source language: gbc-py',
-			' * Target: ZGB C',
-			' */',
-			'#include <gb/gb.h>',
-			'#include <stdint.h>',
-			'',
-			'typedef void (*js13k_gbc_script_fn_t)(void);',
-			'typedef struct js13k_gbc_script_entry_t {',
-			'\tconst char *owner;',
-			'\tuint8_t is_init;',
-			'\tuint8_t is_global;',
-			'\tjs13k_gbc_script_fn_t fn;',
-			'} js13k_gbc_script_entry_t;',
-			'',
-		]
-		fn_rows = []
-		for idx, entry in enumerate(list(_script_entries or [])):
-			if not isinstance(entry, dict):
-				continue
-			owner_name = str(entry.get('owner_name', '__world__') or '__world__')
-			symbol_hint = str(entry.get('symbol_hint', 'script') or 'script')
-			is_init = bool(entry.get('is_init', False))
-			is_global = bool(entry.get('is_global', False))
-			phase = 'init' if is_init else 'update'
-			fn_name = 'js13k_gbc_%s_%s_%03i' %(
-				_safe_c_identifier(symbol_hint, 'script'),
-				str(phase),
-				int(idx),
-			)
-			lines.append('void ' + fn_name + ' (void) {')
-			lines.append('\t/* gbc-py source (manual port target):')
-			for row in str(entry.get('source_code', entry.get('raw_code', entry.get('code', ''))) or '').splitlines():
-				lines.append('\t * ' + str(row).replace('*/', '* /'))
-			lines.append('\t */')
-			lines.append('\t/* TODO: port script body to ZGB C manually. */')
-			lines.append('}')
-			lines.append('')
-			fn_rows.append({
-				'owner_name' : owner_name,
-				'is_init' : is_init,
-				'is_global' : is_global,
-				'fn_name' : fn_name,
-			})
-		init_fn_names = [str(row['fn_name']) for row in fn_rows if bool(row.get('is_init', False))]
-		update_fn_names = [str(row['fn_name']) for row in fn_rows if not bool(row.get('is_init', False))]
-		lines.append('const js13k_gbc_script_entry_t js13k_gbc_scripts[] = {')
-		for row in fn_rows:
-			lines.append(
-				'\t{ '
-				+ json.dumps(str(row['owner_name']), ensure_ascii = True)
-				+ ', '
-				+ ('1' if bool(row['is_init']) else '0')
-				+ ', '
-				+ ('1' if bool(row['is_global']) else '0')
-				+ ', '
-				+ str(row['fn_name'])
-				+ ' },'
-			)
-		lines.append('};')
-		lines.append('const uint16_t js13k_gbc_script_count = (uint16_t)(sizeof(js13k_gbc_scripts) / sizeof(js13k_gbc_scripts[0]));')
-		lines.append('')
-		lines.append('const js13k_gbc_script_fn_t js13k_gbc_init_scripts[] = {')
-		for fn_name in init_fn_names:
-			lines.append('\t' + str(fn_name) + ',')
-		lines.append('};')
-		lines.append('const uint16_t js13k_gbc_init_script_count = (uint16_t)(sizeof(js13k_gbc_init_scripts) / sizeof(js13k_gbc_init_scripts[0]));')
-		lines.append('')
-		lines.append('const js13k_gbc_script_fn_t js13k_gbc_update_scripts[] = {')
-		for fn_name in update_fn_names:
-			lines.append('\t' + str(fn_name) + ',')
-		lines.append('};')
-		lines.append('const uint16_t js13k_gbc_update_script_count = (uint16_t)(sizeof(js13k_gbc_update_scripts) / sizeof(js13k_gbc_update_scripts[0]));')
-		lines.append('')
-		lines.extend([
-			'static uint8_t js13k_gbc_owner_matches (const char *a, const char *b) {',
-			'\tif (a == b) return 1;',
-			'\tif ((a == 0) || (b == 0)) return 0;',
-			'\twhile ((*a != 0) && (*b != 0)) {',
-			'\t\tif (*a != *b) return 0;',
-			'\t\ta++;',
-			'\t\tb++;',
-			'\t}',
-			'\treturn (uint8_t)(*a == *b);',
-			'}',
-			'',
-			'void js13k_gbc_dispatch_init_script (uint16_t index) {',
-			'\tif (index >= js13k_gbc_init_script_count) return;',
-			'\tif (js13k_gbc_init_scripts[index] != 0) js13k_gbc_init_scripts[index]();',
-			'}',
-			'',
-			'void js13k_gbc_dispatch_update_script (uint16_t index) {',
-			'\tif (index >= js13k_gbc_update_script_count) return;',
-			'\tif (js13k_gbc_update_scripts[index] != 0) js13k_gbc_update_scripts[index]();',
-			'}',
-			'',
-			'void js13k_gbc_run_all_init_scripts (void) {',
-			'\tuint16_t i;',
-			'\tfor (i = 0; i < js13k_gbc_init_script_count; ++i) {',
-			'\t\tjs13k_gbc_dispatch_init_script(i);',
-			'\t}',
-			'}',
-			'',
-			'void js13k_gbc_run_all_update_scripts (void) {',
-			'\tuint16_t i;',
-			'\tfor (i = 0; i < js13k_gbc_update_script_count; ++i) {',
-			'\t\tjs13k_gbc_dispatch_update_script(i);',
-			'\t}',
-			'}',
-			'',
-			'void js13k_gbc_run_owner_init_scripts (const char *owner) {',
-			'\tuint16_t i;',
-			'\tfor (i = 0; i < js13k_gbc_script_count; ++i) {',
-			'\t\tconst js13k_gbc_script_entry_t *entry = &js13k_gbc_scripts[i];',
-			'\t\tif (!entry->is_init) continue;',
-			'\t\tif (!js13k_gbc_owner_matches(entry->owner, owner)) continue;',
-			'\t\tif (entry->fn != 0) entry->fn();',
-			'\t}',
-			'}',
-			'',
-			'void js13k_gbc_run_owner_update_scripts (const char *owner) {',
-			'\tuint16_t i;',
-			'\tfor (i = 0; i < js13k_gbc_script_count; ++i) {',
-			'\t\tconst js13k_gbc_script_entry_t *entry = &js13k_gbc_scripts[i];',
-			'\t\tif (entry->is_init) continue;',
-			'\t\tif (!js13k_gbc_owner_matches(entry->owner, owner)) continue;',
-			'\t\tif (entry->fn != 0) entry->fn();',
-			'\t}',
-			'}',
-			'',
-		])
-		with open(c_path, 'w', encoding = 'utf-8') as f:
-			f.write('\n'.join(lines) + '\n')
-		return c_path
-	def _finalize_gbc_runtime_export (_runtime):
-		runtime_out = _runtime if isinstance(_runtime, dict) else {
-			'script_count' : 0,
-			'init_quit' : False,
-			'update_quit' : False,
-			'init_draw_circles' : [],
-			'update_draw_circles' : [],
-			'init_display_ops' : [],
-			'update_display_ops' : [],
-			'surface_ops' : [],
-			'builtin_only_quit' : True,
-		}
-		runtime_out['script_count'] = int(len(list(runtime_script_entries or [])))
-		runtime_out = _augment_runtime_with_dynamic_circles(runtime_out, runtime_script_entries)
-		runtime_out['gbc_transpiled_scripts'] = list(transpiled_entries)
-		try:
-			zgb_c_path = _write_gbc_py_zgb_c(runtime_script_entries, gbc_out_path)
-			runtime_out['zgb_c_path'] = str(zgb_c_path)
-			runtime_out['script_backend'] = 'zgb_c'
-		except Exception as err:
-			_append_gbc_trace_lines([
-				'[gbc-trace] ExportGbcPyAssembly:zgb_c_export_failed=' + str(err),
-			])
-			runtime_out['script_backend'] = 'zgb_c_missing'
-		# GBC export now targets ZGB C output; remove assembly-centric metadata/artifacts.
-		asm_path = runtime_out.pop('assembly_path', None)
-		if isinstance(asm_path, str) and asm_path != '':
-			try:
-				if os.path.isfile(asm_path):
-					os.remove(asm_path)
-			except Exception:
-				pass
-		return runtime_out
-	if _py2gb_export_gba_py_assembly:
-		_append_gbc_trace_lines([
-			'[gbc-trace] ExportGbcPyAssembly:skipping_py2gb_asm_backend=1',
-		])
-	runtime = {'script_count' : 0, 'init_quit' : False, 'update_quit' : False, 'init_draw_circles' : [], 'update_draw_circles' : [], 'init_display_ops' : [], 'update_display_ops' : [], 'surface_ops' : [], 'builtin_only_quit' : True}
-	runtime = _finalize_gbc_runtime_export(runtime)
-	_append_gbc_trace_lines([
-		'[gbc-trace] ExportGbcPyAssembly:end runtime_script_count=' + str(runtime.get('script_count', 0) if isinstance(runtime, dict) else 0),
-	])
-	return runtime
+	return runtime_script_entries, global_member_names
 
 def GetBlenderData ():
 	global ui, vars, clrs, datas, joints, pivots, prefabs, globals, initCode, svgsDatas, colliders, renderCode, pathsDatas, updateCode, attributes, uiMethods, exportedObs, rigidBodies, charControllers, particleSystems, templateScripts, prefabTemplateDatas, prefabPathsDatas, templateOnlyObs, collectionInstanceCopyCounts, exportTraceEvents
@@ -12526,6 +12482,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			str(script_info.get('owner_name') or '__world__'),
 		))
 	_compiled_script_cache = {}
+	_mirror_prepared_code_cache = {}
 	init_calls = [p for p in print_calls if p.get('is_init')]
 	update_calls = [p for p in print_calls if not p.get('is_init')]
 	# Mirror-executed scripts now print in real time. Keep replay only for any
@@ -12554,6 +12511,13 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 		init_printed = False
 		mirror_logged_errors = set()
 		mirror_rb_bind_logged = set()
+		_gbc_mirror_mod_globals = ()
+		try:
+			_raw_gmem = (script_runtime or {}).get('gbc_shared_global_member_names')
+			if isinstance(_raw_gmem, (list, tuple, set, frozenset)):
+				_gbc_mirror_mod_globals = tuple(str(x) for x in _raw_gmem if isinstance(x, str))
+		except Exception:
+			_gbc_mirror_mod_globals = ()
 		class _ProtectedMirrorLocals:
 			"""Mapping view that blocks non-callable writes to protected callables."""
 			__slots__ = ('_store', '_protected_callable_keys')
@@ -12807,6 +12771,8 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 						out[k] = v
 			return out
 		def _trace_mirror_this_binding (_tag, _owner, _scope_key, _frame, _this_obj, _rb_ids, _rb_named):
+			if not _gbc_vel_trace_enabled():
+				return
 			try:
 				def _sample_keys (_src):
 					try:
@@ -12869,12 +12835,112 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					pass
 			return _norm
 		class _MirrorScriptSimProxy:
-			__slots__ = ('_sim',)
-			def __init__ (self, _sim):
-				self._sim = _sim
+			__slots__ = ('_sim', '_rb_maps')
+			def __init__ (self, _sim, _rb_maps = None):
+				object.__setattr__(self, '_sim', _sim)
+				object.__setattr__(
+					self,
+					'_rb_maps',
+					tuple(_rb_maps) if isinstance(_rb_maps, (list, tuple)) else tuple(),
+				)
+			def __setattr__ (self, _name, _value):
+				if _name in ('_sim', '_rb_maps'):
+					object.__setattr__(self, _name, _value)
+				else:
+					setattr(self._sim, _name, _value)
 			def __getattr__ (self, _name):
 				return getattr(self._sim, _name)
+			def _canonical_rigid_body_arg (self, rb):
+				if rb is None:
+					return rb
+				try:
+					if isinstance(rb, (tuple, list)) and len(rb) >= 2:
+						return rb
+				except Exception:
+					pass
+				try:
+					key = rb if isinstance(rb, str) else str(rb)
+				except Exception:
+					return rb
+				if not isinstance(key, str):
+					try:
+						key = str(key)
+					except Exception:
+						return rb
+				try:
+					_nm = getattr(self._sim, 'named_rigid_bodies', None)
+					if isinstance(_nm, dict):
+						_nm_cands = []
+						for _kk in list(_script_lookup_candidate_names(key) or []) + [key, key.lstrip('_'), '_' + key.lstrip('_')]:
+							if isinstance(_kk, str) and _kk != '':
+								_nm_cands.append(_kk)
+								_nm_cands.append(_kk + ':0')
+						for _c in _nm_cands:
+							try:
+								_hit = _nm.get(_c, None)
+							except Exception:
+								_hit = None
+							if _hit is not None:
+								return _hit
+				except Exception:
+					pass
+				for _d in self._rb_maps:
+					if not isinstance(_d, dict):
+						continue
+					try:
+						for _kk in list(_script_lookup_candidate_names(key) or []) + [key]:
+							if isinstance(_kk, str) and _kk != '':
+								try:
+									_hit = _d.get(_kk, None)
+								except Exception:
+									_hit = None
+								if _hit is not None:
+									return _hit
+						_hit = _resolve_script_lookup_exact(_d, key)
+						if _hit is not None:
+							return _hit
+					except Exception:
+						pass
+				return rb
+			def set_linear_velocity (self, rb, vel, wakeUp = True):
+				try:
+					return self._sim.set_linear_velocity(self._canonical_rigid_body_arg(rb), vel, wakeUp)
+				except TypeError:
+					return self._sim.set_linear_velocity(self._canonical_rigid_body_arg(rb), vel)
+				except Exception:
+					return None
+			def get_linear_velocity (self, rb):
+				try:
+					return self._sim.get_linear_velocity(self._canonical_rigid_body_arg(rb))
+				except Exception:
+					return [0.0, 0.0]
+			def set_rigid_body_velocity (self, rb, vel, wakeUp = True):
+				try:
+					return self._sim.set_rigid_body_velocity(self._canonical_rigid_body_arg(rb), vel, wakeUp)
+				except Exception:
+					try:
+						fn = getattr(self._sim, 'set_rigid_body_velocity', None)
+						if callable(fn):
+							return fn(self._canonical_rigid_body_arg(rb), vel)
+					except Exception:
+						pass
+					return None
+			def get_rigid_body_velocity (self, rb):
+				try:
+					return self._sim.get_rigid_body_velocity(self._canonical_rigid_body_arg(rb))
+				except Exception:
+					try:
+						return self.get_linear_velocity(rb)
+					except Exception:
+						return [0.0, 0.0]
 			def get_rigid_body_position (self, *args, **kwargs):
+				try:
+					_args = list(args)
+					if _args:
+						_args[0] = self._canonical_rigid_body_arg(_args[0])
+						args = tuple(_args)
+				except Exception:
+					pass
 				try:
 					_raw = self._sim.get_rigid_body_position(*args, **kwargs)
 				except Exception:
@@ -12957,7 +13023,10 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			if _sim_obj is not None:
 				try:
 					if not isinstance(_sim_obj, _MirrorScriptSimProxy):
-						_sim_obj = _MirrorScriptSimProxy(_sim_obj)
+						_sim_obj = _MirrorScriptSimProxy(
+							_sim_obj,
+							_rb_maps = (env.get('rigidBodiesIds'), env.get('rigidBodies')),
+						)
 					env['sim'] = _sim_obj
 					env['physics'] = _sim_obj
 				except Exception:
@@ -13433,7 +13502,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					env['col'] = None
 				_trace_mirror_this_binding('eval-env', owner, scope_key, frame, this_obj, rigid_bodies_ids, rigid_bodies_named)
 				try:
-					if owner != '__world__' and getattr(this_obj, 'rb', None) is None:
+					if _gbc_vel_trace_enabled() and owner != '__world__' and getattr(this_obj, 'rb', None) is None:
 						def _sample_map_entries (_src, _limit = 6):
 							try:
 								if isinstance(_src, dict):
@@ -13502,6 +13571,12 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 						def get_object_rotation (self, _name):
 							return _mirror_get_object_rotation(_name)
 					env['__js13k_helpers__'] = _Js13kMirrorHelpersFallback()
+			except Exception:
+				pass
+			# Match handheld runtime: scripts read `keys` / js13k_get_pressed() each tick.
+			try:
+				env['keys'] = _runtime_key_state_snapshot()
+				env['js13k_get_pressed'] = (lambda: _runtime_key_state_snapshot())
 			except Exception:
 				pass
 			return env
@@ -13626,54 +13701,66 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				return
 			owner = script_info.get('owner_name') or '__world__'
 			scope_key = script_info.get('scope_key')
-			code_txt = str(script_info.get('code', '') or '')
-			source_code_txt = str(script_info.get('source_code', code_txt) or '')
+			_raw_code = str(script_info.get('code', '') or '')
+			source_code_txt = str(script_info.get('source_code', _raw_code) or '')
 			source_line_offset = int(script_info.get('source_line_offset', 0) or 0)
-			if code_txt.strip() == '':
+			if _raw_code.strip() == '':
 				return
-			# Defensive runtime rewrite: keep print() callable even if script/env
-			# defines a non-callable `print` symbol.
-			try:
-				code_txt = re.sub(
-					r'__js13k_helpers__\s*\.\s*get_object_position\s*\(',
-					'_js13k_call_get_object_position(',
-					str(code_txt),
-				)
-				code_txt = re.sub(
-					r'__js13k_helpers__\s*\.\s*get_object_rotation\s*\(',
-					'_js13k_call_get_object_rotation(',
-					str(code_txt),
-				)
-				code_txt = re.sub(
-					r'(?<!\.)\b(?:gbc_get_object_position|get_object_position)\s*\(',
-					'_js13k_call_get_object_position(',
-					str(code_txt),
-				)
-				code_txt = re.sub(
-					r'(?<!\.)\b(?:gbc_get_object_rotation|get_object_rotation)\s*\(',
-					'_js13k_call_get_object_rotation(',
-					str(code_txt),
-				)
-				code_txt = re.sub(r'(?<!\.)\bprint\s*\(', '_js13k_call_print(', str(code_txt))
-				code_txt = re.sub(r'(?<!\.)\b_js13k_print\s*\(', '_js13k_call_print(', str(code_txt))
-				code_txt = _protect_runtime_binding_assignments(
-					str(code_txt),
-					{
-						'print',
-						'_js13k_print',
-						'get_object_position',
-						'get_object_rotation',
-						'gbc_get_object_position',
-						'gbc_get_object_rotation',
-						'_js13k_internal_get_object_position',
-						'_js13k_internal_get_object_rotation',
-						'_js13k_call_print',
-						'_js13k_call_get_object_position',
-						'_js13k_call_get_object_rotation',
-					},
-				)
-			except Exception:
-				pass
+			_prep_key = (scope_key, _raw_code)
+			code_txt = _mirror_prepared_code_cache.get(_prep_key)
+			if code_txt is None:
+				code_txt = _raw_code
+				# Defensive runtime rewrite: keep print() callable even if script/env
+				# defines a non-callable `print` symbol.
+				try:
+					code_txt = re.sub(
+						r'__js13k_helpers__\s*\.\s*get_object_position\s*\(',
+						'_js13k_call_get_object_position(',
+						str(code_txt),
+					)
+					code_txt = re.sub(
+						r'__js13k_helpers__\s*\.\s*get_object_rotation\s*\(',
+						'_js13k_call_get_object_rotation(',
+						str(code_txt),
+					)
+					code_txt = re.sub(
+						r'(?<!\.)\b(?:gbc_get_object_position|get_object_position)\s*\(',
+						'_js13k_call_get_object_position(',
+						str(code_txt),
+					)
+					code_txt = re.sub(
+						r'(?<!\.)\b(?:gbc_get_object_rotation|get_object_rotation)\s*\(',
+						'_js13k_call_get_object_rotation(',
+						str(code_txt),
+					)
+					code_txt = re.sub(r'(?<!\.)\bprint\s*\(', '_js13k_call_print(', str(code_txt))
+					code_txt = re.sub(r'(?<!\.)\b_js13k_print\s*\(', '_js13k_call_print(', str(code_txt))
+					code_txt = _protect_runtime_binding_assignments(
+						str(code_txt),
+						{
+							'print',
+							'_js13k_print',
+							'get_object_position',
+							'get_object_rotation',
+							'gbc_get_object_position',
+							'gbc_get_object_rotation',
+							'_js13k_internal_get_object_position',
+							'_js13k_internal_get_object_rotation',
+							'_js13k_call_print',
+							'_js13k_call_get_object_position',
+							'_js13k_call_get_object_rotation',
+						},
+					)
+				except Exception:
+					pass
+				try:
+					code_txt = _strip_gbc_preamble_reserved_global_declarations(
+						str(code_txt),
+						shared_global_member_names = _gbc_mirror_mod_globals,
+					)
+				except Exception:
+					pass
+				_mirror_prepared_code_cache[_prep_key] = code_txt
 			cache_key = (scope_key, code_txt)
 			code_obj = _compiled_script_cache.get(cache_key)
 			if code_obj is None:
@@ -14969,22 +15056,23 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 							_owner_lookup_exact_named = _resolve_script_lookup_exact(_rb_named, owner)
 							_owner_lookup_fuzzy_ids = _resolve_script_lookup(_rb_ids, owner)
 							_owner_lookup_fuzzy_named = _resolve_script_lookup(_rb_named, owner)
-							_append_gbc_trace_lines([
-								'[gbc-trace] MirrorRbBind'
-								+ ':owner=' + repr(str(owner))
-								+ ',scope=' + repr(str(scope_key))
-								+ ',frame=' + repr(frame)
-								+ ',this.rb=' + repr(_this_rb_probe)
-								+ ',rb_local=' + repr(env.get('rb', None))
-								+ ',lookup=' + repr({
-									'exact_ids' : _owner_lookup_exact_ids,
-									'exact_named' : _owner_lookup_exact_named,
-									'fuzzy_ids' : _owner_lookup_fuzzy_ids,
-									'fuzzy_named' : _owner_lookup_fuzzy_named,
-								})
-								+ ',rb_ids=' + repr(_sample_map_entries(_rb_ids))
-								+ ',rb_named=' + repr(_sample_map_entries(_rb_named)),
-							])
+							if _gbc_vel_trace_enabled():
+								_append_gbc_trace_lines([
+									'[gbc-trace] MirrorRbBind'
+									+ ':owner=' + repr(str(owner))
+									+ ',scope=' + repr(str(scope_key))
+									+ ',frame=' + repr(frame)
+									+ ',this.rb=' + repr(_this_rb_probe)
+									+ ',rb_local=' + repr(env.get('rb', None))
+									+ ',lookup=' + repr({
+										'exact_ids' : _owner_lookup_exact_ids,
+										'exact_named' : _owner_lookup_exact_named,
+										'fuzzy_ids' : _owner_lookup_fuzzy_ids,
+										'fuzzy_named' : _owner_lookup_fuzzy_named,
+									})
+									+ ',rb_ids=' + repr(_sample_map_entries(_rb_ids))
+									+ ',rb_named=' + repr(_sample_map_entries(_rb_named)),
+								])
 							mirror_rb_bind_logged.add(_log_key)
 			except Exception:
 				pass
@@ -15084,6 +15172,16 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					return '<expr:' + repr(val) + '>'
 				return m.group(0)
 			return re.sub(r'(?i)<expr:\s*([A-Za-z_]\w*)\s*>', _replace_name_expr, txt)
+		_mirror_extra_env_cache = {}
+		def _mirror_cached_extra_env (owner, scope_key = None):
+			try:
+				_ok = str(owner or '__world__')
+			except Exception:
+				_ok = '__world__'
+			_key = (_ok, scope_key)
+			if _key not in _mirror_extra_env_cache:
+				_mirror_extra_env_cache[_key] = _eval_env_for_owner(_ok, frame = frame, scope_key = scope_key)
+			return _mirror_extra_env_cache[_key]
 		def _should_emit (info, frame):
 			cond = info.get('condition')
 			if cond is None or cond == '':
@@ -15094,7 +15192,7 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 				cond,
 				frame = frame,
 				const_env = _const_env_for_owner(owner, scope_key = scope_key),
-				extra_env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key),
+				extra_env = _mirror_cached_extra_env(owner, scope_key = scope_key),
 			)
 			if val is None:
 				return False
@@ -15104,7 +15202,14 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			_probe_sim = _probe_env.get('sim', _probe_env.get('physics'))
 			# When we can execute real script updates in the mirror, disable the
 			# legacy interpreted velocity fallback to avoid conflicting control.
-			if mirror_update_scripts and hasattr(_probe_sim, 'velocity_script'):
+			# Unwrap _MirrorScriptSimProxy so `velocity_script` is cleared on the
+			# real sim (phase1 mirror uses this dict every step to overwrite vx/vy).
+			_probe_phys = getattr(_probe_sim, '_sim', _probe_sim) if _probe_sim is not None else None
+			if mirror_update_scripts and _probe_phys is not None and hasattr(_probe_phys, 'velocity_script'):
+				try:
+					_probe_phys.velocity_script = None
+				except Exception:
+					pass
 				try:
 					_probe_sim.velocity_script = None
 				except Exception:
@@ -15121,326 +15226,337 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 			print(f"[{script_label}:mirror] sim={type(_probe_sim).__name__}")
 		except Exception:
 			pass
+		_mirror_next_wake = None
+		_mirror_period = 1.0 / 60.0
 		while proc.poll() is None:
 			frame += 1
+			_mirror_extra_env_cache.clear()
 			if frame == 1:
 				for script_info in mirror_init_scripts:
 					_run_mirror_script(script_info, frame = frame)
+			for script_info in mirror_update_scripts:
+				_run_mirror_script(script_info, frame = frame)
 			if callable(mirror_step) and frame > 1:
-				_step_probe_owner = '__world__'
-				_step_probe_scope = None
-				if update_calls:
-					_step_probe_owner = update_calls[0].get('owner_name') or '__world__'
-					_step_probe_scope = update_calls[0].get('scope_key')
-				elif mirror_update_scripts:
-					# In realtime-mirror mode, update_calls can be empty because
-					# print replay is suppressed. Prefer probing the player's script.
-					_candidates = []
-					for _ms in mirror_update_scripts:
-						if not isinstance(_ms, dict):
-							continue
-						_owner = str(_ms.get('owner_name') or '__world__')
-						if _owner == '__world__':
-							continue
-						_candidates.append((_owner, _ms.get('scope_key')))
-					if _candidates:
-						# Priority:
-						# 1) explicit Player owner
-						# 2) non-spawn owner (not __gbc_spawn*)
-						# 3) first remaining candidate
-						_pick = None
-						for _owner, _scope in _candidates:
-							if _owner == 'Player':
-								_pick = (_owner, _scope)
-								break
-						if _pick is None:
+				if not _gbc_vel_trace_enabled():
+					try:
+						mirror_step()
+					except Exception:
+						pass
+				else:
+					_step_probe_owner = '__world__'
+					_step_probe_scope = None
+					if update_calls:
+						_step_probe_owner = update_calls[0].get('owner_name') or '__world__'
+						_step_probe_scope = update_calls[0].get('scope_key')
+					elif mirror_update_scripts:
+						# In realtime-mirror mode, update_calls can be empty because
+						# print replay is suppressed. Prefer probing the player's script.
+						_candidates = []
+						for _ms in mirror_update_scripts:
+							if not isinstance(_ms, dict):
+								continue
+							_owner = str(_ms.get('owner_name') or '__world__')
+							if _owner == '__world__':
+								continue
+							_candidates.append((_owner, _ms.get('scope_key')))
+						if _candidates:
+							# Priority:
+							# 1) explicit Player owner
+							# 2) non-spawn owner (not __gbc_spawn*)
+							# 3) first remaining candidate
+							_pick = None
 							for _owner, _scope in _candidates:
-								if not str(_owner).startswith('__gbc_spawn'):
+								if _owner == 'Player':
 									_pick = (_owner, _scope)
 									break
-						if _pick is None:
-							_pick = _candidates[0]
-						_step_probe_owner, _step_probe_scope = _pick
-					# Fallback: at least use the first mirror update entry.
-					if _step_probe_owner == '__world__':
-						try:
-							_step_probe_owner = str(mirror_update_scripts[0].get('owner_name') or '__world__')
-							_step_probe_scope = mirror_update_scripts[0].get('scope_key')
-						except Exception:
-							pass
-				_step_probe_sim = None
-				_step_gravity_map = {}
-				_step_probe_rb = None
-				_step_body_key = None
-				_step_body_rb = None
-				_pre_vs = None
-				_pre_lv = None
-				_pre_body_lv = None
-				_pre_vy = None
-				_pre_y = None
-				try:
-					_step_probe_env = _eval_env_for_owner(_step_probe_owner, frame = frame, scope_key = _step_probe_scope)
-					_step_probe_sim = _step_probe_env.get('sim', _step_probe_env.get('physics'))
-					_step_gravity_map = _step_probe_env.get('_gbc_gravity_step_by_handle', runtime_env.get('_gbc_gravity_step_by_handle', {}))
-					if isinstance(_step_probe_env, dict):
-						_step_probe_rb = _step_probe_env.get('rb', None)
-						_this_probe = _step_probe_env.get('this', None)
-						if _step_probe_rb is None and _this_probe is not None:
-							_step_probe_rb = getattr(_this_probe, 'rb', None)
-						try:
-							_rb_ids_probe = _step_probe_env.get('rigidBodiesIds', _step_probe_env.get('rigidBodies', {}))
-						except Exception:
-							_rb_ids_probe = {}
-						if isinstance(_rb_ids_probe, dict):
-							if _step_body_rb is None:
-								try:
-									_step_body_rb = _resolve_script_lookup_exact(_rb_ids_probe, 'Player')
-									if _step_body_rb is not None:
-										_step_body_key = 'Player'
-								except Exception:
-									_step_body_rb = None
-							if _step_body_rb is None:
-								for _k, _v in list(_rb_ids_probe.items()):
-									if _v is None:
-										continue
-									try:
-										_k_txt = str(_k)
-									except Exception:
-										_k_txt = ''
-									if _k_txt.startswith('__gbc_spawn'):
-										continue
-									_step_body_key = _k_txt
-									_step_body_rb = _v
-									break
-					if _step_probe_sim is not None:
-						_pre_vs = getattr(_step_probe_sim, 'velocity_script', None)
-						if callable(getattr(_step_probe_sim, 'get_linear_velocity', None)) and _step_probe_rb is not None:
+							if _pick is None:
+								for _owner, _scope in _candidates:
+									if not str(_owner).startswith('__gbc_spawn'):
+										_pick = (_owner, _scope)
+										break
+							if _pick is None:
+								_pick = _candidates[0]
+							_step_probe_owner, _step_probe_scope = _pick
+						# Fallback: at least use the first mirror update entry.
+						if _step_probe_owner == '__world__':
 							try:
-								_pre_lv = _step_probe_sim.get_linear_velocity(_step_probe_rb)
-							except Exception:
-								_pre_lv = None
-						if callable(getattr(_step_probe_sim, 'get_linear_velocity', None)) and _step_body_rb is not None:
-							try:
-								_pre_body_lv = _step_probe_sim.get_linear_velocity(_step_body_rb)
-							except Exception:
-								_pre_body_lv = None
-						_pre_vy = getattr(_step_probe_sim, 'vy', None)
-						_pre_y = getattr(_step_probe_sim, 'y', None)
-				except Exception:
-					pass
-				try:
-					# Legacy fallback: only pre-apply gravity when we cannot step a
-					# real physics simulation. If step() is available, it owns gravity
-					# integration and pre-adding here can skew printed velocities.
-					if (
-						(not callable(mirror_step))
-						and _step_probe_sim is not None
-						and callable(getattr(_step_probe_sim, 'get_linear_velocity', None))
-						and callable(getattr(_step_probe_sim, 'set_linear_velocity', None))
-						and isinstance(_step_gravity_map, dict)
-					):
-						for _h, _gstep in list(_step_gravity_map.items()):
-							try:
-								_v = _step_probe_sim.get_linear_velocity(_h)
-								vx = float(_v[0]) if isinstance(_v, (list, tuple)) and len(_v) >= 1 else 0.0
-								vy = float(_v[1]) if isinstance(_v, (list, tuple)) and len(_v) >= 2 else 0.0
-								_gx = float(_gstep[0]) if isinstance(_gstep, (list, tuple)) and len(_gstep) >= 1 else 0.0
-								_gy = float(_gstep[1]) if isinstance(_gstep, (list, tuple)) and len(_gstep) >= 2 else 0.0
-								_step_probe_sim.set_linear_velocity(_h, [vx + _gx, vy + _gy])
+								_step_probe_owner = str(mirror_update_scripts[0].get('owner_name') or '__world__')
+								_step_probe_scope = mirror_update_scripts[0].get('scope_key')
 							except Exception:
 								pass
-				except Exception:
-					pass
-				try:
-					mirror_step()
-				except Exception:
-					pass
-				try:
-					_post_vs = getattr(_step_probe_sim, 'velocity_script', None) if _step_probe_sim is not None else None
-					_post_lv = None
-					if (
-						_step_probe_sim is not None
-						and callable(getattr(_step_probe_sim, 'get_linear_velocity', None))
-						and _step_probe_rb is not None
-					):
-						try:
-							_post_lv = _step_probe_sim.get_linear_velocity(_step_probe_rb)
-						except Exception:
-							_post_lv = None
-					_post_body_lv = None
-					if (
-						_step_probe_sim is not None
-						and callable(getattr(_step_probe_sim, 'get_linear_velocity', None))
-						and _step_body_rb is not None
-					):
-						try:
-							_post_body_lv = _step_probe_sim.get_linear_velocity(_step_body_rb)
-						except Exception:
-							_post_body_lv = None
-					_post_vy = getattr(_step_probe_sim, 'vy', None) if _step_probe_sim is not None else None
-					_post_y = getattr(_step_probe_sim, 'y', None) if _step_probe_sim is not None else None
-					_dbg_scroll = None
-					_dbg_cam_x = None
-					_dbg_cam_y = None
-					_dbg_stream_col = None
-					_dbg_off = None
+					_step_probe_sim = None
+					_step_gravity_map = {}
+					_step_probe_rb = None
+					_step_body_key = None
+					_step_body_rb = None
+					_pre_vs = None
+					_pre_lv = None
+					_pre_body_lv = None
+					_pre_vy = None
+					_pre_y = None
 					try:
-						_dbg_globals = __import__('builtins').globals()
-					except Exception:
-						_dbg_globals = {}
-					try:
-						_dbg_scroll = _dbg_globals.get('scroll_x', None)
-					except Exception:
-						_dbg_scroll = None
-					try:
-						_dbg_cam_x = _dbg_globals.get('_js13k_gbc_cam_x', _dbg_globals.get('camera_x', None))
-					except Exception:
-						_dbg_cam_x = None
-					try:
-						_dbg_cam_y = _dbg_globals.get('_js13k_gbc_cam_y', _dbg_globals.get('camera_y', None))
-					except Exception:
-						_dbg_cam_y = None
-					if _dbg_scroll is None:
-						_dbg_scroll = _dbg_cam_x
-					try:
-						if _dbg_scroll is None and _step_probe_sim is not None:
-							_dbg_scroll = getattr(_step_probe_sim, 'scroll_x', None)
+						_step_probe_env = _eval_env_for_owner(_step_probe_owner, frame = frame, scope_key = _step_probe_scope)
+						_step_probe_sim = _step_probe_env.get('sim', _step_probe_env.get('physics'))
+						_step_gravity_map = _step_probe_env.get('_gbc_gravity_step_by_handle', runtime_env.get('_gbc_gravity_step_by_handle', {}))
+						if isinstance(_step_probe_env, dict):
+							_step_probe_rb = _step_probe_env.get('rb', None)
+							_this_probe = _step_probe_env.get('this', None)
+							if _step_probe_rb is None and _this_probe is not None:
+								_step_probe_rb = getattr(_this_probe, 'rb', None)
+							try:
+								_rb_ids_probe = _step_probe_env.get('rigidBodiesIds', _step_probe_env.get('rigidBodies', {}))
+							except Exception:
+								_rb_ids_probe = {}
+							if isinstance(_rb_ids_probe, dict):
+								if _step_body_rb is None:
+									try:
+										_step_body_rb = _resolve_script_lookup_exact(_rb_ids_probe, 'Player')
+										if _step_body_rb is not None:
+											_step_body_key = 'Player'
+									except Exception:
+										_step_body_rb = None
+								if _step_body_rb is None:
+									for _k, _v in list(_rb_ids_probe.items()):
+										if _v is None:
+											continue
+										try:
+											_k_txt = str(_k)
+										except Exception:
+											_k_txt = ''
+										if _k_txt.startswith('__gbc_spawn'):
+											continue
+										_step_body_key = _k_txt
+										_step_body_rb = _v
+										break
+						if _step_probe_sim is not None:
+							_pre_vs = getattr(_step_probe_sim, 'velocity_script', None)
+							if callable(getattr(_step_probe_sim, 'get_linear_velocity', None)) and _step_probe_rb is not None:
+								try:
+									_pre_lv = _step_probe_sim.get_linear_velocity(_step_probe_rb)
+								except Exception:
+									_pre_lv = None
+							if callable(getattr(_step_probe_sim, 'get_linear_velocity', None)) and _step_body_rb is not None:
+								try:
+									_pre_body_lv = _step_probe_sim.get_linear_velocity(_step_body_rb)
+								except Exception:
+									_pre_body_lv = None
+							_pre_vy = getattr(_step_probe_sim, 'vy', None)
+							_pre_y = getattr(_step_probe_sim, 'y', None)
 					except Exception:
 						pass
-					if _dbg_cam_x is None:
-						try:
-							if _step_probe_sim is not None:
-								_dbg_sim_dict = getattr(_step_probe_sim, '__dict__', {}) if _step_probe_sim is not None else {}
-								if isinstance(_dbg_sim_dict, dict):
-									_dbg_cam_x = _dbg_sim_dict.get('_js13k_gbc_cam_x', _dbg_sim_dict.get('camera_x', None))
-						except Exception:
-							_dbg_cam_x = None
-					if _dbg_cam_y is None:
-						try:
-							if _step_probe_sim is not None:
-								_dbg_sim_dict = getattr(_step_probe_sim, '__dict__', {}) if _step_probe_sim is not None else {}
-								if isinstance(_dbg_sim_dict, dict):
-									_dbg_cam_y = _dbg_sim_dict.get('_js13k_gbc_cam_y', _dbg_sim_dict.get('camera_y', None))
-						except Exception:
-							_dbg_cam_y = None
-					if callable(_dbg_cam_x):
-						_dbg_cam_x = None
-					if callable(_dbg_cam_y):
-						_dbg_cam_y = None
-					if callable(_dbg_scroll):
+					try:
+						# Legacy fallback: only pre-apply gravity when we cannot step a
+						# real physics simulation. If step() is available, it owns gravity
+						# integration and pre-adding here can skew printed velocities.
+						if (
+							(not callable(mirror_step))
+							and _step_probe_sim is not None
+							and callable(getattr(_step_probe_sim, 'get_linear_velocity', None))
+							and callable(getattr(_step_probe_sim, 'set_linear_velocity', None))
+							and isinstance(_step_gravity_map, dict)
+						):
+							for _h, _gstep in list(_step_gravity_map.items()):
+								try:
+									_v = _step_probe_sim.get_linear_velocity(_h)
+									vx = float(_v[0]) if isinstance(_v, (list, tuple)) and len(_v) >= 1 else 0.0
+									vy = float(_v[1]) if isinstance(_v, (list, tuple)) and len(_v) >= 2 else 0.0
+									_gx = float(_gstep[0]) if isinstance(_gstep, (list, tuple)) and len(_gstep) >= 1 else 0.0
+									_gy = float(_gstep[1]) if isinstance(_gstep, (list, tuple)) and len(_gstep) >= 2 else 0.0
+									_step_probe_sim.set_linear_velocity(_h, [vx + _gx, vy + _gy])
+								except Exception:
+									pass
+					except Exception:
+						pass
+					try:
+						mirror_step()
+					except Exception:
+						pass
+					try:
+						_post_vs = getattr(_step_probe_sim, 'velocity_script', None) if _step_probe_sim is not None else None
+						_post_lv = None
+						if (
+							_step_probe_sim is not None
+							and callable(getattr(_step_probe_sim, 'get_linear_velocity', None))
+							and _step_probe_rb is not None
+						):
+							try:
+								_post_lv = _step_probe_sim.get_linear_velocity(_step_probe_rb)
+							except Exception:
+								_post_lv = None
+						_post_body_lv = None
+						if (
+							_step_probe_sim is not None
+							and callable(getattr(_step_probe_sim, 'get_linear_velocity', None))
+							and _step_body_rb is not None
+						):
+							try:
+								_post_body_lv = _step_probe_sim.get_linear_velocity(_step_body_rb)
+							except Exception:
+								_post_body_lv = None
+						_post_vy = getattr(_step_probe_sim, 'vy', None) if _step_probe_sim is not None else None
+						_post_y = getattr(_step_probe_sim, 'y', None) if _step_probe_sim is not None else None
 						_dbg_scroll = None
-					if _dbg_scroll is None and _dbg_cam_x is not None:
-						_dbg_scroll = _dbg_cam_x
-					if _dbg_scroll is None:
+						_dbg_cam_x = None
+						_dbg_cam_y = None
+						_dbg_stream_col = None
+						_dbg_off = None
 						try:
-							if isinstance(_step_probe_env, dict):
-								_dbg_scroll = _step_probe_env.get('scroll_x', _step_probe_env.get('_js13k_gbc_cam_x', None))
+							_dbg_globals = __import__('builtins').globals()
+						except Exception:
+							_dbg_globals = {}
+						try:
+							_dbg_scroll = _dbg_globals.get('scroll_x', None)
 						except Exception:
 							_dbg_scroll = None
-					if (_dbg_cam_x is None) or (_dbg_cam_y is None):
 						try:
-							_shared = _dbg_globals.get('_js13k_gbc_global_values', {})
-							if isinstance(_shared, dict):
-								if _dbg_cam_x is None:
-									_dbg_cam_x = _shared.get('_js13k_gbc_cam_x', _shared.get('camera_x', None))
-								if _dbg_cam_y is None:
-									_dbg_cam_y = _shared.get('_js13k_gbc_cam_y', _shared.get('camera_y', None))
-								if _dbg_scroll is None:
-									_dbg_scroll = _shared.get('scroll_x', _shared.get('_js13k_gbc_cam_x', None))
+							_dbg_cam_x = _dbg_globals.get('_js13k_gbc_cam_x', _dbg_globals.get('camera_x', None))
+						except Exception:
+							_dbg_cam_x = None
+						try:
+							_dbg_cam_y = _dbg_globals.get('_js13k_gbc_cam_y', _dbg_globals.get('camera_y', None))
+						except Exception:
+							_dbg_cam_y = None
+						if _dbg_scroll is None:
+							_dbg_scroll = _dbg_cam_x
+						try:
+							if _dbg_scroll is None and _step_probe_sim is not None:
+								_dbg_scroll = getattr(_step_probe_sim, 'scroll_x', None)
 						except Exception:
 							pass
-					try:
-						_dbg_stream_col = _dbg_globals.get('_cameraStreamColumn', _dbg_globals.get('_js13k_gbc_stream_col', None))
-					except Exception:
-						_dbg_stream_col = None
-					if _dbg_stream_col is None:
+						if _dbg_cam_x is None:
+							try:
+								if _step_probe_sim is not None:
+									_dbg_sim_dict = getattr(_step_probe_sim, '__dict__', {}) if _step_probe_sim is not None else {}
+									if isinstance(_dbg_sim_dict, dict):
+										_dbg_cam_x = _dbg_sim_dict.get('_js13k_gbc_cam_x', _dbg_sim_dict.get('camera_x', None))
+							except Exception:
+								_dbg_cam_x = None
+						if _dbg_cam_y is None:
+							try:
+								if _step_probe_sim is not None:
+									_dbg_sim_dict = getattr(_step_probe_sim, '__dict__', {}) if _step_probe_sim is not None else {}
+									if isinstance(_dbg_sim_dict, dict):
+										_dbg_cam_y = _dbg_sim_dict.get('_js13k_gbc_cam_y', _dbg_sim_dict.get('camera_y', None))
+							except Exception:
+								_dbg_cam_y = None
+						if callable(_dbg_cam_x):
+							_dbg_cam_x = None
+						if callable(_dbg_cam_y):
+							_dbg_cam_y = None
+						if callable(_dbg_scroll):
+							_dbg_scroll = None
+						if _dbg_scroll is None and _dbg_cam_x is not None:
+							_dbg_scroll = _dbg_cam_x
+						if _dbg_scroll is None:
+							try:
+								if isinstance(_step_probe_env, dict):
+									_dbg_scroll = _step_probe_env.get('scroll_x', _step_probe_env.get('_js13k_gbc_cam_x', None))
+							except Exception:
+								_dbg_scroll = None
+						if (_dbg_cam_x is None) or (_dbg_cam_y is None):
+							try:
+								_shared = _dbg_globals.get('_js13k_gbc_global_values', {})
+								if isinstance(_shared, dict):
+									if _dbg_cam_x is None:
+										_dbg_cam_x = _shared.get('_js13k_gbc_cam_x', _shared.get('camera_x', None))
+									if _dbg_cam_y is None:
+										_dbg_cam_y = _shared.get('_js13k_gbc_cam_y', _shared.get('camera_y', None))
+									if _dbg_scroll is None:
+										_dbg_scroll = _shared.get('scroll_x', _shared.get('_js13k_gbc_cam_x', None))
+							except Exception:
+								pass
 						try:
-							if isinstance(_step_probe_env, dict):
-								_dbg_stream_col = _step_probe_env.get('_cameraStreamColumn', _step_probe_env.get('_js13k_gbc_stream_col', None))
+							_dbg_stream_col = _dbg_globals.get('_cameraStreamColumn', _dbg_globals.get('_js13k_gbc_stream_col', None))
 						except Exception:
 							_dbg_stream_col = None
-					try:
-						_dbg_off_obj = _dbg_globals.get('off', None)
-						if _dbg_off_obj is not None and hasattr(_dbg_off_obj, 'x') and hasattr(_dbg_off_obj, 'y'):
-							_dbg_off = [float(getattr(_dbg_off_obj, 'x', 0.0)), float(getattr(_dbg_off_obj, 'y', 0.0))]
-						elif isinstance(_dbg_off_obj, (list, tuple)) and len(_dbg_off_obj) >= 2:
-							_dbg_off = [float(_dbg_off_obj[0]), float(_dbg_off_obj[1])]
-						elif isinstance(_dbg_off_obj, dict):
-							_dbg_off = [float(_dbg_off_obj.get('x', 0.0)), float(_dbg_off_obj.get('y', 0.0))]
-					except Exception:
-						_dbg_off = None
-					if _dbg_off is None:
+						if _dbg_stream_col is None:
+							try:
+								if isinstance(_step_probe_env, dict):
+									_dbg_stream_col = _step_probe_env.get('_cameraStreamColumn', _step_probe_env.get('_js13k_gbc_stream_col', None))
+							except Exception:
+								_dbg_stream_col = None
 						try:
-							if isinstance(_step_probe_env, dict):
-								_dbg_off_obj = _step_probe_env.get('off', None)
-								if _dbg_off_obj is not None and hasattr(_dbg_off_obj, 'x') and hasattr(_dbg_off_obj, 'y'):
-									_dbg_off = [float(getattr(_dbg_off_obj, 'x', 0.0)), float(getattr(_dbg_off_obj, 'y', 0.0))]
-								elif isinstance(_dbg_off_obj, (list, tuple)) and len(_dbg_off_obj) >= 2:
-									_dbg_off = [float(_dbg_off_obj[0]), float(_dbg_off_obj[1])]
-								elif isinstance(_dbg_off_obj, dict):
-									_dbg_off = [float(_dbg_off_obj.get('x', 0.0)), float(_dbg_off_obj.get('y', 0.0))]
+							_dbg_off_obj = _dbg_globals.get('off', None)
+							if _dbg_off_obj is not None and hasattr(_dbg_off_obj, 'x') and hasattr(_dbg_off_obj, 'y'):
+								_dbg_off = [float(getattr(_dbg_off_obj, 'x', 0.0)), float(getattr(_dbg_off_obj, 'y', 0.0))]
+							elif isinstance(_dbg_off_obj, (list, tuple)) and len(_dbg_off_obj) >= 2:
+								_dbg_off = [float(_dbg_off_obj[0]), float(_dbg_off_obj[1])]
+							elif isinstance(_dbg_off_obj, dict):
+								_dbg_off = [float(_dbg_off_obj.get('x', 0.0)), float(_dbg_off_obj.get('y', 0.0))]
 						except Exception:
 							_dbg_off = None
-					if _dbg_scroll is None:
+						if _dbg_off is None:
+							try:
+								if isinstance(_step_probe_env, dict):
+									_dbg_off_obj = _step_probe_env.get('off', None)
+									if _dbg_off_obj is not None and hasattr(_dbg_off_obj, 'x') and hasattr(_dbg_off_obj, 'y'):
+										_dbg_off = [float(getattr(_dbg_off_obj, 'x', 0.0)), float(getattr(_dbg_off_obj, 'y', 0.0))]
+									elif isinstance(_dbg_off_obj, (list, tuple)) and len(_dbg_off_obj) >= 2:
+										_dbg_off = [float(_dbg_off_obj[0]), float(_dbg_off_obj[1])]
+									elif isinstance(_dbg_off_obj, dict):
+										_dbg_off = [float(_dbg_off_obj.get('x', 0.0)), float(_dbg_off_obj.get('y', 0.0))]
+							except Exception:
+								_dbg_off = None
+						if _dbg_scroll is None:
+							try:
+								_dbg_scroll = _dbg_globals.get('_gbc_debug_init_scroll_x', None)
+							except Exception:
+								_dbg_scroll = None
+						if _dbg_cam_x is None:
+							try:
+								_dbg_cam_x = _dbg_globals.get('_gbc_debug_init_scroll_x', None)
+							except Exception:
+								_dbg_cam_x = None
+						if _dbg_cam_y is None:
+							try:
+								_dbg_cam_y = _dbg_globals.get('_gbc_debug_init_scroll_y', None)
+							except Exception:
+								_dbg_cam_y = None
+						if _dbg_off is None and (_dbg_cam_x is not None) and (_dbg_cam_y is not None):
+							try:
+								_dbg_off = [float(_dbg_cam_x), float(-float(_dbg_cam_y))]
+							except Exception:
+								_dbg_off = None
 						try:
-							_dbg_scroll = _dbg_globals.get('_gbc_debug_init_scroll_x', None)
+							_dbg_scroll_i = int(round(float(_dbg_scroll))) if _dbg_scroll is not None else None
 						except Exception:
-							_dbg_scroll = None
-					if _dbg_cam_x is None:
+							_dbg_scroll_i = None
+						if _dbg_stream_col is None and _dbg_scroll_i is not None:
+							_dbg_stream_col = int(_dbg_scroll_i) // 8
+						_dbg_scroll_lo = (int(_dbg_scroll_i) & 0xFF) if _dbg_scroll_i is not None else None
+						_dbg_scroll_hi = ((int(_dbg_scroll_i) >> 8) & 0xFF) if _dbg_scroll_i is not None else None
+						_dbg_scroll_col = (int(_dbg_scroll_i) >> 3) if _dbg_scroll_i is not None else None
 						try:
-							_dbg_cam_x = _dbg_globals.get('_gbc_debug_init_scroll_x', None)
+							_append_gbc_trace_lines([
+								'[gbc-trace] MirrorStepProbe'
+								+ f':frame={int(frame)}'
+								+ f',owner={_step_probe_owner}'
+								+ f',rb={repr(_step_probe_rb)}'
+								+ f',pre_lv={repr(_pre_lv)}'
+								+ f',post_lv={repr(_post_lv)}'
+								+ f',body_key={repr(_step_body_key)}'
+								+ f',body_rb={repr(_step_body_rb)}'
+								+ f',pre_body_lv={repr(_pre_body_lv)}'
+								+ f',post_body_lv={repr(_post_body_lv)}'
+								+ f',pre_vy={repr(_pre_vy)}'
+								+ f',post_vy={repr(_post_vy)}'
+								+ f',pre_y={repr(_pre_y)}'
+								+ f',post_y={repr(_post_y)}'
+								+ f',pre_vs={repr(_pre_vs)}'
+								+ f',post_vs={repr(_post_vs)}'
+								+ f',cam_x={repr(_dbg_cam_x)}'
+								+ f',cam_y={repr(_dbg_cam_y)}'
+								+ f',scroll_x={repr(_dbg_scroll_i)}'
+								+ f',scroll_lo={repr(_dbg_scroll_lo)}'
+								+ f',scroll_hi={repr(_dbg_scroll_hi)}'
+								+ f',scroll_col={repr(_dbg_scroll_col)}'
+								+ f',stream_col={repr(_dbg_stream_col)}'
+								+ f',off={repr(_dbg_off)}',
+							])
 						except Exception:
-							_dbg_cam_x = None
-					if _dbg_cam_y is None:
-						try:
-							_dbg_cam_y = _dbg_globals.get('_gbc_debug_init_scroll_y', None)
-						except Exception:
-							_dbg_cam_y = None
-					if _dbg_off is None and (_dbg_cam_x is not None) and (_dbg_cam_y is not None):
-						try:
-							_dbg_off = [float(_dbg_cam_x), float(-float(_dbg_cam_y))]
-						except Exception:
-							_dbg_off = None
-					try:
-						_dbg_scroll_i = int(round(float(_dbg_scroll))) if _dbg_scroll is not None else None
-					except Exception:
-						_dbg_scroll_i = None
-					if _dbg_stream_col is None and _dbg_scroll_i is not None:
-						_dbg_stream_col = int(_dbg_scroll_i) // 8
-					_dbg_scroll_lo = (int(_dbg_scroll_i) & 0xFF) if _dbg_scroll_i is not None else None
-					_dbg_scroll_hi = ((int(_dbg_scroll_i) >> 8) & 0xFF) if _dbg_scroll_i is not None else None
-					_dbg_scroll_col = (int(_dbg_scroll_i) >> 3) if _dbg_scroll_i is not None else None
-					try:
-						_append_gbc_trace_lines([
-							'[gbc-trace] MirrorStepProbe'
-							+ f':frame={int(frame)}'
-							+ f',owner={_step_probe_owner}'
-							+ f',rb={repr(_step_probe_rb)}'
-							+ f',pre_lv={repr(_pre_lv)}'
-							+ f',post_lv={repr(_post_lv)}'
-							+ f',body_key={repr(_step_body_key)}'
-							+ f',body_rb={repr(_step_body_rb)}'
-							+ f',pre_body_lv={repr(_pre_body_lv)}'
-							+ f',post_body_lv={repr(_post_body_lv)}'
-							+ f',pre_vy={repr(_pre_vy)}'
-							+ f',post_vy={repr(_post_vy)}'
-							+ f',pre_y={repr(_pre_y)}'
-							+ f',post_y={repr(_post_y)}'
-							+ f',pre_vs={repr(_pre_vs)}'
-							+ f',post_vs={repr(_post_vs)}'
-							+ f',cam_x={repr(_dbg_cam_x)}'
-							+ f',cam_y={repr(_dbg_cam_y)}'
-							+ f',scroll_x={repr(_dbg_scroll_i)}'
-							+ f',scroll_lo={repr(_dbg_scroll_lo)}'
-							+ f',scroll_hi={repr(_dbg_scroll_hi)}'
-							+ f',scroll_col={repr(_dbg_scroll_col)}'
-							+ f',stream_col={repr(_dbg_stream_col)}'
-							+ f',off={repr(_dbg_off)}',
-						])
+							pass
 					except Exception:
 						pass
-				except Exception:
-					pass
 			if not init_printed:
 				for info in init_calls:
 					if not _should_emit(info, frame):
@@ -15452,13 +15568,11 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 						text,
 						frame = frame,
 						const_env = _const_env_for_owner(owner, scope_key = scope_key),
-						extra_env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key),
+						extra_env = _mirror_cached_extra_env(owner, scope_key = scope_key),
 						strict = strict_print_exprs,
 					)
 					print(f"[{script_label}:init:runtime] {owner} {text}")
 				init_printed = True
-			for script_info in mirror_update_scripts:
-				_run_mirror_script(script_info, frame = frame)
 			for info in update_calls:
 				if not _should_emit(info, frame):
 					continue
@@ -15469,11 +15583,18 @@ def _start_gba_update_print_mirror (proc, script_runtime, script_label : str = '
 					text,
 					frame = frame,
 					const_env = _const_env_for_owner(owner, scope_key = scope_key),
-					extra_env = _eval_env_for_owner(owner, frame = frame, scope_key = scope_key),
+					extra_env = _mirror_cached_extra_env(owner, scope_key = scope_key),
 					strict = strict_print_exprs,
 				)
 				print(f"[{script_label}:update:runtime] {owner} [f={frame}] {text}")
-			time.sleep(1.0 / 60.0)
+			if _mirror_next_wake is None:
+				_mirror_next_wake = time.monotonic()
+			_mirror_next_wake += _mirror_period
+			_mirror_sl = _mirror_next_wake - time.monotonic()
+			if _mirror_sl > 0:
+				time.sleep(_mirror_sl)
+			else:
+				_mirror_next_wake = time.monotonic()
 	thread = threading.Thread(target = _runner, daemon = True)
 	thread.start()
 	_GBA_EMU_PROCS.append((proc, thread))
@@ -21559,6 +21680,11 @@ def _build_runtime_print_physics_env (world, scene_obs, use_gbc_signed_positions
 			sim._gbc_script_pos_norm_col_wrapped = True
 		except Exception:
 			pass
+	# Align mirror `get_rigidbody`/`this.rb` string fallbacks with PyRapier tuple handles.
+	try:
+		sim.named_rigid_bodies = dict(rigid_bodies_named)
+	except Exception:
+		pass
 	return {
 		'objects' : {},
 		'sim' : sim,
